@@ -1,0 +1,28 @@
+[workspace]
+name = "{{COG_NAME}}"
+version = "0.1.0"
+description = "Context Cog: {{SUMMARY_ONELINE}}"
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[dependencies]
+python = ">=3.11"
+# reads cog.yaml (resolution) and *.fixture.yaml (eval)
+pyyaml = "*"
+# normative input/output schema validation
+jsonschema = "*"
+
+[tasks]
+# --- usage ops (face users and the Op layer) ---
+ask = "python src/cog_cli.py"
+serve = "python src/cog_api.py"
+# --- lifecycle ops (face the hosting environment) ---
+check = "python src/cog_cli.py --check"
+resolve = "python src/cog_resolve.py"
+use = "python src/cog_use.py"
+eval = "python src/cog_eval.py"
+test = "python -m unittest discover -s tests -v"
+
+# NOTE: no [activation.env] — activation variables override the shell and
+# silently pin the endpoint (cog-demo finding 2). Defaults live in the
+# machinery; model.json and COG_MODEL_* override them.

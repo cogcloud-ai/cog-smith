@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "{{TITLE}} input",
+  "description": "Task bundle for {{COG_ID}}. Declared from the manifest as context.input_schema; the x-cog-input/x-cog-param annotations drive generated forms in spec-aware clients.",
+  "type": "object",
+  "required": ["focus", "items"],
+  "properties": {
+    "focus": {
+      "type": "string",
+      "description": "What the highlights should serve"
+    },
+    "notes": {
+      "type": "string",
+      "description": "Input caveats (truncations, redactions) — the model sees these too",
+      "x-cog-input": { "widget": "textarea" }
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Source items. Every output entry must cite and quote from these.",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1,
+                    "x-cog-input": { "source": "file", "encoding": "text" } }
+        }
+      },
+      "x-cog-input": { "builder": "file-items", "file_field": "text", "id_prefix": "item-" }
+    }
+  }
+}

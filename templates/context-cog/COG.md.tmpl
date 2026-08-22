@@ -1,0 +1,52 @@
+---
+type: cog [0.1]
+name: {{COG_NAME}}
+description: Context Cog. {{SUMMARY}} Depends on a Cog providing an OpenAI-compatible model endpoint.
+version: "0.1.0"
+license: {{LICENSE}}
+publisher: {{PUBLISHER}}
+manifest: cog.yaml
+manifest_schema: openteams/cog-manifest [0.1]
+---
+
+# {{TITLE}}
+
+## Purpose
+
+{{SUMMARY}}
+
+*(Minted by cog-smith — replace this section with the Cog's real purpose:
+what work it does, why it exists, what "done" looks like.)*
+
+## Supported work
+
+*(Describe the one task this Cog performs, its declared audience knobs, and
+the grounding rule: what must every output cite/quote?)*
+
+## Unsupported work
+
+*(Name the adjacent work this Cog deliberately does NOT do — and which
+prohibitions in cog.yaml make that structural.)*
+
+## Using it
+
+```bash
+pixi install
+pixi run resolve            # bind the declared model dependency (writes model.json)
+pixi run check -- --deep    # prove the binding: endpoint + model identity
+pixi run ask -- --bundle examples/sample-bundle.json
+pixi run serve              # web API on the declared endpoint
+pixi run eval               # fixtures in evals/ against the bound model
+pixi run test               # model-free deterministic suite
+```
+
+Results are **envelope v1** (see cog-smith/ENVELOPE.md): fixed `payload`
+key, structured `problems`, complete `binding` identity in every result.
+`ok: true` may carry problems — a gate decides, not this Cog.
+
+## Where the machinery came from
+
+Everything in `src/` except `task_logic.py` is shared cog-smith machinery
+derived from cog-forge @7fe8aca (engineering-gates PASS) — do not edit it
+here; `smith check` verifies the copies. This Cog's identity lives in
+`cog.yaml`, `context/`, and `src/task_logic.py`.

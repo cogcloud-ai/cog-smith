@@ -1,0 +1,141 @@
+"""Model-free deterministic suite for {{COG_NAME}} (minted by cog-smith).
+
+Covers: manifest consistency, schema/example agreement, envelope mechanics,
+grounding guard, salvage, and identity matching. Extend with task-specific
+cases as task_logic.py grows — fixtures in evals/ cover the model-backed path.
+"""
+import json
+import sys
+import unittest
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+import cog_core     # noqa: E402
+import task_logic   # noqa: E402
+
+
+def sample_bundle():
+    return json.loads((ROOT / "examples" / "sample-bundle.json").read_text())
+
+
+class TestManifestConsistency(unittest.TestCase):
+    def setUp(self):
+        self.manifest = yaml.safe_load((ROOT / "cog.yaml").read_text())
+
+    def test_identity_fields(self):
+        for field in ("schema", "id", "version", "kind", "summary", "owner",
+                      "license", "io", "interfaces"):
+            self.assertIn(field, self.manifest)
+        self.assertEqual(self.manifest["schema"], "openteams/cog-manifest [0.1]")
+
+    def test_declared_context_files_exist(self):
+        ctx = self.manifest.get("context") or {}
+        for key in ("instructions", "input_schema", "output_schema",
+                    "output_example"):
+            self.assertIn(key, ctx)
+            self.assertTrue((ROOT / ctx[key]).exists(), ctx[key])
+
+    def test_interface_tasks_exist_in_pixi(self):
+        pixi = (ROOT / "pixi.toml").read_text()
+        for i in self.manifest.get("interfaces") or []:
+            self.assertIn(f"\n{i['task']} = ", "\n" + pixi, i["task"])
+
+    def test_exactly_one_default_interface(self):
+        defaults = [i for i in self.manifest["interfaces"] if i.get("default")]
+        self.assertEqual(len(defaults), 1)
+
+    def test_fixtures_exist(self):
+        for f in (self.manifest.get("evaluation") or {}).get("fixtures") or []:
+            self.assertTrue((ROOT / f).exists(), f)
+
+
+class TestSchemasAndExamples(unittest.TestCase):
+    def test_example_bundle_passes_input_validation(self):
+        self.assertEqual(cog_core.validate_input(sample_bundle()), [])
+
+    def test_output_example_passes_output_validation(self):
+        example = json.loads(
+            (ROOT / "context" / "output-example.json").read_text())
+        # validated against the schema only — the worked example cites items
+        # from a DIFFERENT hypothetical bundle, so skip semantic grounding
+        problems = [p for p in cog_core.validate_output(example, {"items": []})
+                    if p["check"] == "schema"]
+        self.assertEqual(problems, [])
+
+    def test_invalid_input_is_reported(self):
+        problems = cog_core.validate_input({"focus": "x"})   # missing items
+        self.assertTrue(problems)
+        self.assertTrue(all(p["check"] == "input" for p in problems))
+
+
+class TestEnvelopeMechanics(unittest.TestCase):
+    def test_envelope_shape(self):
+        env = cog_core._envelope("ask", True, payload={"abstained": False})
+        for field in ("envelope", "cog", "task", "ok", "error", "payload",
+                      "problems", "binding", "timing"):
+            self.assertIn(field, env)
+        self.assertEqual(env["envelope"], 1)
+        self.assertEqual(env["cog"]["id"], cog_core.SELF_ID["id"])
+
+    def test_fail_envelope_carries_code_and_problem(self):
+        env = cog_core._fail("ask", "model-unavailable", "down")
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "model-unavailable")
+        self.assertEqual(env["problems"][0]["check"], "model-unavailable")
+
+    def test_binding_report_strips_workstation_paths(self):
+        report = cog_core._binding_report()
+        sat = report["record"].get("satisfier")
+        if isinstance(sat, dict):
+            self.assertNotIn("path", sat)
+
+
+class TestGroundingGuard(unittest.TestCase):
+    SOURCES = {"item-a": "the deadline moved to Friday after the vendor slip"}
+
+    def test_verbatim_quote_passes(self):
+        entry = {"title": "t", "item_ids": ["item-a"],
+                 "evidence_quote": "deadline moved to  Friday"}
+        self.assertEqual(cog_core.verbatim_quote_check(
+            entry, self.SOURCES, ids_field="item_ids"), [])
+
+    def test_paraphrase_fails(self):
+        entry = {"title": "t", "item_ids": ["item-a"],
+                 "evidence_quote": "the deadline was postponed to Friday"}
+        problems = cog_core.verbatim_quote_check(
+            entry, self.SOURCES, ids_field="item_ids")
+        self.assertTrue(any(p["check"] == "grounding" for p in problems))
+
+    def test_unknown_citation_fails(self):
+        entry = {"title": "t", "item_ids": ["item-zz"],
+                 "evidence_quote": "deadline moved to Friday"}
+        problems = cog_core.verbatim_quote_check(
+            entry, self.SOURCES, ids_field="item_ids")
+        self.assertTrue(any(p["check"] == "citation" for p in problems))
+
+
+class TestSalvageAndIdentity(unittest.TestCase):
+    def test_extract_json_plain_and_fenced(self):
+        obj = {"abstained": False, "entries": []}
+        self.assertEqual(cog_core.extract_json(json.dumps(obj)), obj)
+        fenced = "```json\n" + json.dumps(obj) + "\n```"
+        self.assertEqual(cog_core.extract_json(fenced), obj)
+
+    def test_wrapped_payload_is_unwrapped_and_marked(self):
+        inner = {"abstained": False, "entries": []}
+        parsed = cog_core.extract_json(json.dumps({"values": inner}))
+        self.assertEqual(parsed.get("_unwrapped_from"), "values")
+
+    def test_models_match_is_strict(self):
+        self.assertTrue(cog_core.models_match("m-1", "M-1 "))
+        self.assertFalse(cog_core.models_match("m-1-malicious", "m-1"))
+        self.assertTrue(cog_core.models_match("alias-x", "m-1", aliases=["alias-x"]))
+        self.assertFalse(cog_core.models_match("", "m-1"))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,17 @@
+[workspace]
+name = "cog-smith"
+version = "0.1.0"
+description = "The Cog builder: mint, validate, and describe Cogs."
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+[dependencies]
+python = ">=3.11"
+pyyaml = "*"
+jsonschema = "*"
+
+[tasks]
+new = "python src/cogsmith_cli.py new"
+check = "python src/cogsmith_cli.py check"
+card = "python src/cogsmith_cli.py card"
+test = "python -m unittest discover -s tests -v"

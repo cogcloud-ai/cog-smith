@@ -1,0 +1,64 @@
+# Minted by cog-smith. Built against openteams/cog-manifest [0.1]; emits the
+# envelope-v1 result contract (Collab profile — see cog-smith/ENVELOPE.md).
+
+schema: openteams/cog-manifest [0.1]
+id: {{COG_ID}}
+version: "0.1.0"
+summary: >
+  {{SUMMARY}}
+license: {{LICENSE}}
+
+kind: context
+
+owner: {{OWNER}}
+frames: []
+
+context:
+  instructions: context/system.md
+  input_schema: context/input-schema.json
+  output_schema: context/output-schema.json
+  output_example: context/output-example.json
+
+# The requirement is a CAPABILITY; the named Cog is one satisfier, not the
+# only one. `pixi run resolve` verifies the candidate and writes the binding
+# record (model.json — gitignored installation state). A hosting environment
+# may re-satisfy this with its own model cog.
+requires:
+  - capability: model-endpoint/openai-compatible
+    locality: any
+    satisfied_by:
+      cog: {{MODEL_COG_ID}}
+      version: ">=0.1.0"
+      source: {{MODEL_COG_SOURCE}}
+
+# Entry points. `default: true` = the programmatic binding target. Tasks are
+# labeled by audience: usage ops face users and the Op layer; lifecycle ops
+# (resolve/serve/check/eval/test) face the hosting environment.
+interfaces:
+  - name: web-api
+    kind: http-json
+    task: serve
+    endpoint: http://127.0.0.1:{{PORT}}/ask
+    default: true
+  - name: cli
+    kind: command
+    task: ask
+  - name: health
+    kind: command
+    task: check
+
+io:
+  accepts: [task_request]
+  produces: [{{PRODUCES}}]
+
+memory: none
+
+# Evidence-tier boundary: prohibitions are structural today (no tool grants
+# exist that could perform them); they become Guard-enforced when a hosting
+# environment supplies tools.
+prohibits:
+{{PROHIBITS_YAML}}
+
+evaluation:
+  fixtures:
+    - evals/smoke.fixture.yaml

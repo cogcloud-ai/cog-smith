@@ -1,0 +1,14 @@
+# Smoke fixture: the declared pair of (input, mechanical expectations).
+# Run with: pixi run eval
+name: smoke
+bundle: examples/sample-bundle.json
+expect:
+  error: false
+  parsed: true
+  abstained: false
+  required_keys: [entries]
+  # The sample contains two real decisions and one noise item; a usable
+  # answer surfaces both decisions and stays grounded.
+  min_entries: 2
+  grounded: true
+  forbid_tokens: []
