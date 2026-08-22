@@ -322,6 +322,22 @@ def invoke(bundle, timeout=180, task="ask"):
                                              if isinstance(payload, dict) else None))
 
     parsed = extract_json(text)
+    if parsed is None:
+        # F3 (review 2026-08-22): content that exists but is not parseable
+        # JSON is a malformed upstream response — documented error code and
+        # a 5xx at the HTTP layer, never a bare 200. Raw text retained.
+        env = _fail(task, "model-response-malformed",
+                    "model content did not parse as JSON",
+                    binding=_binding_report(payload.get("model")))
+        env["raw"] = text
+        env["timing"]["latency_s"] = round(time.monotonic() - started, 3)
+        return env
+
+    # F4: the salvage marker is transport metadata, not domain payload —
+    # emitted payloads must validate against the output schema EXACTLY as
+    # emitted. The unwrapping fact travels in binding.unwrapped only.
+    unwrapped = parsed.pop("_unwrapped_from", None)
+
     problems = validate_output(parsed, bundle)
     echoed = payload.get("model")
     if not echoed:
@@ -335,7 +351,6 @@ def invoke(bundle, timeout=180, task="ask"):
             f"endpoint answered as {echoed!r}, requested {MODEL!r} — model "
             f"identity mismatch"))
     return _envelope(
-        task, parsed is not None, payload=parsed, raw=text, problems=problems,
-        binding=_binding_report(payload.get("model"),
-                                (parsed or {}).get("_unwrapped_from"), identity),
+        task, True, payload=parsed, raw=text, problems=problems,
+        binding=_binding_report(payload.get("model"), unwrapped, identity),
         latency=round(time.monotonic() - started, 3))

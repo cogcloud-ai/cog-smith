@@ -44,9 +44,14 @@ class ModelConfigError(Exception):
 
 def _entry_tokens(entry, defaults):
     e = {**defaults, **entry}
-    name = e.get("cog_name") or f"cog-{e['name']}" if e.get("name") else None
+    name = e.get("cog_name") or (f"cog-{e['name']}" if e.get("name") else None)
     if not name:
         raise ModelConfigError("each model needs a `name` (or `cog_name`)")
+    short = name.rsplit("/", 1)[-1]
+    if not smith_core.COG_NAME_RE.match(short):
+        raise ModelConfigError(
+            f"{name}: cog name violates the name grammar (lowercase "
+            f"alphanumerics, single hyphens)")
     model_name = e.get("model_name") or e.get("served_model_id")
     if not model_name:
         raise ModelConfigError(f"{name}: needs model_name or served_model_id")
@@ -124,13 +129,24 @@ def mint_from_config(config_path, out_dir):
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    minted, skipped = [], []
+    # Preflight: validate EVERY entry and reject duplicates before any
+    # write, so an invalid late entry can never leave a partial catalog
+    # (review 2026-08-22, F8).
+    plan, seen = [], set()
     for entry in models:
         name, tokens = _entry_tokens(entry, defaults)
+        if name in seen:
+            raise ModelConfigError(f"duplicate cog name in catalog: {name}")
+        seen.add(name)
+        plan.append((name, tokens))
+
+    minted, skipped = [], []
+    for name, tokens in plan:
         dest = out_dir / name
         if dest.exists():
             skipped.append(name)
             continue
-        smith_core.mint(dest, tokens, template="model-descriptor-cog")
+        smith_core.mint(dest, tokens, template="model-descriptor-cog",
+                        validate=False)
         minted.append(name)
     return {"minted": minted, "skipped": skipped, "out_dir": str(out_dir)}

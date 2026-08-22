@@ -26,6 +26,14 @@ owner: {{OWNER}}
 locality: {{LOCALITY}}
 
 model:
+  # Relationship to core CogSpec (review 2026-08-22, F5): core defines a
+  # model Cog as carrying a model and its serving software. Under the
+  # Collab/OpenTeams PROFILE, a deployment DESCRIPTOR is a model Cog whose
+  # carried content is the PINNABLE IDENTITY of a deployment rather than
+  # the weights themselves — the forge-ratified pattern (cog-collab-qwen35b,
+  # re-review P0-4). The marker below makes that machine-readable; core
+  # validators ignore manifest contents by design.
+  descriptor: true
   name: {{MODEL_NAME}}
   quantization: {{QUANTIZATION}}
   runtime: {{RUNTIME}}
@@ -37,6 +45,7 @@ model:
 interfaces:
   - name: web-api
     kind: openai-compatible
+    audience: usage
 {{ADDRESS_YAML}}
     served_model_id: {{SERVED_MODEL_ID}}
     api_key_env: {{API_KEY_ENV}}

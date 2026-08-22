@@ -22,10 +22,32 @@ def card(root):
             tasks = (toml_compat.load(f).get("tasks")) or {}
 
     interfaces = m.get("interfaces") or []
-    iface_tasks = {i.get("task") for i in interfaces if i.get("task")}
-    usage = sorted(t for t in iface_tasks if t not in smith_core.LIFECYCLE_TASKS)
-    # serve is lifecycle (starting the service); the endpoint it serves is usage
-    lifecycle = sorted(t for t in tasks if t in smith_core.LIFECYCLE_TASKS)
+    # F7 (review 2026-08-22): audience is contextual, not lexical — a
+    # DECLARED audience wins; the lifecycle-name set is only the fallback.
+    usage, lifecycle, inferred = set(), set(), False
+    for i in interfaces:
+        t_ = i.get("task")
+        if not t_:
+            continue
+        if i.get("endpoint"):
+            # An endpoint-bearing interface: the ENDPOINT is the usage
+            # surface; its task starts the service, which is lifecycle.
+            lifecycle.add(t_)
+            continue
+        aud = i.get("audience")
+        if aud == "usage":
+            usage.add(t_)
+        elif aud == "lifecycle":
+            lifecycle.add(t_)
+        elif t_ in smith_core.LIFECYCLE_TASKS:
+            lifecycle.add(t_); inferred = True
+        else:
+            usage.add(t_); inferred = True
+    for t_ in tasks:
+        if t_ not in usage and t_ not in lifecycle:
+            (lifecycle if t_ in smith_core.LIFECYCLE_TASKS else usage).add(t_)
+            inferred = True
+    usage, lifecycle = sorted(usage), sorted(lifecycle)
 
     reqs = []
     for r in m.get("requires") or []:
@@ -38,6 +60,8 @@ def card(root):
     ctx = m.get("context") or {}
     model = m.get("model") or {}
     return {
+        "card": 1,
+        "audience_inferred": inferred,
         "provides": m.get("provides") or [],
         "locality": m.get("locality"),
         "model": ({"name": model.get("name"),
@@ -59,12 +83,15 @@ def card(root):
         "license": m.get("license"),
         "io": m.get("io"),
         "entry_points": [{"name": i.get("name"), "kind": i.get("kind"),
+                          "task": i.get("task"),
+                          "audience": i.get("audience"),
                           "endpoint": i.get("endpoint"),
                           "default": bool(i.get("default"))} for i in interfaces],
         "ops": {"usage": usage, "lifecycle": lifecycle},
         "requires": reqs,
         "prohibits": m.get("prohibits") or [],
-        "input_contract": bool(ctx.get("input_schema")),
+        "input_contract": ctx.get("input_schema"),
+        "output_contract": ctx.get("output_schema"),
         "envelope": 1 if (root / "src" / "cog_core.py").exists() else None,
         "fixtures": (m.get("evaluation") or {}).get("fixtures") or [],
     }
@@ -107,7 +134,7 @@ def render_text(c):
                         " · revision unpinned"))
     else:
         lines.append(f"  input contract: "
-                     f"{'declared' if c['input_contract'] else 'NONE'}"
+                     f"{c['input_contract'] or 'NONE'}"
                      f" · envelope v{c['envelope'] or '?'}"
                      f" · fixtures: {len(c['fixtures'])}")
     return "\n".join(lines)

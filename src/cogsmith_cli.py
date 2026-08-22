@@ -13,6 +13,8 @@ resolve -> check --deep -> ask.
 import argparse
 import json
 import sys
+
+import yaml
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -40,6 +42,11 @@ def cmd_new(args):
         overrides["PROHIBITS_YAML"] = "\n".join(f"  - {p}" for p in args.prohibit)
     tokens = smith_core.default_tokens(name, **overrides)
 
+    if not args.yes and not sys.stdin.isatty():
+        print("error: stdin is not a terminal — pass --yes for "
+              "non-interactive minting (defaults + flags are used as-is)",
+              file=sys.stderr)
+        return 2
     if not args.yes and sys.stdin.isatty():
         print(f"Minting {tokens['COG_ID']} at {dest} — enter to accept defaults:")
         tokens["COG_ID"] = _prompt("cog id", tokens["COG_ID"])
@@ -139,8 +146,14 @@ def main():
     args = ap.parse_args()
     try:
         return args.fn(args)
-    except smith_core.MintError as e:
+    except (smith_core.MintError, smith_models.ModelConfigError) as e:
         print(f"error: {e}", file=sys.stderr)
+        return 2
+    except FileNotFoundError as e:
+        print(f"error: not found: {e.filename or e}", file=sys.stderr)
+        return 2
+    except (OSError, yaml.YAMLError, json.JSONDecodeError) as e:
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
 

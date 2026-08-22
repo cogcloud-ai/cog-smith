@@ -39,13 +39,16 @@ interfaces:
     kind: http-json
     task: serve
     endpoint: http://127.0.0.1:{{PORT}}/ask
+    audience: usage      # the endpoint is the usage surface; starting it is lifecycle
     default: true
   - name: cli
     kind: command
     task: ask
+    audience: usage
   - name: health
     kind: command
     task: check
+    audience: lifecycle
 
 io:
   accepts: [task_request]

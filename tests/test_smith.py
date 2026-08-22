@@ -139,7 +139,10 @@ class TestCard(unittest.TestCase):
     def test_card_on_cogsmith_itself(self):
         c = smith_card.card(ROOT)
         self.assertEqual(c["id"], "openteams/cog-smith")
-        self.assertEqual(set(c["ops"]["usage"]), {"new", "card", "mint-model-cog"})
+        # F7: check is USAGE for smith (validates OTHER cogs) — declared, not inferred
+        self.assertEqual(set(c["ops"]["usage"]),
+                         {"new", "card", "mint-model-cog", "check"})
+        self.assertEqual(c["card"], 1)
 
 
 import smith_models  # noqa: E402
@@ -235,7 +238,7 @@ class TestMintModelCogs(unittest.TestCase):
 class TestSelf(unittest.TestCase):
     def test_own_manifest_is_wellformed(self):
         m = yaml.safe_load((ROOT / "cog.yaml").read_text())
-        for f in smith_check.REQUIRED_FIELDS:
+        for f in smith_check.PROFILE_FIELDS:
             self.assertIn(f, m)
         self.assertEqual(m["schema"], smith_check.SCHEMA_STRING)
         defaults = [i for i in m["interfaces"] if i.get("default")]

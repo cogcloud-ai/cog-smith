@@ -10,9 +10,12 @@ carries.
 - Validate: `pixi run check -- <path> [--tests]`
 - Card: `pixi run card -- <path> [--json]`
 - Model catalog: `pixi run mint-model-cog -- --config <yaml> --out-dir <dir>`
-- Tests: `python3 -m unittest discover -s tests` (13, model-free; must pass
-  on Python 3.10). Live loop: `tests/mock_model.py` + a minted cog's
-  resolve/ask.
+- Tests: `python3 -m unittest discover -s tests` — the model-free suite
+  plus `tests/test_review_regressions.py` (one test per 2026-08-22 review
+  finding; never delete these). The 3.10 floor is real and exercised: the
+  device VM runs the suite on Python 3.10 at every delivery; pixi manifests
+  declare `python = ">=3.10"` to match. Live loop: `tests/mock_model.py` +
+  a minted cog's resolve/ask.
 
 ## Invariants
 
@@ -29,6 +32,17 @@ carries.
    toml_compat fallback (3.10 floor).
 5. Vocabulary: usage ops vs lifecycle ops; interfaces = entry points;
    never handler/runner/harness for client-side things.
-6. Fast-follow queue (do not start without Trent): derive-schema,
-   draft (model-backed; adds a model-endpoint requirement to
-   cog.yaml when it lands). mint-model-cog shipped in v0.1.
+6. **Checker layers (review 2026-08-22, F1):** findings are labeled
+   core / profile / runtime and the layers must never blur — cog.yaml
+   is a PROFILE convention, not a core rule. Known gap, queued: compose
+   the CogSpec reference validator into the core layer.
+7. **Lockfile policy (F6):** pixi.lock files are generated ONLY on
+   Trent's Mac (conda-forge is 403-blocked in the sandbox and device VM)
+   and committed once generated; minted Cogs follow the same policy.
+8. Fast-follow queue (do not start without Trent): derive-schema; draft
+   (model-backed; adds a model-endpoint requirement when it lands);
+   promote-draft (COG.md draft -> package, per CogSpec's own builder
+   description); machinery diff/upgrade (hash checking needs a repair
+   path before many cogs exist); honest starter variants
+   (context-minimal, context-classification, complete, model);
+   doctor. mint-model-cog shipped in v0.1; review hardening 2026-08-22.

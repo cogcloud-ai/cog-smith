@@ -23,16 +23,20 @@ interfaces:
   - name: new
     kind: command
     task: new
+    audience: usage
     default: true
   - name: check
     kind: command
     task: check
+    audience: usage      # validates OTHER cogs — a user-facing capability here
   - name: mint-model-cog
     kind: command
     task: mint-model-cog
+    audience: usage
   - name: card
     kind: command
     task: card
+    audience: usage
 
 io:
   accepts: [build_request]

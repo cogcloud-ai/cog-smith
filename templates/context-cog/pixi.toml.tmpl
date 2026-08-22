@@ -1,12 +1,12 @@
 [workspace]
 name = "{{COG_NAME}}"
 version = "0.1.0"
-description = "Context Cog: {{SUMMARY_ONELINE}}"
+description = {{SUMMARY_TOML}}
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [dependencies]
-python = ">=3.11"
+python = ">=3.10"
 # reads cog.yaml (resolution) and *.fixture.yaml (eval)
 pyyaml = "*"
 # normative input/output schema validation
