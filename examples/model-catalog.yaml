@@ -1,0 +1,38 @@
+# Example model catalog — the hub's model offering as data.
+#   pixi run mint-model-cog -- --config examples/model-catalog.yaml --out-dir ../models
+# One descriptor cog is minted per entry (one cog per served model — never a
+# parameterized gateway cog; identity and pinning are per served model).
+defaults:
+  owner: trent@openteams.com
+  license: BSD-3-Clause
+  publisher: OpenTeams
+
+models:
+  # The Collab-hosted deployment (the strong sovereignty story):
+  - name: qwen35b-collab
+    model_name: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+    served_model_id: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
+    provider: Collab-hosted vLLM
+    locality: customer-vpc
+    address: install-time
+    api_key_env: COLLAB_API_KEY
+    quantization: GPTQ-Int4
+    runtime: vllm
+
+  # A gateway-backed cloud model (identity by echo, never weight-pinned):
+  - name: sonnet-gateway
+    model_name: anthropic/claude-sonnet-4.6
+    served_model_id: anthropic/claude-sonnet-4.6
+    provider: intelligence-hub gateway (OpenRouter-backed)
+    locality: cloud
+    address: install-time
+    api_key_env: HUB_GATEWAY_API_KEY
+
+  # A fixed-address example (a known local dev endpoint):
+  - name: qwen3b-localdev
+    model_name: qwen2.5-3b-instruct-q4_k_m
+    served_model_id: qwen2.5-3b-instruct-q4_k_m
+    provider: local llama-server (dev)
+    locality: local
+    endpoint: http://127.0.0.1:8080/v1
+    api_key_env: LOCAL_MODEL_API_KEY

@@ -1,0 +1,46 @@
+# A DEPLOYMENT DESCRIPTOR model Cog, minted by cog-smith (mint-model-cog).
+# Pattern: cog-forge/cog-collab-qwen35b (engineering-gates PASS).
+#
+# It carries the PINNABLE IDENTITY of a model deployment (name, quantization,
+# runtime, revision, locality) as package content. The reachable ADDRESS is
+# an installation fact: either declared here (a fixed, known endpoint) or
+# `address: install-time`, in which case resolution requires --endpoint and
+# writes the address only into the consumer's binding record — never here.
+# Credentials are REFERENCES (api_key_env names an environment variable);
+# a descriptor never contains a key.
+
+schema: openteams/cog-manifest [0.1]
+id: {{COG_ID}}
+version: "0.1.0"
+summary: >
+  {{SUMMARY}}
+license: {{LICENSE}}
+
+kind: model
+
+owner: {{OWNER}}
+
+# Where this deployment runs. A context Cog's requires[].locality constraint
+# is checked against this at resolution — this is how sovereignty is
+# enforced at bind time, not just displayed in a catalog.
+locality: {{LOCALITY}}
+
+model:
+  name: {{MODEL_NAME}}
+  quantization: {{QUANTIZATION}}
+  runtime: {{RUNTIME}}
+  # Set when the deployment pins a served revision; until then, bindings are
+  # pinned to (id, version, model identity) with revision: null, and results
+  # say so.
+  revision: {{REVISION}}
+
+interfaces:
+  - name: web-api
+    kind: openai-compatible
+{{ADDRESS_YAML}}
+    served_model_id: {{SERVED_MODEL_ID}}
+    api_key_env: {{API_KEY_ENV}}
+    default: true
+
+provides:
+  - model-endpoint/openai-compatible

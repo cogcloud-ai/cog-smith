@@ -20,6 +20,22 @@ a model-free test suite that passes at mint time. Edit `context/` and
 `src/task_logic.py`; everything else is shared machinery enforced by
 `smith check`.
 
+## Minting a hosting environment's model offering
+
+```bash
+pixi run mint-model-cog -- --config examples/model-catalog.yaml --out-dir ../models
+```
+
+One deployment-descriptor model cog per catalog entry (pattern:
+cog-collab-qwen35b) — never a parameterized gateway cog, because identity
+and pinning are per served model. Descriptors carry pinnable identity and
+credential *references*; fixed endpoints must be https or loopback;
+`address: install-time` defers the address to resolution. This is the
+generator form of the hub model-selection work (see
+output/model-cogs-hub-offering.md): consumers bind with
+`pixi run resolve -- --satisfier <descriptor> [--endpoint URL]`, and the
+binding record is where metering and audit attribution attach.
+
 Docs: `ENVELOPE.md` (the result contract — the Collab profile, decided by
 template), `MACHINERY.md` (provenance + deltas from cog-forge @7fe8aca),
 `COG.md` (cog-smith as a Cog), `AGENTS.md` (contributor invariants).

@@ -36,7 +36,21 @@ def card(root):
                          "satisfiers": [s.get("cog") for s in sats if s.get("cog")]})
 
     ctx = m.get("context") or {}
+    model = m.get("model") or {}
     return {
+        "provides": m.get("provides") or [],
+        "locality": m.get("locality"),
+        "model": ({"name": model.get("name"),
+                   "quantization": model.get("quantization"),
+                   "runtime": model.get("runtime"),
+                   "revision": model.get("revision"),
+                   "served_model_id": next(
+                       (i.get("served_model_id") for i in interfaces
+                        if i.get("default")), None),
+                   "address": next(
+                       (i.get("address") or i.get("endpoint") for i in interfaces
+                        if i.get("default")), None)}
+                  if m.get("kind") == "model" else None),
         "id": m.get("id"),
         "version": m.get("version"),
         "kind": m.get("kind"),
@@ -77,9 +91,25 @@ def render_text(c):
                      f"<- {', '.join(r['satisfiers']) or 'undeclared'}")
     if c["prohibits"]:
         lines.append(f"  prohibits: {', '.join(c['prohibits'])}")
-    lines.append(f"  input contract: {'declared' if c['input_contract'] else 'NONE'}"
-                 f" · envelope v{c['envelope'] or '?'}"
-                 f" · fixtures: {len(c['fixtures'])}")
+    if c.get("model"):
+        mdl = c["model"]
+        lines.append(f"  provides: {', '.join(c['provides'])} · "
+                     f"locality {c['locality']}")
+        lines.append(f"  model: {mdl['name']}"
+                     + (f" ({mdl['quantization']})" if mdl.get("quantization")
+                        not in (None, "null") else "")
+                     + (f" · runtime {mdl['runtime']}" if mdl.get("runtime")
+                        not in (None, "null") else ""))
+        lines.append(f"  served_model_id: {mdl['served_model_id']} · "
+                     f"address: {mdl['address']}"
+                     + (f" · revision {mdl['revision']}"
+                        if mdl.get("revision") not in (None, "null") else
+                        " · revision unpinned"))
+    else:
+        lines.append(f"  input contract: "
+                     f"{'declared' if c['input_contract'] else 'NONE'}"
+                     f" · envelope v{c['envelope'] or '?'}"
+                     f" · fixtures: {len(c['fixtures'])}")
     return "\n".join(lines)
 
 

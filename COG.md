@@ -25,6 +25,9 @@ compiler").
 - `check` — validate any minted Cog: manifest integrity, schema/example
   agreement, machinery copy-sync against cog-smith's masters,
   interface/task consistency; `--tests` also runs the Cog's own suite.
+- `mint-model-cog` — a hosting environment's model offering as data:
+  one deployment-descriptor model cog per catalog entry, checked at
+  mint (credential-reference and endpoint-hygiene rules enforced).
 - `card` — the catalog card: exactly what CogCloud and the Op builder's
   picker would render, derived from declarations only.
 
@@ -39,6 +42,5 @@ MACHINERY.md for the delta record and ENVELOPE.md for the result contract.
 
 ## Roadmap (fast follows)
 
-`derive-schema` (argparse → input-schema/x-cog-param), `mint-model-cog`
-(descriptor model cogs from a gateway config), `draft` (model-backed
+`derive-schema` (argparse → input-schema/x-cog-param), `draft` (model-backed
 authoring of summary/context/io from a role description).

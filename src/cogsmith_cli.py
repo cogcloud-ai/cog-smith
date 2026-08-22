@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import smith_core   # noqa: E402
 import smith_check  # noqa: E402
 import smith_card   # noqa: E402
+import smith_models  # noqa: E402
 
 
 def _prompt(label, default):
@@ -65,6 +66,25 @@ def cmd_new(args):
     return smith_check.report(findings)
 
 
+def cmd_mint_models(args):
+    result = smith_models.mint_from_config(args.config, args.out_dir)
+    for name in result["minted"]:
+        print(f"minted {name} -> {result['out_dir']}/{name}")
+    for name in result["skipped"]:
+        print(f"skipped {name} (already exists)")
+    rc = 0
+    for name in result["minted"]:
+        findings = smith_check.check(Path(result["out_dir"]) / name)
+        errors = [f for f in findings if f["level"] == "error"]
+        if errors:
+            rc = 1
+            for f in errors:
+                print(f"  [ERROR] {name}: {f['check']}: {f['detail']}")
+        else:
+            print(f"  {name}: PASS")
+    return rc
+
+
 def cmd_check(args):
     return smith_check.report(smith_check.check(args.path, run_tests=args.tests))
 
@@ -95,6 +115,15 @@ def main():
                    help="prohibited action (repeatable)")
     p.add_argument("--yes", action="store_true", help="non-interactive")
     p.set_defaults(fn=cmd_new)
+
+    p = sub.add_parser("mint-model-cog",
+                       help="mint deployment-descriptor model cogs from a "
+                            "model catalog config")
+    p.add_argument("--config", required=True,
+                   help="model catalog YAML (see examples/model-catalog.yaml)")
+    p.add_argument("--out-dir", required=True,
+                   help="directory to mint the descriptor cogs into")
+    p.set_defaults(fn=cmd_mint_models)
 
     p = sub.add_parser("check", help="validate a Cog package")
     p.add_argument("path")

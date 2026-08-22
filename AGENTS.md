@@ -9,6 +9,7 @@ carries.
 - Mint: `pixi run new -- --dir ../cog-<name> [--yes ...flags]`
 - Validate: `pixi run check -- <path> [--tests]`
 - Card: `pixi run card -- <path> [--json]`
+- Model catalog: `pixi run mint-model-cog -- --config <yaml> --out-dir <dir>`
 - Tests: `python3 -m unittest discover -s tests` (13, model-free; must pass
   on Python 3.10). Live loop: `tests/mock_model.py` + a minted cog's
   resolve/ask.
@@ -29,5 +30,5 @@ carries.
 5. Vocabulary: usage ops vs lifecycle ops; interfaces = entry points;
    never handler/runner/harness for client-side things.
 6. Fast-follow queue (do not start without Trent): derive-schema,
-   mint-model-cog, draft (model-backed; adds a model-endpoint requirement
-   to cog.yaml when it lands).
+   draft (model-backed; adds a model-endpoint requirement to
+   cog.yaml when it lands). mint-model-cog shipped in v0.1.

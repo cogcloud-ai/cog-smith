@@ -1,0 +1,36 @@
+---
+type: cog [0.1]
+name: {{COG_NAME}}
+description: Model Cog (deployment descriptor). {{SUMMARY}}
+version: "0.1.0"
+license: {{LICENSE}}
+publisher: {{PUBLISHER}}
+manifest: cog.yaml
+manifest_schema: openteams/cog-manifest [0.1]
+---
+
+# {{TITLE}}
+
+Deployment descriptor for **{{MODEL_NAME}}** ({{PROVIDER_NOTE}}), served
+over an OpenAI-compatible API. Minted by cog-smith's `mint-model-cog` —
+this is how a hosting environment publishes a model offering as an
+ordinary, resolvable satisfier of `model-endpoint/openai-compatible`.
+
+## Binding
+
+```bash
+# from a consumer context Cog:
+pixi run resolve -- --satisfier ../{{COG_NAME}}{{RESOLVE_HINT}}
+pixi run check -- --deep     # proves the route and verifies model identity
+```
+
+The consumer's binding record captures which model cog served which run —
+that is where metering, quota, and audit attribution attach.
+
+## What this package deliberately is NOT
+
+It carries no weights, no runtime, no harness, and **no credentials**
+(`api_key_env` names the environment variable a deployment expects — the
+value is supplied by the environment, never by a package). Locality is
+`{{LOCALITY}}`: consumer Cogs whose manifests demand a stricter locality
+will refuse to bind to it, by design.

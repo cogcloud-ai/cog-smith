@@ -139,7 +139,97 @@ class TestCard(unittest.TestCase):
     def test_card_on_cogsmith_itself(self):
         c = smith_card.card(ROOT)
         self.assertEqual(c["id"], "openteams/cog-smith")
-        self.assertEqual(set(c["ops"]["usage"]), {"new", "card"})
+        self.assertEqual(set(c["ops"]["usage"]), {"new", "card", "mint-model-cog"})
+
+
+import smith_models  # noqa: E402
+
+
+CATALOG = ROOT / "examples" / "model-catalog.yaml"
+
+
+class TestMintModelCogs(unittest.TestCase):
+    def test_catalog_mints_and_all_pass_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = smith_models.mint_from_config(CATALOG, tmp)
+            self.assertEqual(len(r["minted"]), 3)
+            for name in r["minted"]:
+                findings = smith_check.check(Path(tmp) / name)
+                errors = [f for f in findings if f["level"] == "error"]
+                self.assertEqual(errors, [], (name, findings))
+
+    def test_descriptor_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            smith_models.mint_from_config(CATALOG, tmp)
+            m = yaml.safe_load(
+                (Path(tmp) / "cog-qwen35b-collab" / "cog.yaml").read_text())
+            self.assertEqual(m["kind"], "model")
+            self.assertIn("model-endpoint/openai-compatible", m["provides"])
+            d = m["interfaces"][0]
+            self.assertEqual(d["address"], "install-time")
+            self.assertNotIn("endpoint", d)
+            self.assertEqual(d["api_key_env"], "COLLAB_API_KEY")
+            ep = yaml.safe_load(
+                (Path(tmp) / "cog-qwen3b-localdev" / "cog.yaml").read_text())
+            self.assertEqual(ep["interfaces"][0]["endpoint"],
+                             "http://127.0.0.1:8080/v1")
+
+    def test_existing_cogs_are_skipped_not_clobbered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            smith_models.mint_from_config(CATALOG, tmp)
+            marker = Path(tmp) / "cog-qwen35b-collab" / "MARKER"
+            marker.write_text("x")
+            r = smith_models.mint_from_config(CATALOG, tmp)
+            self.assertIn("cog-qwen35b-collab", r["skipped"])
+            self.assertTrue(marker.exists())
+
+    def _cfg(self, entry, tmp):
+        p = Path(tmp) / "cfg.yaml"
+        p.write_text(yaml.safe_dump({"models": [entry]}))
+        return p
+
+    def test_secret_looking_api_key_env_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg({"name": "x", "served_model_id": "m",
+                             "api_key_env": "sk-abc123secretvalue"}, tmp)
+            with self.assertRaises(smith_models.ModelConfigError):
+                smith_models.mint_from_config(cfg, Path(tmp) / "out")
+
+    def test_plaintext_remote_endpoint_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg({"name": "x", "served_model_id": "m",
+                             "endpoint": "http://models.internal:8000/v1"}, tmp)
+            with self.assertRaises(smith_models.ModelConfigError):
+                smith_models.mint_from_config(cfg, Path(tmp) / "out")
+
+    def test_endpoint_and_address_together_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg({"name": "x", "served_model_id": "m",
+                             "endpoint": "https://a/v1",
+                             "address": "install-time"}, tmp)
+            with self.assertRaises(smith_models.ModelConfigError):
+                smith_models.mint_from_config(cfg, Path(tmp) / "out")
+
+    def test_descriptor_check_catches_missing_provides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            smith_models.mint_from_config(CATALOG, tmp)
+            root = Path(tmp) / "cog-sonnet-gateway"
+            m = yaml.safe_load((root / "cog.yaml").read_text())
+            del m["provides"]
+            (root / "cog.yaml").write_text(yaml.safe_dump(m))
+            findings = smith_check.check(root)
+            self.assertTrue(any(f["check"] == "descriptor" and
+                                "provide" in f["detail"]
+                                for f in findings if f["level"] == "error"))
+
+    def test_model_card_renders_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            smith_models.mint_from_config(CATALOG, tmp)
+            c = smith_card.card(Path(tmp) / "cog-qwen35b-collab")
+            self.assertEqual(c["provides"], ["model-endpoint/openai-compatible"])
+            self.assertEqual(c["locality"], "customer-vpc")
+            self.assertEqual(c["model"]["address"], "install-time")
+            self.assertIn("install-time", smith_card.render_text(c))
 
 
 class TestSelf(unittest.TestCase):

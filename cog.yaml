@@ -27,6 +27,9 @@ interfaces:
   - name: check
     kind: command
     task: check
+  - name: mint-model-cog
+    kind: command
+    task: mint-model-cog
   - name: card
     kind: command
     task: card

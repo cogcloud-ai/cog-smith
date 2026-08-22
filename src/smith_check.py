@@ -51,8 +51,10 @@ def check(root, run_tests=False):
     except yaml.YAMLError as e:
         err("manifest", f"cog.yaml is not valid YAML: {e}")
         return findings
-    for f in REQUIRED_FIELDS:
-        if f not in m:
+    required = tuple(f for f in REQUIRED_FIELDS
+                     if not (m.get("kind") == "model" and f == "io"))
+    for f in required:                 # model cogs: tokens in, tokens out —
+        if f not in m:                 # io is a context-cog declaration
             err("manifest", f"missing required field: {f}")
     if m.get("schema") != SCHEMA_STRING:
         err("manifest", f"schema must be {SCHEMA_STRING!r}, got {m.get('schema')!r}")
@@ -75,6 +77,11 @@ def check(root, run_tests=False):
                                  f"manifest {m.get('version')!r}")
             except yaml.YAMLError as e:
                 err("cogmd", f"frontmatter not valid YAML: {e}")
+
+    # ---- model descriptor cogs take a different path ----------------------
+    if m.get("kind") == "model" and not (root / "src").exists():
+        _check_model_descriptor(m, err, warn)
+        return findings
 
     # ---- declared context files ------------------------------------------
     ctx = m.get("context") or {}
@@ -175,6 +182,49 @@ def check(root, run_tests=False):
         if r.returncode != 0:
             err("tests", (r.stderr or r.stdout)[-800:])
     return findings
+
+
+ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+VALID_LOCALITY = {"local", "customer-vpc", "cloud"}
+
+
+def _check_model_descriptor(m, err, warn):
+    """Deployment-descriptor model cog: no machinery, no context files —
+    the whole contract is the manifest (pattern: cog-collab-qwen35b)."""
+    provides = m.get("provides") or []
+    if "model-endpoint/openai-compatible" not in provides:
+        err("descriptor", "must provide model-endpoint/openai-compatible")
+    if m.get("locality") not in VALID_LOCALITY:
+        err("descriptor", f"locality {m.get('locality')!r} not in "
+                          f"{sorted(VALID_LOCALITY)}")
+    model = m.get("model") or {}
+    if not model.get("name"):
+        err("descriptor", "model.name is required (the pinnable identity)")
+
+    interfaces = m.get("interfaces") or []
+    defaults = [i for i in interfaces if i.get("default")]
+    if len(defaults) != 1:
+        err("descriptor", f"exactly one default interface required, "
+                          f"got {len(defaults)}")
+        return
+    d = defaults[0]
+    if d.get("kind") != "openai-compatible":
+        err("descriptor", "default interface must be openai-compatible")
+    if not d.get("served_model_id"):
+        warn("descriptor", "no served_model_id — identity verification will "
+                           "fall back to model.name")
+    ep, addr = d.get("endpoint"), d.get("address")
+    if bool(ep) == bool(addr):
+        err("descriptor", "declare exactly one of endpoint / "
+                          "address: install-time")
+    if addr and addr != "install-time":
+        err("descriptor", f"address must be 'install-time', got {addr!r}")
+    if ep and not re.match(r"^(https://|http://127\.0\.0\.1[:/])", ep):
+        err("descriptor", f"endpoint {ep!r} must be https or loopback http")
+    key = d.get("api_key_env")
+    if key and not ENV_NAME_RE.match(str(key)):
+        err("descriptor", f"api_key_env {key!r} is not an env-var NAME — "
+                          f"descriptors carry references, never credentials")
 
 
 def report(findings, out=print):
