@@ -13,6 +13,8 @@ pixi install
 pixi run new -- --dir ../cog-my-worker          # interactive builder questions
 pixi run new -- --dir ../cog-my-worker --yes    # scripted, defaults
 pixi run check -- ../cog-my-worker --envelope   # envelope-v1 JSON (Op seam)
+pixi run new -- --from-request request.json --envelope  # mint from a drafting
+                                                # cog's request (see examples/)
 cd ../cog-my-worker
 pixi install && pixi run resolve && pixi run check -- --deep
 pixi run ask -- --bundle examples/sample-bundle.json

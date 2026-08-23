@@ -16,6 +16,16 @@ can consume smith at the Op seam like any other Cog. cog-smith is a
 deterministic tooling Cog with no model dependency, so its envelopes
 carry `binding: null`; checker findings travel in `problems`
 (ok-with-problems: the run succeeded, a Gate decides about the findings).
+
+`new --from-request request.json` mints from a MINT REQUEST — one JSON
+document carrying the builder answers plus optionally the drafted
+context files (system.md, schemas, worked example, sample bundle,
+fixture, COG.md). This is the published seam a drafting cog targets
+(builder-op note, build item 3): the drafting cog authors the request;
+smith validates and mints it atomically, overlays included, then checks
+the result. See examples/mint-request.json. Overlays never touch src/ —
+task_logic.py and tests remain the starter's and still need the
+BUILDING_COGS Step 2 rewrite when the drafted schemas diverge from it.
 """
 import argparse
 import json
@@ -79,21 +89,102 @@ def _prompt(label, default, explain=None):
     return val or default
 
 
+MINT_REQUEST_KEYS = {"mint_request", "dir", "name", "id", "summary", "owner",
+                     "license", "publisher", "port", "produces", "model_cog",
+                     "prohibits", "cog_md", "context", "examples", "evals"}
+
+
+def _load_mint_request(path):
+    req = json.loads(Path(path).read_text())
+    if not isinstance(req, dict) or req.get("mint_request") != 1:
+        raise smith_core.MintError(
+            "a mint request is a JSON object with \"mint_request\": 1")
+    unknown = sorted(set(req) - MINT_REQUEST_KEYS)
+    if unknown:
+        raise smith_core.MintError(f"unknown mint-request keys: {unknown}")
+    return req
+
+
+def _request_overrides_overlays(req):
+    """Mint request -> (token overrides, file overlays). Values the request
+    omits fall back to smith defaults, exactly like omitted flags."""
+    overrides = {
+        "COG_ID": req.get("id"), "SUMMARY": req.get("summary"),
+        "OWNER": req.get("owner"), "LICENSE": req.get("license"),
+        "PUBLISHER": req.get("publisher"),
+        "PORT": None if req.get("port") is None else str(req["port"]),
+        "PRODUCES": req.get("produces"),
+    }
+    mc = req.get("model_cog") or {}
+    if not isinstance(mc, dict):
+        raise smith_core.MintError("model_cog must be an object {id, source}")
+    overrides["MODEL_COG_ID"] = mc.get("id")
+    overrides["MODEL_COG_SOURCE"] = mc.get("source")
+    if req.get("prohibits") is not None:
+        if (not isinstance(req["prohibits"], list)
+                or not all(isinstance(p, str) for p in req["prohibits"])):
+            raise smith_core.MintError("prohibits must be a list of strings")
+        overrides["PROHIBITS_YAML"] = "\n".join(
+            f"  - {p}" for p in req["prohibits"])
+
+    overlays = {}
+
+    def _json_overlay(rel, val, what):
+        if val is None:
+            return
+        if not isinstance(val, dict):
+            raise smith_core.MintError(f"{what} must be a JSON object")
+        overlays[rel] = json.dumps(val, indent=2) + "\n"
+
+    ctx = req.get("context") or {}
+    if ctx.get("system_md") is not None:
+        overlays["context/system.md"] = str(ctx["system_md"])
+    _json_overlay("context/input-schema.json", ctx.get("input_schema"),
+                  "context.input_schema")
+    _json_overlay("context/output-schema.json", ctx.get("output_schema"),
+                  "context.output_schema")
+    _json_overlay("context/output-example.json", ctx.get("output_example"),
+                  "context.output_example")
+    ex = req.get("examples") or {}
+    _json_overlay("examples/sample-bundle.json", ex.get("sample_bundle"),
+                  "examples.sample_bundle")
+    ev = req.get("evals") or {}
+    if ev.get("smoke_fixture") is not None:
+        overlays["evals/smoke.fixture.yaml"] = str(ev["smoke_fixture"])
+    if req.get("cog_md") is not None:
+        overlays["COG.md"] = str(req["cog_md"])
+    return overrides, overlays
+
+
 def cmd_new(args):
     started = time.monotonic()
-    dest = Path(args.dir)
-    name = args.name or dest.name
-    overrides = {
+    req, req_overrides, overlays = {}, {}, None
+    if args.from_request:
+        req = _load_mint_request(args.from_request)
+        req_overrides, overlays = _request_overrides_overlays(req)
+
+    dir_arg = args.dir or req.get("dir")
+    if not dir_arg:
+        raise smith_core.MintError(
+            "destination required: pass --dir or set \"dir\" in the request")
+    dest = Path(dir_arg)
+    name = args.name or req.get("name") or dest.name
+    flag_overrides = {
         "COG_ID": args.id, "SUMMARY": args.summary, "OWNER": args.owner,
         "LICENSE": args.license, "PUBLISHER": args.publisher,
         "PORT": args.port, "PRODUCES": args.produces,
         "MODEL_COG_ID": args.model_cog, "MODEL_COG_SOURCE": args.model_source,
     }
     if args.prohibit:
-        overrides["PROHIBITS_YAML"] = "\n".join(f"  - {p}" for p in args.prohibit)
+        flag_overrides["PROHIBITS_YAML"] = "\n".join(
+            f"  - {p}" for p in args.prohibit)
+    # request supplies values; explicit flags override the request
+    overrides = {k: v for k, v in req_overrides.items() if v is not None}
+    overrides.update({k: v for k, v in flag_overrides.items() if v is not None})
     tokens = smith_core.default_tokens(name, **overrides)
 
-    if not args.yes and not sys.stdin.isatty():
+    scripted = args.yes or bool(args.from_request)
+    if not scripted and not sys.stdin.isatty():
         detail = ("stdin is not a terminal — pass --yes for non-interactive "
                   "minting (defaults + flags are used as-is)")
         if args.envelope:
@@ -105,7 +196,7 @@ def cmd_new(args):
         else:
             print(f"error: {detail}", file=sys.stderr)
         return 2
-    if not args.yes and sys.stdin.isatty():
+    if not scripted and sys.stdin.isatty():
         print(f"Minting {tokens['COG_ID']} at {dest} — enter to accept defaults:")
         tokens["COG_ID"] = _prompt(
             "cog id", tokens["COG_ID"],
@@ -145,7 +236,7 @@ def cmd_new(args):
             f"  - {p.strip()}" for p in raw.split(",") if p.strip())
         tokens["SUMMARY_ONELINE"] = " ".join(tokens["SUMMARY"].split())[:160]
 
-    result = smith_core.mint(dest, tokens)
+    result = smith_core.mint(dest, tokens, overlays=overlays)
     findings = smith_check.check(result["dest"])
     if args.envelope:
         errors = [f for f in findings if f["level"] == "error"]
@@ -154,6 +245,8 @@ def cmd_new(args):
             "cog_id": tokens["COG_ID"],
             "files": len(result["files"]),
             "machinery": result["machinery"],
+            "from_request": bool(args.from_request),
+            "overlays": sorted(overlays) if overlays else [],
             "check": {"errors": len(errors),
                       "warnings": len(findings) - len(errors)},
         }, problems=_problems(findings), started=started))
@@ -227,7 +320,12 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("new", help="mint a new Cog from the template")
-    p.add_argument("--dir", required=True, help="destination directory")
+    p.add_argument("--dir", help="destination directory (or the request's "
+                                 "\"dir\"; a given flag wins)")
+    p.add_argument("--from-request", dest="from_request", metavar="REQ.json",
+                   help="mint from a mint-request JSON document (the "
+                        "drafting-cog seam; implies non-interactive; "
+                        "explicit flags override request values)")
     p.add_argument("--name", help="cog short name (default: dir basename)")
     p.add_argument("--id", help="full id, e.g. openteams/cog-foo")
     p.add_argument("--summary")

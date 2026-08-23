@@ -353,6 +353,25 @@ before writing, renders into a staging directory, verifies rendering, and only
 then moves the package into place. The new command runs the package checker
 immediately afterward.
 
+### Minting from a request file
+
+A third path suits automation — a drafting tool, or the Builder Op's drafting
+Cog: put the builder answers and, optionally, the drafted context files into
+one mint-request JSON document and mint from it:
+
+    pixi run new -- --from-request request.json --envelope
+
+The request carries the identity answers (id, summary, owner, license, port,
+produces, prohibits, the default model satisfier) plus optional overlays:
+context/system.md, the input and output schemas, the worked example, the
+sample bundle, the eval fixture, and COG.md. Overlays are applied inside the
+same atomic mint, and the checker runs on the result — so a request whose
+example disagrees with its schema fails visibly, not silently. Explicit flags
+override request values; the flag implies non-interactive. Overlays never
+touch src/: task_logic.py and the tests remain the starter's, so Step 2 still
+applies when your drafted schemas diverge from the grounded-highlights shape.
+See examples/mint-request.json in cog-smith for the format.
+
 ### Step 2: replace the starter task completely
 
 The current starter is intentionally a working **grounded highlights** task.

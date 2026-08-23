@@ -151,10 +151,17 @@ def default_tokens(cog_name, **overrides):
     return tokens
 
 
-def mint(dest, tokens, template="context-cog", validate=True):
+def mint(dest, tokens, template="context-cog", validate=True, overlays=None):
     """Create a new Cog package at dest, atomically. The destination never
     exists half-built: rendering happens in a staging sibling which is
-    renamed into place only after every file rendered cleanly."""
+    renamed into place only after every file rendered cleanly.
+
+    overlays: optional {relative-path: text} written into the staging
+    directory AFTER template rendering and the leftover-token check, so a
+    drafting cog's authored context files replace the starter's inside the
+    same atomic mint (the builder-op seam). Overlay content is written
+    verbatim — it is not token-rendered and not token-checked, because
+    drafted content may legitimately contain braces."""
     dest = Path(dest).resolve()
     if dest.exists():
         raise MintError(f"{dest} already exists — refusing to overwrite")
@@ -197,6 +204,16 @@ def mint(dest, tokens, template="context-cog", validate=True):
                     leftover.append(f)
         if leftover:
             raise MintError(f"unrendered tokens remain in: {leftover}")
+
+        staging_root = staging.resolve()
+        for rel, text in (overlays or {}).items():
+            out = (staging / rel)
+            if staging_root not in out.resolve().parents:
+                raise MintError(f"overlay path escapes the package: {rel!r}")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(str(text))
+            if str(rel) not in written:
+                written.append(str(rel))
 
         staging.rename(dest)
     except Exception:

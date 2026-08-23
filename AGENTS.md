@@ -7,6 +7,11 @@ the single source of the machinery every minted Cog carries.
 ## Commands
 
 - Mint: `pixi run new -- --dir ../cog-<name> [--yes ...flags] [--envelope]`
+- Mint from a request: `pixi run new -- --from-request req.json` — the
+  drafting-cog seam (builder-op note item 3): one JSON doc of builder
+  answers + drafted context overlays, minted atomically then checked;
+  flags override request values; overlays never touch src/. Format:
+  examples/mint-request.json.
 - Validate: `pixi run check -- <path> [--tests] [--envelope]`
 - Card: `pixi run card -- <path> [--json | --envelope]`
 - `--envelope` emits envelope v1 for Op consumption (builder-op note):
