@@ -15,8 +15,10 @@ jsonschema = "*"
 [tasks]
 # --- usage ops (face users and the Op layer) ---
 ask = "python src/cog_cli.py"
-serve = "python src/cog_api.py"
 # --- lifecycle ops (face the hosting environment) ---
+# serve starts the web-api entry point: the ENDPOINT is the usage surface,
+# starting it is lifecycle (see the interface's audience note in cog.yaml)
+serve = "python src/cog_api.py"
 check = "python src/cog_cli.py --check"
 resolve = "python src/cog_resolve.py"
 use = "python src/cog_use.py"

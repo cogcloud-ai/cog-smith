@@ -12,6 +12,7 @@ and Tracks record. Nothing else.
 
 ```json
 {
+  "envelope": 1,
   "cog":     {"id": "openteams/<name>", "version": "0.1.0"},
   "task":    "ask",
   "ok":      true,
@@ -30,6 +31,8 @@ and Tracks record. Nothing else.
 
 Field rules:
 
+- **`envelope`** — the version discriminator for this contract (`1` today);
+  consumers detect the envelope version here, not by sniffing field shapes.
 - **`payload`** — the fixed key (closes cog-client GAPS #1). The value's
   shape is the Cog's own `context/output-schema.json`; `null` when the run
   errored or output did not parse.

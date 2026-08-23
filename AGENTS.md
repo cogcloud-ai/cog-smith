@@ -1,8 +1,8 @@
 # AGENTS.md — cog-smith contributor instructions
 
-Read `../CLAUDE.md` for workstream context. cog-smith is itself a Cog (see
-COG.md); it is also the single source of the machinery every minted Cog
-carries.
+Read `../CLAUDE.md` for workstream context and read `BUILDING_COGS.md` before
+creating or changing a Cog. cog-smith is itself a Cog (see COG.md); it is also
+the single source of the machinery every minted Cog carries.
 
 ## Commands
 

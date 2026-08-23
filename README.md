@@ -4,6 +4,10 @@ The Cog builder — engineer-facing, "closer to a compiler." Mints complete,
 immediately runnable Cogs from review-hardened machinery; validates them;
 renders the catalog card consumers see.
 
+**New to Cogs?** Start with [Building and Improving Cogs](BUILDING_COGS.md).
+It explains what a Cog is, how Cogs are used, the complete build-and-test
+workflow, and the rules coding agents should follow when improving one.
+
 ```bash
 pixi install
 pixi run new -- --dir ../cog-my-worker          # interactive builder questions
@@ -36,6 +40,7 @@ output/model-cogs-hub-offering.md): consumers bind with
 `pixi run resolve -- --satisfier <descriptor> [--endpoint URL]`, and the
 binding record is where metering and audit attribution attach.
 
-Docs: `ENVELOPE.md` (the result contract — the Collab profile, decided by
-template), `MACHINERY.md` (provenance + deltas from cog-forge @7fe8aca),
-`COG.md` (cog-smith as a Cog), `AGENTS.md` (contributor invariants).
+Docs: `BUILDING_COGS.md` (start-to-finish builder guide), `ENVELOPE.md`
+(the result contract — the Collab profile, decided by template),
+`MACHINERY.md` (provenance + deltas from cog-forge @7fe8aca), `COG.md`
+(cog-smith as a Cog), `AGENTS.md` (contributor invariants).
