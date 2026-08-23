@@ -3,7 +3,7 @@
 cog-smith is a deterministic tooling Cog: its envelopes carry binding: null
 and raw: null; checker findings travel in `problems` with ok: true
 (ok-with-problems — the run succeeded, a Gate decides about the findings);
-expected failures (bad mint request, existing destination) come back as
+expected failures (bad create request, existing destination) come back as
 ok: false envelopes with error.code invalid-input.
 """
 import json
@@ -30,16 +30,16 @@ def run_cli(*argv):
                           capture_output=True, text=True, timeout=120)
 
 
-def mint_tmp(tmp, name="cog-envelope-toy"):
+def create_tmp(tmp, name="cog-envelope-toy"):
     dest = Path(tmp) / name
-    smith_core.mint(dest, smith_core.default_tokens(name))
+    smith_core.create(dest, smith_core.default_tokens(name))
     return dest
 
 
 class TestCheckEnvelope(unittest.TestCase):
     def test_shape_ok_and_problem_mapping(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             r = run_cli("check", str(dest), "--envelope")
             env = json.loads(r.stdout)          # stdout is pure JSON
             for field in ENVELOPE_FIELDS:
@@ -62,7 +62,7 @@ class TestCheckEnvelope(unittest.TestCase):
 
     def test_findings_surface_as_problems_not_swallowed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             (dest / "COG.md").unlink()          # break the core layer
             r = run_cli("check", str(dest), "--envelope")
             env = json.loads(r.stdout)
@@ -74,15 +74,15 @@ class TestCheckEnvelope(unittest.TestCase):
 
 
 class TestNewEnvelope(unittest.TestCase):
-    def test_scripted_mint_success(self):
+    def test_scripted_create_success(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = Path(tmp) / "cog-envelope-mint"
+            dest = Path(tmp) / "cog-envelope-create"
             r = run_cli("new", "--dir", str(dest), "--yes", "--envelope")
             env = json.loads(r.stdout)          # no stray human prints
             self.assertEqual(env["task"], "new")
             self.assertTrue(env["ok"])
             self.assertEqual(env["payload"]["cog_id"],
-                             "openteams/cog-envelope-mint")
+                             "openteams/cog-envelope-create")
             self.assertTrue(env["payload"]["machinery"])
             self.assertEqual(env["payload"]["check"]["errors"], 0)
             self.assertEqual(r.returncode, 0)
@@ -113,7 +113,7 @@ class TestNewEnvelope(unittest.TestCase):
 class TestCardEnvelope(unittest.TestCase):
     def test_card_rides_as_payload(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             r = run_cli("card", str(dest), "--envelope")
             env = json.loads(r.stdout)
             self.assertEqual(env["task"], "card")
@@ -126,7 +126,7 @@ class TestCardEnvelope(unittest.TestCase):
 class TestHumanOutputUnchanged(unittest.TestCase):
     def test_check_without_flag_still_reports_text(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             r = run_cli("check", str(dest))
             self.assertIn("PASS", r.stdout)
             with self.assertRaises(json.JSONDecodeError):

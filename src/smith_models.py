@@ -1,7 +1,7 @@
-"""`smith mint-model-cog` — generate deployment-descriptor model Cogs from a
+"""`smith generate-descriptors` — generate deployment-descriptor model Cogs from a
 model catalog config. This is how a hosting environment's model offering
 becomes ordinary, resolvable satisfiers (see output/model-cogs-hub-offering.md
-in coglab): one descriptor cog per served model, minted from config, with
+in coglab): one descriptor cog per served model, created from config, with
 metering/audit attaching at the binding record.
 
 Config shape (YAML):
@@ -118,8 +118,8 @@ def _entry_tokens(entry, defaults):
     }
 
 
-def mint_from_config(config_path, out_dir):
-    """Mint one descriptor model cog per config entry. Returns a summary;
+def generate_from_config(config_path, out_dir):
+    """Create one descriptor model cog per config entry. Returns a summary;
     refuses to overwrite existing directories (skips them with a note)."""
     cfg = yaml.safe_load(Path(config_path).read_text()) or {}
     models = cfg.get("models")
@@ -140,13 +140,13 @@ def mint_from_config(config_path, out_dir):
         seen.add(name)
         plan.append((name, tokens))
 
-    minted, skipped = [], []
+    created, skipped = [], []
     for name, tokens in plan:
         dest = out_dir / name
         if dest.exists():
             skipped.append(name)
             continue
-        smith_core.mint(dest, tokens, template="model-descriptor-cog",
+        smith_core.create(dest, tokens, template="model-descriptor-cog",
                         validate=False)
-        minted.append(name)
-    return {"minted": minted, "skipped": skipped, "out_dir": str(out_dir)}
+        created.append(name)
+    return {"created": created, "skipped": skipped, "out_dir": str(out_dir)}

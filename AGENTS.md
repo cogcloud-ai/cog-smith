@@ -2,43 +2,43 @@
 
 Read `../CLAUDE.md` for workstream context and read `BUILDING_COGS.md` before
 creating or changing a Cog. cog-smith is itself a Cog (see COG.md); it is also
-the single source of the machinery every minted Cog carries.
+the single source of the machinery every created Cog carries.
 
 ## Commands
 
-- Mint: `pixi run new -- --dir ../cog-<name> [--yes ...flags] [--envelope]`
-- Mint from a request: `pixi run new -- --from-request req.json` — the
+- Create: `pixi run new -- --dir ../cog-<name> [--yes ...flags] [--envelope]`
+- Create from a request: `pixi run new -- --from-request req.json` — the
   drafting-cog seam (builder-op note item 3): one JSON doc of builder
-  answers + drafted context overlays, minted atomically then checked;
+  answers + drafted context overlays, created atomically then checked;
   flags override request values; overlays never touch src/. Format:
-  examples/mint-request.json.
+  examples/cog-request.json.
 - Validate: `pixi run check -- <path> [--tests] [--envelope]`
 - Card: `pixi run card -- <path> [--json | --envelope]`
 - `--envelope` emits envelope v1 for Op consumption (builder-op note):
   binding null (deterministic tooling cog), findings in `problems`,
   ok-with-problems semantics; exit codes unchanged.
-- Model catalog: `pixi run mint-model-cog -- --config <yaml> --out-dir <dir>`
+- Model catalog: `pixi run generate-descriptors -- --config <yaml> --out-dir <dir>`
 - Catalog from a hub: `python scripts/llmmodel_catalog.py <LLMModel yaml/dir>
   [--surface internal|external|install-time] [--base-domain <domain>]` —
-  pack-neutral (no smith imports); emits mint-model-cog's config.
+  pack-neutral (no smith imports); emits generate-descriptors's config.
 - Tests: `python3 -m unittest discover -s tests` — the model-free suite
   plus `tests/test_review_regressions.py` (one test per 2026-08-22 review
   finding; never delete these). The 3.10 floor is real and exercised: the
   device VM runs the suite on Python 3.10 at every delivery; pixi manifests
   declare `python = ">=3.10"` to match. Live loop: `tests/mock_model.py` +
-  a minted cog's resolve/ask.
+  a created cog's resolve/ask.
 
 ## Invariants
 
 1. **Machinery is sacred:** template `src/` masters change only here, with
-   MACHINERY.md updated; minted Cogs never edit them (task_logic.py is the
+   MACHINERY.md updated; created Cogs never edit them (task_logic.py is the
    sole author-owned src module). `smith check` enforces by hash.
 2. **Envelope v1 is the emitted contract** (ENVELOPE.md): fixed `payload`
    key, structured problems, ok-may-carry-problems (gates decide), binding
    identity in every result. Changing it = versioning event, not an edit.
-3. **Minted Cogs must be immediately runnable and immediately checkable:**
+3. **Created Cogs must be immediately runnable and immediately checkable:**
    `new` ends by running `check`; a template change that breaks
-   fresh-mint PASS or the minted test suite is a regression.
+   fresh-creation PASS or the created test suite is a regression.
 4. **No new runtime deps** beyond python/pyyaml/jsonschema; keep the
    toml_compat fallback (3.10 floor).
 5. Vocabulary: usage ops vs lifecycle ops; interfaces = entry points;
@@ -46,19 +46,19 @@ the single source of the machinery every minted Cog carries.
    the Cog's own in-package validation of its declared contract
    (self-reported in `problems`); Guards are independent, first-class
    system-side verifiers of the SYSTEM's requirements — never call in-cog
-   checks guards. (Some machinery docstrings still say "guard"; fix only
-   with a deliberate machinery version bump, never inside a minted Cog.)
+   checks guards. (Some machinery docstrings still say "guard" and "mint"; fix only
+   with a deliberate machinery version bump, never inside a created Cog.)
 6. **Checker layers (review 2026-08-22, F1):** findings are labeled
    core / profile / runtime and the layers must never blur — cog.yaml
    is a PROFILE convention, not a core rule. Known gap, queued: compose
    the CogSpec reference validator into the core layer.
 7. **Lockfile policy (F6):** pixi.lock files are generated ONLY on
    Trent's Mac (conda-forge is 403-blocked in the sandbox and device VM)
-   and committed once generated; minted Cogs follow the same policy.
+   and committed once generated; created Cogs follow the same policy.
 8. Fast-follow queue (do not start without Trent): derive-schema; draft
    (model-backed; adds a model-endpoint requirement when it lands);
    promote-draft (COG.md draft -> package, per CogSpec's own builder
    description); machinery diff/upgrade (hash checking needs a repair
    path before many cogs exist); honest starter variants
    (context-minimal, context-classification, complete, model);
-   doctor. mint-model-cog shipped in v0.1; review hardening 2026-08-22.
+   doctor. generate-descriptors shipped in v0.1; review hardening 2026-08-22.

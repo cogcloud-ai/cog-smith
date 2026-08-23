@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal OpenAI-compatible mock for live-testing minted Cogs without a
+"""Minimal OpenAI-compatible mock for live-testing created Cogs without a
 model. Echoes the requested model id (identity verifies) and returns the
 content of MOCK_BODY_FILE (default: a grounded answer for the template's
 sample bundle). Not part of any Cog — a test harness for the workshop.

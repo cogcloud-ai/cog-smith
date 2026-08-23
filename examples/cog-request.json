@@ -1,5 +1,5 @@
 {
-  "mint_request": 1,
+  "cog_request": 1,
   "dir": "../cog-release-brief",
   "id": "openteams/cog-release-brief",
   "summary": "Produces an evidence-grounded release brief from supplied change items.",

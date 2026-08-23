@@ -1,7 +1,7 @@
 # MACHINERY.md — provenance of the template machinery
 
 `templates/context-cog/src/` are the masters that `smith check` enforces by
-hash on every minted Cog (everything except the author-owned
+hash on every created Cog (everything except the author-owned
 `task_logic.py`). Lineage:
 
 | File | Provenance |
@@ -15,7 +15,7 @@ hash on every minted Cog (everything except the author-owned
 | `cog_cli.py` | genericized from forge cog_cli |
 | `task_logic.py` | AUTHOR-OWNED — the only per-cog module in src/; ships with a working toy task |
 
-Rules: never edit machinery inside a minted Cog (check will fail it).
-Machinery fixes happen HERE, version-bumped, and roll out to minted Cogs by
+Rules: never edit machinery inside a created Cog (check will fail it).
+Machinery fixes happen HERE, version-bumped, and roll out to created Cogs by
 re-copying — the same copy-sync discipline cog-forge used, with cog-smith
 as the single source.

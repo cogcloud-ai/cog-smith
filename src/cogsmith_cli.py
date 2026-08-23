@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cog-smith — mint, validate, and describe Cogs.
+"""cog-smith — create, validate, and describe Cogs.
 
     pixi run new -- --dir ../cog-meeting-highlights [--id ...] [--yes]
     pixi run check -- ../cog-meeting-highlights [--tests]
@@ -7,7 +7,7 @@
 
 `new` walks the builder questions interactively (Travis's list: what are
 you, what model class, what do you prohibit…), or takes everything as flags
-with --yes for scripted minting. The minted Cog is immediately runnable:
+with --yes for scripted creating. The created Cog is immediately runnable:
 resolve -> check --deep -> ask.
 
 `--envelope` on new/check/card emits an envelope-v1 result instead of
@@ -17,13 +17,13 @@ deterministic tooling Cog with no model dependency, so its envelopes
 carry `binding: null`; checker findings travel in `problems`
 (ok-with-problems: the run succeeded, a Gate decides about the findings).
 
-`new --from-request request.json` mints from a MINT REQUEST — one JSON
+`new --from-request request.json` creates from a COG REQUEST — one JSON
 document carrying the builder answers plus optionally the drafted
 context files (system.md, schemas, worked example, sample bundle,
 fixture, COG.md). This is the published seam a drafting cog targets
 (builder-op note, build item 3): the drafting cog authors the request;
-smith validates and mints it atomically, overlays included, then checks
-the result. See examples/mint-request.json. Overlays never touch src/ —
+smith validates and creates it atomically, overlays included, then checks
+the result. See examples/cog-request.json. Overlays never touch src/ —
 task_logic.py and tests remain the starter's and still need the
 BUILDING_COGS Step 2 rewrite when the drafted schemas diverge from it.
 """
@@ -89,24 +89,24 @@ def _prompt(label, default, explain=None):
     return val or default
 
 
-MINT_REQUEST_KEYS = {"mint_request", "dir", "name", "id", "summary", "owner",
+COG_REQUEST_KEYS = {"cog_request", "dir", "name", "id", "summary", "owner",
                      "license", "publisher", "port", "produces", "model_cog",
                      "prohibits", "cog_md", "context", "examples", "evals"}
 
 
-def _load_mint_request(path):
+def _load_cog_request(path):
     req = json.loads(Path(path).read_text())
-    if not isinstance(req, dict) or req.get("mint_request") != 1:
-        raise smith_core.MintError(
-            "a mint request is a JSON object with \"mint_request\": 1")
-    unknown = sorted(set(req) - MINT_REQUEST_KEYS)
+    if not isinstance(req, dict) or req.get("cog_request") != 1:
+        raise smith_core.CreateError(
+            "a create request is a JSON object with \"cog_request\": 1")
+    unknown = sorted(set(req) - COG_REQUEST_KEYS)
     if unknown:
-        raise smith_core.MintError(f"unknown mint-request keys: {unknown}")
+        raise smith_core.CreateError(f"unknown cog-request keys: {unknown}")
     return req
 
 
 def _request_overrides_overlays(req):
-    """Mint request -> (token overrides, file overlays). Values the request
+    """Create request -> (token overrides, file overlays). Values the request
     omits fall back to smith defaults, exactly like omitted flags."""
     overrides = {
         "COG_ID": req.get("id"), "SUMMARY": req.get("summary"),
@@ -117,13 +117,13 @@ def _request_overrides_overlays(req):
     }
     mc = req.get("model_cog") or {}
     if not isinstance(mc, dict):
-        raise smith_core.MintError("model_cog must be an object {id, source}")
+        raise smith_core.CreateError("model_cog must be an object {id, source}")
     overrides["MODEL_COG_ID"] = mc.get("id")
     overrides["MODEL_COG_SOURCE"] = mc.get("source")
     if req.get("prohibits") is not None:
         if (not isinstance(req["prohibits"], list)
                 or not all(isinstance(p, str) for p in req["prohibits"])):
-            raise smith_core.MintError("prohibits must be a list of strings")
+            raise smith_core.CreateError("prohibits must be a list of strings")
         overrides["PROHIBITS_YAML"] = "\n".join(
             f"  - {p}" for p in req["prohibits"])
 
@@ -133,7 +133,7 @@ def _request_overrides_overlays(req):
         if val is None:
             return
         if not isinstance(val, dict):
-            raise smith_core.MintError(f"{what} must be a JSON object")
+            raise smith_core.CreateError(f"{what} must be a JSON object")
         overlays[rel] = json.dumps(val, indent=2) + "\n"
 
     ctx = req.get("context") or {}
@@ -160,12 +160,12 @@ def cmd_new(args):
     started = time.monotonic()
     req, req_overrides, overlays = {}, {}, None
     if args.from_request:
-        req = _load_mint_request(args.from_request)
+        req = _load_cog_request(args.from_request)
         req_overrides, overlays = _request_overrides_overlays(req)
 
     dir_arg = args.dir or req.get("dir")
     if not dir_arg:
-        raise smith_core.MintError(
+        raise smith_core.CreateError(
             "destination required: pass --dir or set \"dir\" in the request")
     dest = Path(dir_arg)
     name = args.name or req.get("name") or dest.name
@@ -186,7 +186,7 @@ def cmd_new(args):
     scripted = args.yes or bool(args.from_request)
     if not scripted and not sys.stdin.isatty():
         detail = ("stdin is not a terminal — pass --yes for non-interactive "
-                  "minting (defaults + flags are used as-is)")
+                  "creating (defaults + flags are used as-is)")
         if args.envelope:
             _emit(envelope("new", False,
                            error={"code": "invalid-input", "detail": detail},
@@ -197,7 +197,7 @@ def cmd_new(args):
             print(f"error: {detail}", file=sys.stderr)
         return 2
     if not scripted and sys.stdin.isatty():
-        print(f"Minting {tokens['COG_ID']} at {dest} — enter to accept defaults:")
+        print(f"Creating {tokens['COG_ID']} at {dest} — enter to accept defaults:")
         tokens["COG_ID"] = _prompt(
             "cog id", tokens["COG_ID"],
             "unique package identity, org/name — lowercase letters, digits, "
@@ -205,7 +205,7 @@ def cmd_new(args):
         tokens["SUMMARY"] = _prompt(
             "one-sentence summary", tokens["SUMMARY"],
             "shown on the catalog card and in the manifest; replace the "
-            "minted default before publishing")
+            "created default before publishing")
         tokens["OWNER"] = _prompt(
             "owner (email)", tokens["OWNER"],
             "accountable contact recorded in the manifest")
@@ -226,7 +226,7 @@ def cmd_new(args):
         tokens["MODEL_COG_SOURCE"] = _prompt(
             "its source path", tokens["MODEL_COG_SOURCE"],
             "where resolve finds that default satisfier, relative to the "
-            "minted Cog")
+            "created Cog")
         raw = _prompt(
             "prohibits (comma-separated)",
             "send_external_message, modify_source_data",
@@ -236,7 +236,7 @@ def cmd_new(args):
             f"  - {p.strip()}" for p in raw.split(",") if p.strip())
         tokens["SUMMARY_ONELINE"] = " ".join(tokens["SUMMARY"].split())[:160]
 
-    result = smith_core.mint(dest, tokens, overlays=overlays)
+    result = smith_core.create(dest, tokens, overlays=overlays)
     findings = smith_check.check(result["dest"])
     if args.envelope:
         errors = [f for f in findings if f["level"] == "error"]
@@ -252,21 +252,21 @@ def cmd_new(args):
         }, problems=_problems(findings), started=started))
         return 1 if errors else 0
 
-    print(f"minted {tokens['COG_ID']} -> {result['dest']}")
+    print(f"created {tokens['COG_ID']} -> {result['dest']}")
     print(f"  {len(result['files'])} files; machinery: {', '.join(result['machinery'])}")
     print("  next: edit context/system.md + src/task_logic.py, then:")
     print("        pixi install && pixi run resolve && pixi run test")
     return smith_check.report(findings)
 
 
-def cmd_mint_models(args):
-    result = smith_models.mint_from_config(args.config, args.out_dir)
-    for name in result["minted"]:
-        print(f"minted {name} -> {result['out_dir']}/{name}")
+def cmd_generate_descriptors(args):
+    result = smith_models.generate_from_config(args.config, args.out_dir)
+    for name in result["created"]:
+        print(f"created {name} -> {result['out_dir']}/{name}")
     for name in result["skipped"]:
         print(f"skipped {name} (already exists)")
     rc = 0
-    for name in result["minted"]:
+    for name in result["created"]:
         findings = smith_check.check(Path(result["out_dir"]) / name)
         errors = [f for f in findings if f["level"] == "error"]
         if errors:
@@ -319,11 +319,11 @@ def main():
     ap = argparse.ArgumentParser(prog="smith", description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("new", help="mint a new Cog from the template")
+    p = sub.add_parser("new", help="create a new Cog from the template")
     p.add_argument("--dir", help="destination directory (or the request's "
                                  "\"dir\"; a given flag wins)")
     p.add_argument("--from-request", dest="from_request", metavar="REQ.json",
-                   help="mint from a mint-request JSON document (the "
+                   help="create from a cog-request JSON document (the "
                         "drafting-cog seam; implies non-interactive; "
                         "explicit flags override request values)")
     p.add_argument("--name", help="cog short name (default: dir basename)")
@@ -343,14 +343,14 @@ def main():
                    help="emit an envelope-v1 result (use with --yes)")
     p.set_defaults(fn=cmd_new)
 
-    p = sub.add_parser("mint-model-cog",
-                       help="mint deployment-descriptor model cogs from a "
+    p = sub.add_parser("generate-descriptors",
+                       help="create deployment-descriptor model cogs from a "
                             "model catalog config")
     p.add_argument("--config", required=True,
                    help="model catalog YAML (see examples/model-catalog.yaml)")
     p.add_argument("--out-dir", required=True,
-                   help="directory to mint the descriptor cogs into")
-    p.set_defaults(fn=cmd_mint_models)
+                   help="directory to create the descriptor cogs into")
+    p.set_defaults(fn=cmd_generate_descriptors)
 
     p = sub.add_parser("check", help="validate a Cog package")
     p.add_argument("path")
@@ -370,7 +370,7 @@ def main():
     args = ap.parse_args()
     try:
         return args.fn(args)
-    except (smith_core.MintError, smith_models.ModelConfigError) as e:
+    except (smith_core.CreateError, smith_models.ModelConfigError) as e:
         return _cli_error(args, str(e))
     except FileNotFoundError as e:
         return _cli_error(args, f"not found: {e.filename or e}")

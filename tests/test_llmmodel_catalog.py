@@ -1,7 +1,7 @@
-"""LLMModel CRs -> catalog -> minted descriptors (hub note, step 1).
+"""LLMModel CRs -> catalog -> created descriptors (hub note, step 1).
 
 The generator is pack-neutral (stdlib + pyyaml, no smith imports); the
-integration test proves its output feeds mint_from_config and the minted
+integration test proves its output feeds generate_from_config and the created
 descriptors pass the checker's descriptor rules.
 """
 import json
@@ -98,7 +98,7 @@ class TestGenerator(unittest.TestCase):
 
 
 class TestEndToEnd(unittest.TestCase):
-    def test_generated_catalog_mints_passing_descriptors(self):
+    def test_generated_catalog_creates_passing_descriptors(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "llmmodels"
             src.mkdir()
@@ -112,10 +112,10 @@ class TestEndToEnd(unittest.TestCase):
                  "--owner", "trent@openteams.com", "-o", str(out)],
                 capture_output=True, text=True, timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr)
-            result = smith_models.mint_from_config(out, Path(tmp) / "models")
-            self.assertEqual(sorted(result["minted"]),
+            result = smith_models.generate_from_config(out, Path(tmp) / "models")
+            self.assertEqual(sorted(result["created"]),
                              ["cog-devstral-small", "cog-qwen35b"])
-            for name in result["minted"]:
+            for name in result["created"]:
                 findings = smith_check.check(Path(tmp) / "models" / name)
                 errors = [f for f in findings if f["level"] == "error"]
                 self.assertEqual(errors, [], (name, errors))

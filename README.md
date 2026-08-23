@@ -1,6 +1,6 @@
 # cog-smith
 
-The Cog builder — engineer-facing, "closer to a compiler." Mints complete,
+The Cog builder — engineer-facing, "closer to a compiler." Creates complete,
 immediately runnable Cogs from review-hardened machinery; validates them;
 renders the catalog card consumers see.
 
@@ -13,24 +13,24 @@ pixi install
 pixi run new -- --dir ../cog-my-worker          # interactive builder questions
 pixi run new -- --dir ../cog-my-worker --yes    # scripted, defaults
 pixi run check -- ../cog-my-worker --envelope   # envelope-v1 JSON (Op seam)
-pixi run new -- --from-request request.json --envelope  # mint from a drafting
+pixi run new -- --from-request request.json --envelope  # create from a drafting
                                                 # cog's request (see examples/)
 cd ../cog-my-worker
 pixi install && pixi run resolve && pixi run check -- --deep
 pixi run ask -- --bundle examples/sample-bundle.json
 ```
 
-A minted Cog ships with: manifest (in-manifest input schema — no overlays),
+A created Cog ships with: manifest (in-manifest input schema — no overlays),
 envelope-v1 entry points (web API + CLI), the forge binding/resolve/eval
 machinery, a grounding contract check (verbatim quotes), an eval fixture, and
-a model-free test suite that passes at mint time. Edit `context/` and
+a model-free test suite that passes at creation time. Edit `context/` and
 `src/task_logic.py`; everything else is shared machinery enforced by
 `pixi run check` (“smith check”).
 
-## Minting a hosting environment's model offering
+## Creating a hosting environment's model offering
 
 ```bash
-pixi run mint-model-cog -- --config examples/model-catalog.yaml --out-dir ../models
+pixi run generate-descriptors -- --config examples/model-catalog.yaml --out-dir ../models
 ```
 
 The catalog can be generated from a hub's llm-serving-pack `LLMModel` CRs
@@ -39,7 +39,7 @@ The catalog can be generated from a hub's llm-serving-pack `LLMModel` CRs
 ```bash
 python scripts/llmmodel_catalog.py path/to/models/ \
   --surface internal --base-domain cluster.example.com -o /tmp/catalog.yaml
-pixi run mint-model-cog -- --config /tmp/catalog.yaml --out-dir ../models
+pixi run generate-descriptors -- --config /tmp/catalog.yaml --out-dir ../models
 ```
 
 The generator is pack-neutral (stdlib + pyyaml, no smith imports) so it can

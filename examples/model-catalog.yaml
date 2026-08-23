@@ -1,6 +1,6 @@
 # Example model catalog — the hub's model offering as data.
-#   pixi run mint-model-cog -- --config examples/model-catalog.yaml --out-dir ../models
-# One descriptor cog is minted per entry (one cog per served model — never a
+#   pixi run generate-descriptors -- --config examples/model-catalog.yaml --out-dir ../models
+# One descriptor cog is created per entry (one cog per served model — never a
 # parameterized gateway cog; identity and pinning are per served model).
 defaults:
   owner: trent@openteams.com

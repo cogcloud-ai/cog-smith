@@ -1,7 +1,7 @@
 ---
 type: cog [0.1]
 name: cog-smith
-description: Context Cog. The Cog builder — mints complete runnable Cogs from review-hardened machinery, validates them, and renders their catalog cards. Engineer-facing ("closer to a compiler").
+description: Context Cog. The Cog builder — creates complete runnable Cogs from review-hardened machinery, validates them, and renders their catalog cards. Engineer-facing ("closer to a compiler").
 version: "0.1.0"
 license: BSD-3-Clause
 publisher: OpenTeams
@@ -18,16 +18,16 @@ compiler").
 
 ## Ops
 
-- `new` — mint a Cog: interactive (Travis's builder questions) or flag-driven
-  (`--yes`). The minted package is immediately runnable: resolve → check
+- `new` — create a Cog: interactive (Travis's builder questions) or flag-driven
+  (`--yes`). The created package is immediately runnable: resolve → check
   --deep → ask, with the envelope-v1 contract, in-manifest input schema,
   grounding contract check, fixtures, and a model-free test suite included.
-- `check` — validate any minted Cog: manifest integrity, schema/example
+- `check` — validate any created Cog: manifest integrity, schema/example
   agreement, machinery copy-sync against cog-smith's masters,
   interface/task consistency; `--tests` also runs the Cog's own suite.
-- `mint-model-cog` — a hosting environment's model offering as data:
+- `generate-descriptors` — a hosting environment's model offering as data:
   one deployment-descriptor model cog per catalog entry, checked at
-  mint (credential-reference and endpoint-hygiene rules enforced).
+  create (credential-reference and endpoint-hygiene rules enforced).
 - `card` — the catalog card: exactly what CogCloud and the Op builder's
   picker would render, derived from declarations only.
 

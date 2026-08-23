@@ -1,6 +1,6 @@
 # Result envelope v1 (the Collab profile, decided by template)
 
-Every Cog minted by cog-smith emits this envelope from its task entry
+Every Cog created by cog-smith emits this envelope from its task entry
 points. This is the concrete form of two decisions the spec deliberately
 left to hosting environments (see `op-cog-seam.md` and the capability-list
 framing): the payload key and the pass/fail surface. It is **the Collab

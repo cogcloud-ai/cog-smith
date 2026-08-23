@@ -77,10 +77,10 @@ CogSpec describes three broad kinds:
 | **complete** | Yes | Yes |
 
 Cog Smith currently provides a supported starter for **context Cogs**. Its
-model-catalog command, **mint-model-cog**, also creates OpenTeams deployment
+model-catalog command, **generate-descriptors**, also creates OpenTeams deployment
 descriptors:
 
-    pixi run mint-model-cog -- --config examples/model-catalog.yaml \
+    pixi run generate-descriptors -- --config examples/model-catalog.yaml \
       --out-dir ../models
 
 Those descriptors are profile-specific records that identify a served model and
@@ -176,7 +176,7 @@ The input is a task bundle that conforms to the Cog's input schema.
 
 ### Read the result envelope
 
-Cogs minted by the current Smith template return envelope v1. Important fields
+Cogs created by the current Smith template return envelope v1. Important fields
 include:
 
 | Field | Meaning |
@@ -253,7 +253,7 @@ A fresh Cog currently looks like this:
     └── tests/
         └── test_cog.py
 
-The minted .gitignore already excludes model.json, the Pixi environment,
+The created .gitignore already excludes model.json, the Pixi environment,
 caches, and local run reports, so the installation-state items in the
 definition of done are pre-wired; do not weaken it.
 
@@ -280,7 +280,7 @@ You are expected to edit:
 
 Every Python file under src/ except task_logic.py is shared Cog Smith machinery.
 
-Do not edit those files inside a minted Cog. Smith verifies them by hash. A
+Do not edit those files inside a created Cog. Smith verifies them by hash. A
 shared runtime bug must be fixed once in cog-smith/templates/context-cog/src/,
 documented in [MACHINERY.md](MACHINERY.md), regression-tested, and then rolled
 out deliberately.
@@ -325,13 +325,13 @@ Start in the Cog Smith directory:
     pixi install
     pixi run test
 
-### Step 1: mint the package
+### Step 1: create the package
 
 For the interactive builder:
 
     pixi run new -- --dir ../cog-release-brief
 
-For a scripted mint, pass the yes flag and explicit values:
+For a scripted create, pass the yes flag and explicit values:
 
     pixi run new -- \
       --dir ../cog-release-brief \
@@ -353,11 +353,11 @@ before writing, renders into a staging directory, verifies rendering, and only
 then moves the package into place. The new command runs the package checker
 immediately afterward.
 
-### Minting from a request file
+### Creating from a request file
 
 A third path suits automation — a drafting tool, or the Builder Op's drafting
 Cog: put the builder answers and, optionally, the drafted context files into
-one mint-request JSON document and mint from it:
+one cog-request JSON document and create from it:
 
     pixi run new -- --from-request request.json --envelope
 
@@ -365,19 +365,19 @@ The request carries the identity answers (id, summary, owner, license, port,
 produces, prohibits, the default model satisfier) plus optional overlays:
 context/system.md, the input and output schemas, the worked example, the
 sample bundle, the eval fixture, and COG.md. Overlays are applied inside the
-same atomic mint, and the checker runs on the result — so a request whose
+same atomic creation, and the checker runs on the result — so a request whose
 example disagrees with its schema fails visibly, not silently. Explicit flags
 override request values; the flag implies non-interactive. Overlays never
 touch src/: task_logic.py and the tests remain the starter's, so Step 2 still
 applies when your drafted schemas diverge from the grounded-highlights shape.
-See examples/mint-request.json in cog-smith for the format.
+See examples/cog-request.json in cog-smith for the format.
 
 ### Step 2: replace the starter task completely
 
 The current starter is intentionally a working **grounded highlights** task.
 It is not a neutral blank package. Search for starter-specific language:
 
-    rg -n "highlight|item_ids|evidence_quote|Minted default|replace" \
+    rg -n "highlight|item_ids|evidence_quote|Starter default|replace" \
       ../cog-release-brief
 
 Use grep -rnE with the same pattern if ripgrep is not installed. Review every
@@ -528,7 +528,7 @@ From cog-smith, run the package checker and the Cog's deterministic tests:
 
     pixi run check -- ../cog-release-brief --tests
 
-Note that check means something different inside a minted Cog, where it is the
+Note that check means something different inside a created Cog, where it is the
 Cog's lifecycle health operation; see section 9.
 
 For programmatic consumption — a Builder Op, for instance — new, check, and
@@ -573,8 +573,8 @@ Use the declared default satisfier:
 
     pixi run resolve
 
-Or select a different compatible descriptor, such as one minted earlier with
-mint-model-cog:
+Or select a different compatible descriptor, such as one created earlier with
+generate-descriptors:
 
     pixi run resolve -- --satisfier ../models/cog-approved-model
 
@@ -592,7 +592,7 @@ runtime environment:
 
 ### Or point at a preset endpoint with use
 
-The minted package also carries a lifecycle operation named **use** that
+The created package also carries a lifecycle operation named **use** that
 points the Cog at a named endpoint preset instead of a satisfier Cog:
 
     pixi run use -- --show
@@ -613,7 +613,7 @@ Run the deep identity check before trusting live results:
     pixi run check -- --deep
 
 This command is different from running the Smith package checker in the
-cog-smith directory. Inside a minted Cog, check is the Cog's lifecycle health
+cog-smith directory. Inside a created Cog, check is the Cog's lifecycle health
 operation.
 
 ### Invoke the CLI operation
@@ -703,7 +703,7 @@ Examples:
 Make those changes in COG.md, cog.yaml, context/, examples/, evals/, tests/, or
 src/task_logic.py.
 
-### Change Cog Smith when the issue affects every minted Cog
+### Change Cog Smith when the issue affects every created Cog
 
 Examples:
 
@@ -716,9 +716,9 @@ Examples:
 - a security or portability defect in common machinery.
 
 Make the correction in cog-smith, update MACHINERY.md when shared machinery
-changes, add a regression test, validate a fresh mint, and verify at least one
+changes, add a regression test, validate a fresh creation, and verify at least one
 real existing Cog. Do not patch the same shared file independently in several
-minted Cogs.
+created Cogs.
 
 ### Preserve contract compatibility
 
@@ -746,14 +746,14 @@ A coding agent working on a Cog should follow this sequence:
 4. Inspect input schema, output schema, worked example, fixture, and
    task_logic.py as one contract.
 5. Preserve user-owned changes and do not edit unrelated files.
-6. Never edit shared src/ machinery inside a minted Cog.
+6. Never edit shared src/ machinery inside a created Cog.
 7. Never add secrets, authority grants, or undeclared external actions.
 8. Prefer deterministic validation and model-free tests before live-model work.
 9. Update documentation, examples, fixtures, and tests with behavior changes.
 10. Run Smith checking with tests, render the card, and report the exact
     verification performed.
 11. If shared machinery must change, work in cog-smith, update provenance, and
-    prove that a fresh mint still passes.
+    prove that a fresh creation still passes.
 12. Call out profile proposals as proposals; do not present them as universal
     CogSpec guarantees.
 
@@ -773,7 +773,7 @@ one Cog.
 
 ## 13. Common problems
 
-### Smith refuses to mint without the yes flag
+### Smith refuses to create without the yes flag
 
 Non-interactive environments must opt into defaults explicitly. Add the yes flag
 and provide important values as command options.
@@ -786,7 +786,7 @@ error.
 
 ### Resolution cannot find the default model Cog
 
-The default source is relative to the minted package and may not exist outside
+The default source is relative to the created package and may not exist outside
 this workspace layout. Pass a compatible satisfier explicitly or update the
 manifest's declared default.
 
@@ -821,7 +821,7 @@ as trusted output or retain it as a baseline.
 
 ### The local HTTP port is busy
 
-Use COG_API_PORT for local testing, or mint with a different declared port.
+Use COG_API_PORT for local testing, or create with a different declared port.
 Remember that a runtime override does not rewrite the portable manifest.
 
 ## 14. Further reading

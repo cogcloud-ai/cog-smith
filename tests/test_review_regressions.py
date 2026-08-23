@@ -22,21 +22,21 @@ import smith_core    # noqa: E402
 import smith_models  # noqa: E402
 
 
-def mint_tmp(tmp, name="cog-toy", **overrides):
+def create_tmp(tmp, name="cog-toy", **overrides):
     dest = Path(tmp) / name
-    smith_core.mint(dest, smith_core.default_tokens(name, **overrides))
+    smith_core.create(dest, smith_core.default_tokens(name, **overrides))
     return dest
 
 
 class TestF1CheckerLayers(unittest.TestCase):
     def test_bad_name_now_fails_check(self):
-        """Review repro: 'Cog--Bad_Name' minted and PASSed. Now the mint is
+        """Review repro: 'Cog--Bad_Name' created and PASSed. Now the create is
         refused outright, and a hand-made bad package fails core."""
         with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(smith_core.MintError):
-                mint_tmp(tmp, name="Cog--Bad_Name")
+            with self.assertRaises(smith_core.CreateError):
+                create_tmp(tmp, name="Cog--Bad_Name")
             # hand-build one to prove check catches it independently
-            dest = mint_tmp(tmp, name="cog-okay")
+            dest = create_tmp(tmp, name="cog-okay")
             bad = Path(tmp) / "Cog--Bad_Name"
             dest.rename(bad)
             text = (bad / "COG.md").read_text().replace("cog-okay",
@@ -48,14 +48,14 @@ class TestF1CheckerLayers(unittest.TestCase):
 
     def test_findings_carry_layers(self):
         with tempfile.TemporaryDirectory() as tmp:
-            findings = smith_check.check(mint_tmp(tmp))
+            findings = smith_check.check(create_tmp(tmp))
             self.assertTrue(all(f.get("layer") in ("core", "profile",
                                                    "runtime")
                                 for f in findings))
 
     def test_missing_core_frontmatter_is_core_layer(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             text = (dest / "COG.md").read_text().replace(
                 "manifest_schema: openteams/cog-manifest [0.1]\n", "")
             (dest / "COG.md").write_text(text)
@@ -71,14 +71,14 @@ class TestF1CheckerLayers(unittest.TestCase):
         self.assertEqual(errors, [], findings)
 
 
-class TestF2MintSafety(unittest.TestCase):
+class TestF2CreateSafety(unittest.TestCase):
     PUNCT = 'Reconciles "monthly: invoices" — & więcej; 100% #done'
 
     def test_punctuation_summary_survives_every_format(self):
         """Review repro: colon+quotes corrupted YAML frontmatter, TOML, and
         left a broken directory behind."""
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp, SUMMARY=self.PUNCT)
+            dest = create_tmp(tmp, SUMMARY=self.PUNCT)
             m = yaml.safe_load((dest / "cog.yaml").read_text())
             self.assertIn("monthly: invoices", m["summary"])
             fm = smith_check.FRONTMATTER_RE.match((dest / "COG.md").read_text())
@@ -102,16 +102,16 @@ class TestF2MintSafety(unittest.TestCase):
                         {"name": "cog-x",
                          "PROHIBITS_YAML": "  - rm -rf /"}):
                 name = bad.pop("name")
-                with self.assertRaises(smith_core.MintError):
-                    mint_tmp(tmp, name=name, **bad)
+                with self.assertRaises(smith_core.CreateError):
+                    create_tmp(tmp, name=name, **bad)
                 self.assertEqual(list(Path(tmp).iterdir()), [],
                                  f"stranded files after {name}")
 
-    def test_failed_mint_leaves_no_staging_debris(self):
+    def test_failed_create_leaves_no_staging_debris(self):
         with tempfile.TemporaryDirectory() as tmp:
             try:
-                mint_tmp(tmp, name="cog-x", PORT="not-a-port")
-            except smith_core.MintError:
+                create_tmp(tmp, name="cog-x", PORT="not-a-port")
+            except smith_core.CreateError:
                 pass
             self.assertEqual(list(Path(tmp).iterdir()), [])
 
@@ -163,8 +163,8 @@ class TestF3F4EnvelopeLive(unittest.TestCase):
         cls.port = cls.server.server_address[1]
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.cog = mint_tmp(cls.tmp.name)
-        # bind via a minted fixed-endpoint descriptor -> full resolve path
+        cls.cog = create_tmp(cls.tmp.name)
+        # bind via a created fixed-endpoint descriptor -> full resolve path
         cfg = Path(cls.tmp.name) / "cat.yaml"
         cfg.write_text(yaml.safe_dump({"models": [{
             "name": "mock-model",
@@ -172,7 +172,7 @@ class TestF3F4EnvelopeLive(unittest.TestCase):
             "locality": "local",
             "endpoint": f"http://127.0.0.1:{cls.port}/v1",
         }]}))
-        smith_models.mint_from_config(cfg, cls.tmp.name)
+        smith_models.generate_from_config(cfg, cls.tmp.name)
         r = subprocess.run(
             [sys.executable, "src/cog_resolve.py", "--satisfier",
              str(Path(cls.tmp.name) / "cog-mock-model"),
@@ -225,9 +225,9 @@ class TestF3F4EnvelopeLive(unittest.TestCase):
 
 
 class TestF7Card(unittest.TestCase):
-    def test_minted_cog_ops_split(self):
+    def test_created_cog_ops_split(self):
         with tempfile.TemporaryDirectory() as tmp:
-            c = smith_card.card(mint_tmp(tmp))
+            c = smith_card.card(create_tmp(tmp))
         self.assertEqual(c["ops"]["usage"], ["ask"])
         self.assertIn("serve", c["ops"]["lifecycle"])
         self.assertEqual(c["card"], 1)
@@ -243,7 +243,7 @@ class TestF8Catalog(unittest.TestCase):
         p.write_text(yaml.safe_dump({"models": models}))
         return p
 
-    def test_invalid_late_entry_mints_nothing(self):
+    def test_invalid_late_entry_generates_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._cfg([
                 {"name": "good", "served_model_id": "m",
@@ -253,9 +253,9 @@ class TestF8Catalog(unittest.TestCase):
             ], tmp)
             out = Path(tmp) / "out"
             with self.assertRaises(smith_models.ModelConfigError):
-                smith_models.mint_from_config(cfg, out)
+                smith_models.generate_from_config(cfg, out)
             self.assertFalse((out / "cog-good").exists(),
-                             "preflight must reject before ANY mint")
+                             "preflight must reject before ANY create")
 
     def test_duplicate_names_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,7 +266,7 @@ class TestF8Catalog(unittest.TestCase):
                  "endpoint": "https://y/v1"},
             ], tmp)
             with self.assertRaises(smith_models.ModelConfigError):
-                smith_models.mint_from_config(cfg, Path(tmp) / "out")
+                smith_models.generate_from_config(cfg, Path(tmp) / "out")
 
     def test_cog_name_without_name_works(self):
         """Review repro: documented-valid cog_name-only entry raised."""
@@ -274,14 +274,14 @@ class TestF8Catalog(unittest.TestCase):
             cfg = self._cfg([{"cog_name": "cog-via-cogname",
                               "served_model_id": "m",
                               "endpoint": "https://x/v1"}], tmp)
-            r = smith_models.mint_from_config(cfg, Path(tmp) / "out")
-            self.assertEqual(r["minted"], ["cog-via-cogname"])
+            r = smith_models.generate_from_config(cfg, Path(tmp) / "out")
+            self.assertEqual(r["created"], ["cog-via-cogname"])
 
-    def test_descriptor_marker_is_minted(self):
+    def test_descriptor_marker_is_generated(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._cfg([{"name": "x", "served_model_id": "m",
                               "endpoint": "https://x/v1"}], tmp)
-            smith_models.mint_from_config(cfg, Path(tmp) / "out")
+            smith_models.generate_from_config(cfg, Path(tmp) / "out")
             m = yaml.safe_load(
                 (Path(tmp) / "out" / "cog-x" / "cog.yaml").read_text())
             self.assertTrue(m["model"]["descriptor"])

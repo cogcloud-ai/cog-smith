@@ -1,7 +1,7 @@
 [workspace]
 name = "cog-smith"
 version = "0.1.0"
-description = "The Cog builder: mint, validate, and describe Cogs."
+description = "The Cog builder: create, validate, and describe Cogs."
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
@@ -14,5 +14,5 @@ jsonschema = "*"
 new = "python src/cogsmith_cli.py new"
 check = "python src/cogsmith_cli.py check"
 card = "python src/cogsmith_cli.py card"
-mint-model-cog = "python src/cogsmith_cli.py mint-model-cog"
+generate-descriptors = "python src/cogsmith_cli.py generate-descriptors"
 test = "python -m unittest discover -s tests -v"

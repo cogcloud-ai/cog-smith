@@ -1,5 +1,5 @@
 # cog-smith is itself a Cog: the builder is a cognitive-capability
-# provisioner whose bundled usage ops mint, validate, and describe Cogs.
+# provisioner whose bundled usage ops create, validate, and describe Cogs.
 # v0 ops are deterministic; the model-backed `draft` op arrives in v1
 # (it will declare a model-endpoint requirement then).
 
@@ -7,7 +7,7 @@ schema: openteams/cog-manifest [0.1]
 id: openteams/cog-smith
 version: "0.1.0"
 summary: >
-  Mints, validates, and describes Cogs: `new` scaffolds a complete runnable
+  Creates, validates, and describes Cogs: `new` scaffolds a complete runnable
   package from review-hardened machinery, `check` enforces manifest and
   copy-sync discipline, `card` renders the catalog card consumers see.
 license: BSD-3-Clause
@@ -29,9 +29,9 @@ interfaces:
     kind: command
     task: check
     audience: usage      # validates OTHER cogs — a user-facing capability here
-  - name: mint-model-cog
+  - name: generate-descriptors
     kind: command
-    task: mint-model-cog
+    task: generate-descriptors
     audience: usage
   - name: card
     kind: command
@@ -46,7 +46,7 @@ memory: none
 
 prohibits:
   - overwrite_existing_package
-  - publish_to_registry     # minting is local; publishing is a separate, deliberate act
+  - publish_to_registry     # creating is local; publishing is a separate, deliberate act
 
 evaluation:
   fixtures: []

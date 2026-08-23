@@ -1,4 +1,4 @@
-"""cog-smith test suite: minting, checking, carding — model-free."""
+"""cog-smith test suite: creating, checking, carding — model-free."""
 import json
 import shutil
 import subprocess
@@ -17,17 +17,17 @@ import smith_check  # noqa: E402
 import smith_core   # noqa: E402
 
 
-def mint_tmp(tmp, name="cog-toy", **overrides):
+def create_tmp(tmp, name="cog-toy", **overrides):
     dest = Path(tmp) / name
     tokens = smith_core.default_tokens(name, **overrides)
-    smith_core.mint(dest, tokens)
+    smith_core.create(dest, tokens)
     return dest
 
 
-class TestMint(unittest.TestCase):
-    def test_mint_produces_complete_package(self):
+class TestCreate(unittest.TestCase):
+    def test_create_produces_complete_package(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             for rel in ("cog.yaml", "COG.md", "pixi.toml", ".gitignore",
                         "context/system.md", "context/input-schema.json",
                         "context/output-schema.json",
@@ -46,20 +46,20 @@ class TestMint(unittest.TestCase):
 
     def test_no_unrendered_tokens_anywhere(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             for p in dest.rglob("*"):
                 if p.is_file() and p.suffix in (".yaml", ".md", ".json", ".toml"):
                     self.assertNotIn("{{", p.read_text(), p.name)
 
     def test_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as tmp:
-            mint_tmp(tmp)
-            with self.assertRaises(smith_core.MintError):
-                mint_tmp(tmp)
+            create_tmp(tmp)
+            with self.assertRaises(smith_core.CreateError):
+                create_tmp(tmp)
 
     def test_overrides_flow_through(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp, name="cog-ap-triage",
+            dest = create_tmp(tmp, name="cog-ap-triage",
                             SUMMARY="Triages AP exceptions.", PORT="8123",
                             PROHIBITS_YAML="  - approve_payment")
             m = yaml.safe_load((dest / "cog.yaml").read_text())
@@ -69,15 +69,15 @@ class TestMint(unittest.TestCase):
 
 
 class TestCheck(unittest.TestCase):
-    def test_fresh_mint_passes(self):
+    def test_fresh_creation_passes(self):
         with tempfile.TemporaryDirectory() as tmp:
-            findings = smith_check.check(mint_tmp(tmp))
+            findings = smith_check.check(create_tmp(tmp))
             errors = [f for f in findings if f["level"] == "error"]
             self.assertEqual(errors, [], findings)
 
     def test_machinery_drift_is_caught(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             core = dest / "src" / "cog_core.py"
             core.write_text(core.read_text() + "\n# sneaky edit\n")
             findings = smith_check.check(dest)
@@ -87,7 +87,7 @@ class TestCheck(unittest.TestCase):
 
     def test_task_logic_edits_are_allowed(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             tl = dest / "src" / "task_logic.py"
             tl.write_text(tl.read_text() + "\n# my cog's logic\n")
             errors = [f for f in smith_check.check(dest) if f["level"] == "error"]
@@ -95,7 +95,7 @@ class TestCheck(unittest.TestCase):
 
     def test_broken_example_is_caught(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             (dest / "examples" / "sample-bundle.json").write_text(
                 json.dumps({"focus": "x"}))     # violates input schema
             findings = smith_check.check(dest)
@@ -105,7 +105,7 @@ class TestCheck(unittest.TestCase):
 
     def test_missing_manifest_field_is_caught(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             m = yaml.safe_load((dest / "cog.yaml").read_text())
             del m["owner"]
             (dest / "cog.yaml").write_text(yaml.safe_dump(m))
@@ -113,9 +113,9 @@ class TestCheck(unittest.TestCase):
             self.assertTrue(any("owner" in f["detail"] for f in findings
                                 if f["level"] == "error"))
 
-    def test_minted_cog_tests_pass(self):
+    def test_created_cog_tests_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
-            dest = mint_tmp(tmp)
+            dest = create_tmp(tmp)
             r = subprocess.run([sys.executable, "-m", "unittest", "discover",
                                 "-s", "tests"], cwd=str(dest),
                                capture_output=True, text=True, timeout=300)
@@ -125,7 +125,7 @@ class TestCheck(unittest.TestCase):
 class TestCard(unittest.TestCase):
     def test_card_derives_from_declarations(self):
         with tempfile.TemporaryDirectory() as tmp:
-            c = smith_card.card(mint_tmp(tmp))
+            c = smith_card.card(create_tmp(tmp))
         self.assertEqual(c["id"], "openteams/cog-toy")
         self.assertEqual(c["ops"]["usage"], ["ask"])
         self.assertIn("resolve", c["ops"]["lifecycle"])
@@ -141,7 +141,7 @@ class TestCard(unittest.TestCase):
         self.assertEqual(c["id"], "openteams/cog-smith")
         # F7: check is USAGE for smith (validates OTHER cogs) — declared, not inferred
         self.assertEqual(set(c["ops"]["usage"]),
-                         {"new", "card", "mint-model-cog", "check"})
+                         {"new", "card", "generate-descriptors", "check"})
         self.assertEqual(c["card"], 1)
 
 
@@ -151,19 +151,19 @@ import smith_models  # noqa: E402
 CATALOG = ROOT / "examples" / "model-catalog.yaml"
 
 
-class TestMintModelCogs(unittest.TestCase):
-    def test_catalog_mints_and_all_pass_check(self):
+class TestGenerateDescriptors(unittest.TestCase):
+    def test_catalog_generates_and_all_pass_check(self):
         with tempfile.TemporaryDirectory() as tmp:
-            r = smith_models.mint_from_config(CATALOG, tmp)
-            self.assertEqual(len(r["minted"]), 3)
-            for name in r["minted"]:
+            r = smith_models.generate_from_config(CATALOG, tmp)
+            self.assertEqual(len(r["created"]), 3)
+            for name in r["created"]:
                 findings = smith_check.check(Path(tmp) / name)
                 errors = [f for f in findings if f["level"] == "error"]
                 self.assertEqual(errors, [], (name, findings))
 
     def test_descriptor_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
-            smith_models.mint_from_config(CATALOG, tmp)
+            smith_models.generate_from_config(CATALOG, tmp)
             m = yaml.safe_load(
                 (Path(tmp) / "cog-qwen35b-collab" / "cog.yaml").read_text())
             self.assertEqual(m["kind"], "model")
@@ -179,10 +179,10 @@ class TestMintModelCogs(unittest.TestCase):
 
     def test_existing_cogs_are_skipped_not_clobbered(self):
         with tempfile.TemporaryDirectory() as tmp:
-            smith_models.mint_from_config(CATALOG, tmp)
+            smith_models.generate_from_config(CATALOG, tmp)
             marker = Path(tmp) / "cog-qwen35b-collab" / "MARKER"
             marker.write_text("x")
-            r = smith_models.mint_from_config(CATALOG, tmp)
+            r = smith_models.generate_from_config(CATALOG, tmp)
             self.assertIn("cog-qwen35b-collab", r["skipped"])
             self.assertTrue(marker.exists())
 
@@ -196,14 +196,14 @@ class TestMintModelCogs(unittest.TestCase):
             cfg = self._cfg({"name": "x", "served_model_id": "m",
                              "api_key_env": "sk-abc123secretvalue"}, tmp)
             with self.assertRaises(smith_models.ModelConfigError):
-                smith_models.mint_from_config(cfg, Path(tmp) / "out")
+                smith_models.generate_from_config(cfg, Path(tmp) / "out")
 
     def test_plaintext_remote_endpoint_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._cfg({"name": "x", "served_model_id": "m",
                              "endpoint": "http://models.internal:8000/v1"}, tmp)
             with self.assertRaises(smith_models.ModelConfigError):
-                smith_models.mint_from_config(cfg, Path(tmp) / "out")
+                smith_models.generate_from_config(cfg, Path(tmp) / "out")
 
     def test_endpoint_and_address_together_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,11 +211,11 @@ class TestMintModelCogs(unittest.TestCase):
                              "endpoint": "https://a/v1",
                              "address": "install-time"}, tmp)
             with self.assertRaises(smith_models.ModelConfigError):
-                smith_models.mint_from_config(cfg, Path(tmp) / "out")
+                smith_models.generate_from_config(cfg, Path(tmp) / "out")
 
     def test_descriptor_check_catches_missing_provides(self):
         with tempfile.TemporaryDirectory() as tmp:
-            smith_models.mint_from_config(CATALOG, tmp)
+            smith_models.generate_from_config(CATALOG, tmp)
             root = Path(tmp) / "cog-sonnet-gateway"
             m = yaml.safe_load((root / "cog.yaml").read_text())
             del m["provides"]
@@ -227,7 +227,7 @@ class TestMintModelCogs(unittest.TestCase):
 
     def test_model_card_renders_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
-            smith_models.mint_from_config(CATALOG, tmp)
+            smith_models.generate_from_config(CATALOG, tmp)
             c = smith_card.card(Path(tmp) / "cog-qwen35b-collab")
             self.assertEqual(c["provides"], ["model-endpoint/openai-compatible"])
             self.assertEqual(c["locality"], "customer-vpc")

@@ -1,7 +1,7 @@
-"""Mint requests: the drafting-cog -> smith seam (builder-op note, item 3).
+"""Create requests: the drafting-cog -> smith seam (builder-op note, item 3).
 
-A mint request is one JSON document carrying the builder answers plus the
-drafted context files. `new --from-request` validates it, mints atomically
+A create request is one JSON document carrying the builder answers plus the
+drafted context files. `new --from-request` validates it, creates atomically
 with the overlays applied inside staging, and checks the result. Explicit
 flags override request values; overlays never touch src/.
 """
@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import smith_core   # noqa: E402
 
 CLI = ROOT / "src" / "cogsmith_cli.py"
-EXAMPLE = ROOT / "examples" / "mint-request.json"
+EXAMPLE = ROOT / "examples" / "cog-request.json"
 
 
 def run_cli(*argv):
@@ -37,8 +37,8 @@ def example_request(tmp, name="cog-req-toy", **edits):
     return path, Path(req["dir"])
 
 
-class TestMintFromRequest(unittest.TestCase):
-    def test_example_request_mints_and_passes_check(self):
+class TestCreateFromRequest(unittest.TestCase):
+    def test_example_request_creates_and_passes_check(self):
         with tempfile.TemporaryDirectory() as tmp:
             reqfile, dest = example_request(tmp)
             r = run_cli("new", "--from-request", str(reqfile), "--envelope")
@@ -92,7 +92,7 @@ class TestMintFromRequest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             reqfile, _ = example_request(tmp)
             req = json.loads(reqfile.read_text())
-            del req["mint_request"]
+            del req["cog_request"]
             reqfile.write_text(json.dumps(req))
             r = run_cli("new", "--from-request", str(reqfile), "--envelope")
             env = json.loads(r.stdout)
@@ -111,7 +111,7 @@ class TestMintFromRequest(unittest.TestCase):
             self.assertIn("destination required", env["error"]["detail"])
 
     def test_failed_overlay_leaves_no_debris(self):
-        # A bad request must not half-create the destination (atomic mint).
+        # A bad request must not half-create the destination (atomic creation).
         with tempfile.TemporaryDirectory() as tmp:
             reqfile, dest = example_request(tmp)
             req = json.loads(reqfile.read_text())
@@ -121,15 +121,15 @@ class TestMintFromRequest(unittest.TestCase):
             env = json.loads(r.stdout)
             self.assertFalse(env["ok"])
             self.assertFalse(dest.exists())
-            self.assertFalse(list(Path(tmp).glob(".mint-*")), "staging debris")
+            self.assertFalse(list(Path(tmp).glob(".smith-*")), "staging debris")
 
 
 class TestOverlayMechanics(unittest.TestCase):
     def test_overlay_path_escape_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "cog-esc-toy"
-            with self.assertRaises(smith_core.MintError):
-                smith_core.mint(dest, smith_core.default_tokens("cog-esc-toy"),
+            with self.assertRaises(smith_core.CreateError):
+                smith_core.create(dest, smith_core.default_tokens("cog-esc-toy"),
                                 overlays={"../outside.txt": "nope"})
             self.assertFalse(dest.exists())
             self.assertFalse((Path(tmp) / "outside.txt").exists())
@@ -138,7 +138,7 @@ class TestOverlayMechanics(unittest.TestCase):
         # Drafted content may legitimately contain {{BRACES}}.
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / "cog-brace-toy"
-            smith_core.mint(dest, smith_core.default_tokens("cog-brace-toy"),
+            smith_core.create(dest, smith_core.default_tokens("cog-brace-toy"),
                             overlays={"context/system.md":
                                       "Render {{PLACEHOLDER}} literally.\n"})
             self.assertIn("{{PLACEHOLDER}}",

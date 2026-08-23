@@ -1,15 +1,15 @@
-"""cog-smith core: mint-request validation, format-aware rendering, and
-atomic minting.
+"""cog-smith core: cog-request validation, format-aware rendering, and
+atomic creation.
 
 Review 2026-08-22 hardening (F2): builder answers are TYPED and VALIDATED
 before anything touches disk; values that land in structured formats are
 inserted through format-aware serialization tokens (``*_TOML``, ``*_YAML``
-variants produced here with json/yaml serializers), never raw; minting is
+variants produced here with json/yaml serializers), never raw; creating is
 ATOMIC — rendered into a staging sibling, validated for unrendered tokens,
 then renamed into place; any failure removes the staging directory and the
 destination is never half-created.
 
-A minted Cog = rendered templates (identity, context, examples, tests) +
+A created Cog = rendered templates (identity, context, examples, tests) +
 verbatim machinery (everything in templates/<t>/src/ except task_logic.py,
 which the author owns). `smith check` verifies machinery against these
 masters — the same copy-sync discipline as cog-forge.
@@ -23,7 +23,7 @@ from pathlib import Path
 SMITH_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = SMITH_ROOT / "templates"
 
-# Files the author edits after minting (rendered or copied, never sync-checked)
+# Files the author edits after creating (rendered or copied, never sync-checked)
 AUTHOR_OWNED_SRC = {"task_logic.py"}
 
 # Conventional lifecycle tasks — the FALLBACK classification when an
@@ -40,7 +40,7 @@ COG_ID_RE = re.compile(r"^[a-z][a-z0-9-]*/[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 TOKEN_WORD_RE = re.compile(r"^[a-z][a-z0-9_]*$")     # io values, prohibits
 
 
-class MintError(Exception):
+class CreateError(Exception):
     pass
 
 
@@ -60,7 +60,7 @@ def render(text, tokens):
     def sub(m):
         key = m.group(1)
         if key not in tokens:
-            raise MintError(f"template references undefined token {{{{{key}}}}}")
+            raise CreateError(f"template references undefined token {{{{{key}}}}}")
         return str(tokens[key])
     return TOKEN_RE.sub(sub, text)
 
@@ -70,8 +70,8 @@ def _one_line(s):
 
 
 def validate_request(tokens):
-    """Validate the typed mint request BEFORE creating anything (F2).
-    Raises MintError with every problem, not just the first."""
+    """Validate the typed create request BEFORE creating anything (F2).
+    Raises CreateError with every problem, not just the first."""
     problems = []
 
     name = str(tokens.get("COG_NAME", ""))
@@ -109,7 +109,7 @@ def validate_request(tokens):
                             f"token (letters, digits, underscores)")
 
     if problems:
-        raise MintError("invalid mint request:\n  - " + "\n  - ".join(problems))
+        raise CreateError("invalid create request:\n  - " + "\n  - ".join(problems))
 
 
 def _serialization_tokens(tokens):
@@ -129,7 +129,7 @@ def _serialization_tokens(tokens):
 
 
 def default_tokens(cog_name, **overrides):
-    """Answer set for a mint. cog_name is the directory / short name
+    """Answer set for a package creation. cog_name is the directory / short name
     (e.g. 'cog-meeting-highlights')."""
     short = cog_name[4:] if cog_name.startswith("cog-") else cog_name
     tokens = {
@@ -137,7 +137,7 @@ def default_tokens(cog_name, **overrides):
         "COG_ID": f"openteams/{cog_name}",
         "TITLE": short.replace("-", " ").title(),
         "SUMMARY": "Produces grounded, cited highlights from supplied items. "
-                   "(Minted default — replace.)",
+                   "(Starter default — replace.)",
         "OWNER": "trent@openteams.com",
         "LICENSE": "BSD-3-Clause",
         "PUBLISHER": "OpenTeams",
@@ -151,7 +151,7 @@ def default_tokens(cog_name, **overrides):
     return tokens
 
 
-def mint(dest, tokens, template="context-cog", validate=True, overlays=None):
+def create(dest, tokens, template="context-cog", validate=True, overlays=None):
     """Create a new Cog package at dest, atomically. The destination never
     exists half-built: rendering happens in a staging sibling which is
     renamed into place only after every file rendered cleanly.
@@ -159,21 +159,21 @@ def mint(dest, tokens, template="context-cog", validate=True, overlays=None):
     overlays: optional {relative-path: text} written into the staging
     directory AFTER template rendering and the leftover-token check, so a
     drafting cog's authored context files replace the starter's inside the
-    same atomic mint (the builder-op seam). Overlay content is written
+    same atomic creation (the builder-op seam). Overlay content is written
     verbatim — it is not token-rendered and not token-checked, because
     drafted content may legitimately contain braces."""
     dest = Path(dest).resolve()
     if dest.exists():
-        raise MintError(f"{dest} already exists — refusing to overwrite")
+        raise CreateError(f"{dest} already exists — refusing to overwrite")
     troot = TEMPLATES / template
     if not troot.is_dir():
-        raise MintError(f"unknown template {template!r}")
+        raise CreateError(f"unknown template {template!r}")
 
     if validate and template == "context-cog":
         validate_request(tokens)
     tokens = _serialization_tokens(tokens)
 
-    staging = dest.parent / f".mint-{dest.name}.tmp"
+    staging = dest.parent / f".smith-{dest.name}.tmp"
     if staging.exists():
         shutil.rmtree(staging)
     written = []
@@ -203,13 +203,13 @@ def mint(dest, tokens, template="context-cog", validate=True, overlays=None):
                 if TOKEN_RE.search(p.read_text()):
                     leftover.append(f)
         if leftover:
-            raise MintError(f"unrendered tokens remain in: {leftover}")
+            raise CreateError(f"unrendered tokens remain in: {leftover}")
 
         staging_root = staging.resolve()
         for rel, text in (overlays or {}).items():
             out = (staging / rel)
             if staging_root not in out.resolve().parents:
-                raise MintError(f"overlay path escapes the package: {rel!r}")
+                raise CreateError(f"overlay path escapes the package: {rel!r}")
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text(str(text))
             if str(rel) not in written:
