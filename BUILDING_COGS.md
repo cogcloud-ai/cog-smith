@@ -512,6 +512,12 @@ From cog-smith, run the package checker and the Cog's deterministic tests:
 Note that check means something different inside a minted Cog, where it is the
 Cog's lifecycle health operation; see section 9.
 
+For programmatic consumption — a Builder Op, for instance — new, check, and
+card accept an envelope flag and emit envelope v1 instead of text: checker
+findings ride in problems (ok-with-problems; a Gate decides), and binding is
+null because Cog Smith is a deterministic tooling Cog with no model
+dependency.
+
 Checker findings are labeled by layer:
 
 - **core** — CogSpec artifact and frontmatter rules;

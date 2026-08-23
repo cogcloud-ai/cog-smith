@@ -12,6 +12,7 @@ workflow, and the rules coding agents should follow when improving one.
 pixi install
 pixi run new -- --dir ../cog-my-worker          # interactive builder questions
 pixi run new -- --dir ../cog-my-worker --yes    # scripted, defaults
+pixi run check -- ../cog-my-worker --envelope   # envelope-v1 JSON (Op seam)
 cd ../cog-my-worker
 pixi install && pixi run resolve && pixi run check -- --deep
 pixi run ask -- --bundle examples/sample-bundle.json

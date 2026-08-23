@@ -6,9 +6,12 @@ the single source of the machinery every minted Cog carries.
 
 ## Commands
 
-- Mint: `pixi run new -- --dir ../cog-<name> [--yes ...flags]`
-- Validate: `pixi run check -- <path> [--tests]`
-- Card: `pixi run card -- <path> [--json]`
+- Mint: `pixi run new -- --dir ../cog-<name> [--yes ...flags] [--envelope]`
+- Validate: `pixi run check -- <path> [--tests] [--envelope]`
+- Card: `pixi run card -- <path> [--json | --envelope]`
+- `--envelope` emits envelope v1 for Op consumption (builder-op note):
+  binding null (deterministic tooling cog), findings in `problems`,
+  ok-with-problems semantics; exit codes unchanged.
 - Model catalog: `pixi run mint-model-cog -- --config <yaml> --out-dir <dir>`
 - Tests: `python3 -m unittest discover -s tests` — the model-free suite
   plus `tests/test_review_regressions.py` (one test per 2026-08-22 review
