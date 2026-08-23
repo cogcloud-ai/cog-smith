@@ -18,6 +18,9 @@ the single source of the machinery every minted Cog carries.
   binding null (deterministic tooling cog), findings in `problems`,
   ok-with-problems semantics; exit codes unchanged.
 - Model catalog: `pixi run mint-model-cog -- --config <yaml> --out-dir <dir>`
+- Catalog from a hub: `python scripts/llmmodel_catalog.py <LLMModel yaml/dir>
+  [--surface internal|external|install-time] [--base-domain <domain>]` —
+  pack-neutral (no smith imports); emits mint-model-cog's config.
 - Tests: `python3 -m unittest discover -s tests` — the model-free suite
   plus `tests/test_review_regressions.py` (one test per 2026-08-22 review
   finding; never delete these). The 3.10 floor is real and exercised: the

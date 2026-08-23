@@ -33,6 +33,18 @@ a model-free test suite that passes at mint time. Edit `context/` and
 pixi run mint-model-cog -- --config examples/model-catalog.yaml --out-dir ../models
 ```
 
+The catalog can be generated from a hub's llm-serving-pack `LLMModel` CRs
+(files, directories, or `kubectl get llmmodels -o yaml | ...`):
+
+```bash
+python scripts/llmmodel_catalog.py path/to/models/ \
+  --surface internal --base-domain cluster.example.com -o /tmp/catalog.yaml
+pixi run mint-model-cog -- --config /tmp/catalog.yaml --out-dir ../models
+```
+
+The generator is pack-neutral (stdlib + pyyaml, no smith imports) so it can
+move into a hub-side pack unchanged.
+
 One deployment-descriptor model cog per catalog entry (pattern:
 cog-collab-qwen35b) — never a parameterized gateway cog, because identity
 and pinning are per served model. Descriptors carry pinnable identity and
