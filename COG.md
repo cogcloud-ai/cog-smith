@@ -21,7 +21,7 @@ compiler").
 - `new` — mint a Cog: interactive (Travis's builder questions) or flag-driven
   (`--yes`). The minted package is immediately runnable: resolve → check
   --deep → ask, with the envelope-v1 contract, in-manifest input schema,
-  grounding guard, fixtures, and a model-free test suite included.
+  grounding contract check, fixtures, and a model-free test suite included.
 - `check` — validate any minted Cog: manifest integrity, schema/example
   agreement, machinery copy-sync against cog-smith's masters,
   interface/task consistency; `--tests` also runs the Cog's own suite.

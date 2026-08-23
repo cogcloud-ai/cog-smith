@@ -46,9 +46,13 @@ Field rules:
   `model-response-malformed`. When set, `ok` is false and HTTP status maps
   4xx/5xx as in the forge Cogs (422 invalid-input; 502 upstream fault;
   503 unavailable/binding).
-- **`problems`** — structured, for Guards: `check` (machine-readable
+- **`problems`** — the Cog's self-reported contract-check findings,
+  structured for Guards and Gates to consume: `check` (machine-readable
   category: `schema`, `grounding`, `citation`, `identity`, `input`, …),
-  `detail` (human sentence), `severity` (`error` | `warn`).
+  `detail` (human sentence), `severity` (`error` | `warn`). These are
+  produced by the Cog checking its OWN declared contract; an independent
+  Guard verifies against the system's requirements and never treats this
+  self-report as its verdict.
 - **`binding`** — the Track fields: the complete binding identity copied
   into every result, so a saved result identifies its run (which pinned
   model, which endpoint, identity verdict, violations) without reading

@@ -28,7 +28,7 @@ different layers:
 |---|---|---|
 | **CogSpec core** | The portable artifact: COG.md, its frontmatter, and the manifest it identifies | [CogSpec](../cog-spec/SPEC.md) |
 | **OpenTeams/Collab profile** | The current manifest fields, entry-point conventions, result envelope, binding, and hosting expectations used by this workspace | [Envelope](ENVELOPE.md) and the generated cog.yaml |
-| **A particular Cog** | One worker's purpose, inputs, outputs, instructions, guards, tests, and declared dependencies | Its COG.md, cog.yaml, context/, and task_logic.py |
+| **A particular Cog** | One worker's purpose, inputs, outputs, instructions, contract checks, tests, and declared dependencies | Its COG.md, cog.yaml, context/, and task_logic.py |
 
 A Cog can conform to the public core while not being runnable in a particular
 hosting environment. A hosting environment is allowed to require a stricter
@@ -188,14 +188,26 @@ include:
 | **error** | Structured {code, detail} failure — binding, input, or upstream — when present |
 | **payload** | Domain result shaped by the Cog's output schema |
 | **raw** | Verbatim model response for audit and salvage |
-| **problems** | Structured schema, grounding, citation, identity, or other integrity findings |
+| **problems** | Self-reported contract-check findings: schema, grounding, citation, identity, or other integrity problems |
 | **binding** | The complete model and satisfier identity for this run |
 | **timing** | Invocation latency |
 
 An important rule is that **ok can be true while problems is non-empty**. That
-means the model produced a parseable result, but a guard found an integrity
-problem. A human or automated Gate decides whether to accept it. The Cog should
-not hide that distinction.
+means the model produced a parseable result, but one of the Cog's own contract
+checks found an integrity problem. A human or automated Gate decides whether to
+accept it. The Cog should not hide that distinction.
+
+Keep the three verification tiers distinct. **Contract checks** run inside the
+Cog: it declares a contract in its definition and checks that it meets that
+contract before its output interacts with anything outside itself; the problems
+list is that self-report. **Guards** are independent, first-class entities in
+the surrounding system — first-class just like Cogs — that verify a Cog's
+inputs and outputs against the *system's* requirements, not the Cog's own
+commitments. A Guard may re-run the same deterministic logic a contract check
+ran, but it runs independently and under the system's authority. **Gates**
+decide, consuming both the self-report and any Guard verdicts. A Cog's
+self-report never substitutes for a Guard, and neither substitutes for the
+Gate's decision. Do not call in-Cog checks guards.
 
 ### Compose Cogs into Ops
 
@@ -206,8 +218,9 @@ The Op layer only needs four things from a Cog:
 3. a health probe; and
 4. a catalog card.
 
-The Cog owns its model binding, internal machinery, and deterministic guards.
-The Op owns sequencing, human approvals, gates, and durable workflow state. See
+The Cog owns its model binding, internal machinery, and its contract checks.
+The Op layer owns sequencing, human approvals, gates, independent Guards, and
+durable workflow state. See
 [The Op–Cog seam](../output/op-cog-seam.md) for the current architecture note.
 
 ## 5. Anatomy of a Cog Smith context Cog
@@ -258,9 +271,10 @@ You are expected to edit:
   model.
 - **examples/sample-bundle.json** — a realistic example input.
 - **evals/smoke.fixture.yaml** — model-backed expectations.
-- **tests/test_cog.py** — deterministic, model-free contract and guard tests.
+- **tests/test_cog.py** — deterministic, model-free tests of the contracts
+  and the contract checks.
 - **src/task_logic.py** — task-specific input checks, prompt rendering, and
-  semantic output guards.
+  semantic output checks.
 
 ### Files the Cog author does not own
 
@@ -445,14 +459,14 @@ This is the only author-owned Python module under src/. It has three jobs:
    JSON Schema, such as duplicate IDs or cross-field constraints.
 2. **render_input(bundle)** — deterministic conversion from the validated task
    bundle into the model's user message.
-3. **check_output(parsed, bundle)** — deterministic guards beyond the output
-   schema, such as citation existence, verbatim grounding, allowed transitions,
-   arithmetic reconciliation, or evidence support.
+3. **check_output(parsed, bundle)** — deterministic contract checks beyond the
+   output schema, such as citation existence, verbatim grounding, allowed
+   transitions, arithmetic reconciliation, or evidence support.
 
 Return structured problems through the shared cog_core.problem helper. Do not
 raise ordinary validation failures as exceptions.
 
-The default verbatim-quote guard is valuable for evidence-grounded analysis.
+The default verbatim-quote check is valuable for evidence-grounded analysis.
 Adapt it deliberately. Do not delete grounding merely because a new domain uses
 different field names.
 
@@ -465,7 +479,7 @@ Model-free tests should cover:
 - valid and invalid example inputs;
 - output-example/schema agreement;
 - task-specific semantic input checks;
-- each output guard;
+- each output contract check;
 - abstention behavior;
 - envelope shape;
 - malformed or salvaged provider output when relevant; and
@@ -770,9 +784,9 @@ approved Smith machinery upgrade.
 
 ### Invocation says ok true with problems
 
-The payload parsed, but one or more deterministic guards flagged it. Inspect the
-problems and raw response. A Gate or human reviewer decides whether the result
-is acceptable.
+The payload parsed, but one or more of the Cog's contract checks flagged it.
+Inspect the problems and raw response. A Gate or human reviewer decides whether
+the result is acceptable.
 
 ### The model identity is unverified or mismatched
 

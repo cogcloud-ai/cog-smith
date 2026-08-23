@@ -1,7 +1,7 @@
 """Model-free deterministic suite for {{COG_NAME}} (minted by cog-smith).
 
 Covers: manifest consistency, schema/example agreement, envelope mechanics,
-grounding guard, salvage, and identity matching. Extend with task-specific
+the grounding contract check, salvage, and identity matching. Extend with task-specific
 cases as task_logic.py grows — fixtures in evals/ cover the model-backed path.
 """
 import json
@@ -94,7 +94,7 @@ class TestEnvelopeMechanics(unittest.TestCase):
             self.assertNotIn("path", sat)
 
 
-class TestGroundingGuard(unittest.TestCase):
+class TestGroundingContractCheck(unittest.TestCase):
     SOURCES = {"item-a": "the deadline moved to Friday after the vendor slip"}
 
     def test_verbatim_quote_passes(self):

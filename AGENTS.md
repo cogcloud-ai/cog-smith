@@ -31,7 +31,12 @@ the single source of the machinery every minted Cog carries.
 4. **No new runtime deps** beyond python/pyyaml/jsonschema; keep the
    toml_compat fallback (3.10 floor).
 5. Vocabulary: usage ops vs lifecycle ops; interfaces = entry points;
-   never handler/runner/harness for client-side things.
+   never handler/runner/harness for client-side things. Contract checks =
+   the Cog's own in-package validation of its declared contract
+   (self-reported in `problems`); Guards are independent, first-class
+   system-side verifiers of the SYSTEM's requirements — never call in-cog
+   checks guards. (Some machinery docstrings still say "guard"; fix only
+   with a deliberate machinery version bump, never inside a minted Cog.)
 6. **Checker layers (review 2026-08-22, F1):** findings are labeled
    core / profile / runtime and the layers must never blur — cog.yaml
    is a PROFILE convention, not a core rule. Known gap, queued: compose

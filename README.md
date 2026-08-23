@@ -19,7 +19,7 @@ pixi run ask -- --bundle examples/sample-bundle.json
 
 A minted Cog ships with: manifest (in-manifest input schema — no overlays),
 envelope-v1 entry points (web API + CLI), the forge binding/resolve/eval
-machinery, a grounding guard (verbatim-quote checks), an eval fixture, and
+machinery, a grounding contract check (verbatim quotes), an eval fixture, and
 a model-free test suite that passes at mint time. Edit `context/` and
 `src/task_logic.py`; everything else is shared machinery enforced by
 `pixi run check` (“smith check”).

@@ -39,9 +39,9 @@ def render_input(bundle):
 
 
 def check_output(parsed, bundle):
-    """Task-specific semantic guards, run AFTER the output schema check.
-    The forge rule: verifying a citation EXISTS is not verifying that it
-    SUPPORTS the claim — hence the verbatim-quote guard."""
+    """Task-specific semantic contract checks, run AFTER the output schema
+    check. The forge rule: verifying a citation EXISTS is not verifying that
+    it SUPPORTS the claim — hence the verbatim-quote check."""
     import cog_core
     problems = []
     if parsed.get("abstained") and parsed.get("entries"):
