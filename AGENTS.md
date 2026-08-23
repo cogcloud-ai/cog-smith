@@ -46,8 +46,8 @@ the single source of the machinery every created Cog carries.
    the Cog's own in-package validation of its declared contract
    (self-reported in `problems`); Guards are independent, first-class
    system-side verifiers of the SYSTEM's requirements — never call in-cog
-   checks guards. (Some machinery docstrings still say "guard" and "mint"; fix only
-   with a deliberate machinery version bump, never inside a created Cog.)
+   checks guards. (Machinery wording was swept in the 0.2.0 release; fix any future
+   drift only with a machinery version bump, never inside a created Cog.)
 6. **Checker layers (review 2026-08-22, F1):** findings are labeled
    core / profile / runtime and the layers must never blur — cog.yaml
    is a PROFILE convention, not a core rule. Known gap, queued: compose

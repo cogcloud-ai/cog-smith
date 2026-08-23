@@ -4,7 +4,7 @@ tools/check_copies.py enforces the sync.
 One binding-record shape for BOTH paths (`resolve` and `use`), and ONE
 fail-closed normalization for everything that can influence the binding —
 saved records AND environment overrides. The re-review found that COG_MODEL_*
-overrides bypassed the locality guard, the transport policy, and pin
+overrides bypassed the locality check, the transport policy, and pin
 provenance; every load now flows through normalize(), and a record that
 violates policy carries `_violations`, which invoke() treats as fatal before
 any evidence can leave the machine.

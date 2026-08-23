@@ -19,3 +19,13 @@ Rules: never edit machinery inside a created Cog (check will fail it).
 Machinery fixes happen HERE, version-bumped, and roll out to created Cogs by
 re-copying — the same copy-sync discipline cog-forge used, with cog-smith
 as the single source.
+
+## 0.2.0 (2026-08-23): vocabulary sweep
+
+Comment-, docstring-, and message-only changes across the masters — no
+behavior change: in-cog validation is called a **contract check**, never a
+guard (cog_core's grounding check; cog_use's locality/transport checks;
+cog_binding's docstring), matching the contract-check / Guard / Gate
+vocabulary; "minted" became "created" (the mint term is retired).
+Rolled out by re-copying the masters into cog-meeting-highlights and
+testcog; both re-verified by `smith check --tests`.

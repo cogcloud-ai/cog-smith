@@ -17,7 +17,7 @@ no manifest to pin against, so the record is marked pinned only when you supply
 --revision (a deployment/model revision you trust); otherwise it is explicitly
 unpinned rather than silently unversioned.
 
-Guards enforced here, before anything is written:
+Contract checks enforced here (the Cog's own rules, not system Guards), before anything is written:
   - locality: the manifest's requires[].locality constraint must admit the preset
   - transport: plain HTTP to a non-loopback host is refused without --insecure-http
 Byte-identical across the cog-forge Cogs; tools/check_copies.py enforces it.
@@ -143,17 +143,17 @@ def main():
         print("  pixi run use collab --endpoint http://YOUR-COLLAB-HOST/v1")
         sys.exit(1)
 
-    # --- guards, before anything is written -------------------------------
+    # --- contract checks, before anything is written -------------------------------
     manifest = cog_binding.load_manifest(ROOT)
     constraint = cog_binding.declared_locality_constraint(manifest)
     if not cog_binding.locality_allowed(constraint, cfg["locality"]):
-        sys.exit(f"locality guard: this Cog's manifest requires locality "
+        sys.exit(f"locality check: this Cog's manifest requires locality "
                  f"{constraint!r}; the requested binding is {cfg['locality']!r}. "
                  f"Refusing to write the binding record.")
 
     ok, reason = cog_binding.endpoint_policy(cfg["endpoint"], args.insecure_http)
     if not ok:
-        sys.exit(f"transport guard: {reason}")
+        sys.exit(f"transport check: {reason}")
 
     record = {
         "record": cog_binding.RECORD_SCHEMA,

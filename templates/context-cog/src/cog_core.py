@@ -1,9 +1,9 @@
 """Shared core for this Cog's interfaces (cog-smith machinery, generic).
 
 Derived from cog-forge @7fe8aca (engineering-gates PASS). Deltas from the
-forge original are deliberate and documented in the minting Cog-smith's
+forge original are deliberate and documented in cog-smith's
 MACHINERY.md: (1) all task-specific logic lives in task_logic.py — this file
-is byte-identical across minted Cogs and copy-sync-checked by `smith check`;
+is byte-identical across created Cogs and copy-sync-checked by `smith check`;
 (2) input validation runs against the manifest-declared input schema;
 (3) results are emitted in envelope v1 (see ENVELOPE.md in cog-smith):
 fixed `payload` key, structured problems, ok-may-carry-problems.
@@ -134,7 +134,7 @@ def squash(s):
 
 def verbatim_quote_check(entry, sources, quote_field="evidence_quote",
                          ids_field=None, label=None):
-    """Reusable grounding guard: entry[quote_field] must be a verbatim
+    """Reusable grounding contract check: entry[quote_field] must be a verbatim
     (whitespace-normalized) span of a cited source text. `sources` maps
     source-id -> text. Returns a list of problem dicts."""
     out = []

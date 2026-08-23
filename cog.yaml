@@ -5,7 +5,7 @@
 
 schema: openteams/cog-manifest [0.1]
 id: openteams/cog-smith
-version: "0.1.0"
+version: "0.2.0"
 summary: >
   Creates, validates, and describes Cogs: `new` scaffolds a complete runnable
   package from review-hardened machinery, `check` enforces manifest and
