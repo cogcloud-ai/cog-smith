@@ -134,9 +134,21 @@ def check(root, run_tests=False):
         err("profile", "interfaces",
             f"exactly one default interface required, got {len(defaults)}")
 
-    # ---- model descriptor cogs: profile checks, no runtime layer ----------
+    # ---- model cogs without smith machinery ------------------------------
+    # Classification is DECLARED, never inferred (the same F7 rule as
+    # interface audience): descriptor rules apply only when the manifest
+    # carries the F5 marker. A weight-carrying model cog (e.g. cog-qwen3b:
+    # model.weights.source + a serving task) is not a descriptor and must
+    # not be judged by descriptor rules.
     if m.get("kind") == "model" and not (root / "src").exists():
-        _check_model_descriptor(m, err, warn)
+        model = m.get("model") or {}
+        if model.get("descriptor"):
+            _check_model_descriptor(m, err, warn)
+        elif not (model.get("weights") or {}).get("source"):
+            warn("profile", "descriptor",
+                 "kind: model with neither carried weights "
+                 "(model.weights.source) nor the descriptor marker "
+                 "(model.descriptor: true) — declare which this is")
         return findings
 
     # ==================================================== runtime layer ==
