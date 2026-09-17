@@ -48,7 +48,7 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
-## Op machinery (0.4.1, 2026-09-17): `templates/op/src/`
+## Op machinery (0.4.2, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
 Op package carries verbatim, and `smith op check` enforces them by hash
@@ -66,6 +66,18 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.4.2 — an envelope may be pretty-printed
+
+`parse_envelope` read stdout LINE by line, so it could only see an envelope
+printed as one line. cog-smith's context-cog machinery prints its envelope
+indented, so the Op layer threw away a perfectly good `ok: false` envelope —
+binding, problems and all — and replaced it with a synthetic
+`invocation-failed` carrying an empty detail. It now scans stdout for JSON
+objects (`raw_decode` from each `{`) and takes the LAST one carrying an
+`envelope` key, so a progress preamble, a pretty-printed envelope, and
+non-JSON noise between objects are all tolerated. Output with no envelope at
+all still raises, as before.
 
 ### 0.4.1 — the request-file flag is negotiated at the seam
 

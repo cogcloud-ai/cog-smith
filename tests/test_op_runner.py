@@ -69,6 +69,24 @@ class GateTests(unittest.TestCase):
                                                   + json.dumps(value) + "\n"),
                          value)
 
+    def test_parse_envelope_reads_a_pretty_printed_envelope(self):
+        """cog-smith's context-cog machinery prints its envelope indented."""
+        value = {"envelope": 1, "ok": False,
+                 "problems": [{"check": "model-call-failed", "severity": "error"}]}
+        stdout = "starting\n" + json.dumps(value, indent=2) + "\n"
+        self.assertEqual(op_runner.parse_envelope(stdout), value)
+
+    def test_parse_envelope_takes_the_last_envelope_printed(self):
+        first = {"envelope": 1, "ok": False}
+        last = {"envelope": 1, "ok": True}
+        stdout = (json.dumps(first, indent=1) + "\nnoise {not json}\n"
+                  + json.dumps(last, indent=1))
+        self.assertEqual(op_runner.parse_envelope(stdout), last)
+
+    def test_parse_envelope_refuses_output_without_one(self):
+        with self.assertRaises(ValueError):
+            op_runner.parse_envelope('trace\n{"result": "no envelope key"}\n')
+
     def test_combine_gates_takes_the_worst_element(self):
         passed = {"status": "pass", "reasons": []}
         warned = {"status": "pass-with-problems", "reasons": ["w"]}

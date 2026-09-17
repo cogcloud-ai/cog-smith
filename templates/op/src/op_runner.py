@@ -37,16 +37,27 @@ ROOT = Path(__file__).resolve().parents[1]
 # ------------------------------------------------------- the Cog seam ----
 
 def parse_envelope(stdout):
-    """The last JSON object on stdout that looks like an envelope."""
-    candidates = [line.strip() for line in stdout.splitlines() if line.strip()]
-    for candidate in reversed(candidates):
+    """The last JSON object on stdout that looks like an envelope.
+
+    A Cog may print progress before its result and may print the envelope
+    pretty-printed over many lines (cog-smith's own context-cog machinery
+    does), so this scans stdout for JSON objects rather than reading lines.
+    """
+    decoder = json.JSONDecoder()
+    found = None
+    index = stdout.find("{")
+    while index != -1:
         try:
-            value = json.loads(candidate)
+            value, end = decoder.raw_decode(stdout, index)
         except json.JSONDecodeError:
+            index = stdout.find("{", index + 1)
             continue
         if isinstance(value, dict) and "envelope" in value:
-            return value
-    raise ValueError("Cog command did not emit a JSON envelope")
+            found = value
+        index = stdout.find("{", max(end, index + 1))
+    if found is None:
+        raise ValueError("Cog command did not emit a JSON envelope")
+    return found
 
 
 #: Request-file flags the seam will try, in order. `--request` is the seam's
