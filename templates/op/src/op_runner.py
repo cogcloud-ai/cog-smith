@@ -17,6 +17,10 @@ decides; the Cog never decides its own acceptance.
 
 Exit codes: 0 completed (or completed-with-problems, or a planned dry run),
 1 failed, 2 an invalid spec or request. Stdout is one JSON object.
+
+A run validates every step's Cog declaration before invoking anything, and a
+run that stops records the steps it never reached as `not-reached`, so the
+Track always lists every step of the spec.
 """
 from __future__ import annotations
 
@@ -77,57 +81,124 @@ def _rejected_flag(completed, flag):
     return "unrecognized arguments" in text and flag in text
 
 
+def envelope_problems(value):
+    """Why VALUE is not an envelope v1 the Gate can decide about. Field TYPES
+    are checked, not merely field presence: an `ok` that is the string
+    "false", or `problems` that are bare strings, are malformed output, not a
+    result — they become a controlled invocation failure with the output kept
+    as evidence."""
+    if not isinstance(value, dict):
+        return ["the Cog's result is not a JSON object."]
+    problems = []
+    if value.get("envelope") != 1:
+        problems.append(f"the Cog's result declares envelope "
+                        f"{value.get('envelope')!r}, not envelope v1.")
+    if not isinstance(value.get("ok"), bool):
+        problems.append(f"the Cog's result declares ok {value.get('ok')!r}, "
+                        f"which is not true or false.")
+    listed = value.get("problems")
+    if listed is not None and (not isinstance(listed, list)
+                               or any(not isinstance(p, dict) for p in listed)):
+        problems.append("the Cog's result declares problems that are not a "
+                        "list of problem objects.")
+    return problems
+
+
+def failed_envelope(cog_dir, task, detail, raw=None, carried=None):
+    """A synthetic ok:false envelope for an invocation that never produced a
+    usable result. What the Cog did emit is kept in `raw` as evidence; when
+    that output was a well-formed envelope, its identity, binding and
+    problems are carried across rather than thrown away."""
+    carried = carried if isinstance(carried, dict) else {}
+    return {
+        "envelope": 1,
+        "cog": carried.get("cog") or {"id": f"unavailable:{Path(cog_dir).name}",
+                                      "version": None},
+        "task": task,
+        "ok": False,
+        "error": {"code": "invocation-failed", "detail": detail},
+        "payload": None,
+        "raw": raw,
+        "problems": [p for p in carried.get("problems") or []
+                     if isinstance(p, dict)],
+        "binding": carried.get("binding"),
+        "timing": {"latency_s": 0},
+    }
+
+
 def invoke_cog(cog_dir, task, request_path):
-    """Run one declared Cog task and return its envelope. A Cog that emits
-    no envelope yields a synthetic ok:false envelope (invocation-failed) so
-    the Gate always has something to decide about."""
+    """Run one declared Cog task and return its envelope.
+
+    Anything short of a well-formed envelope from a process that exited 0 is
+    an invocation failure with a synthetic ok:false envelope, so the Gate
+    always has something to decide about: a command that could not be
+    launched, a nonzero exit (even after printing an envelope — a process
+    that dies at 139 has not succeeded), output with no envelope, and a
+    malformed envelope all arrive the same way."""
     cog_dir = Path(cog_dir)
     for flag in REQUEST_FLAGS:
         command = [
             "pixi", "run", "--manifest-path", str(cog_dir / "pixi.toml"),
             task, "--", flag, str(request_path),
         ]
-        completed = subprocess.run(command, text=True, capture_output=True)
+        try:
+            completed = subprocess.run(command, text=True, capture_output=True)
+        except OSError as exc:
+            return failed_envelope(
+                cog_dir, task,
+                f"could not launch {command[0]!r} for task {task!r}: {exc}")
         if not _rejected_flag(completed, flag):
             break
+    stdout = completed.stdout or ""
+    stderr = (completed.stderr or "").strip()
     try:
-        return parse_envelope(completed.stdout)
+        envelope = parse_envelope(stdout)
     except ValueError as exc:
-        detail = completed.stderr.strip() or completed.stdout.strip() or str(exc)
-        return {
-            "envelope": 1,
-            "cog": {"id": f"unavailable:{cog_dir.name}", "version": None},
-            "task": task,
-            "ok": False,
-            "error": {"code": "invocation-failed", "detail": detail},
-            "payload": None,
-            "raw": completed.stdout,
-            "problems": [],
-            "binding": None,
-            "timing": {"latency_s": 0},
-        }
+        detail = stderr or stdout.strip() or str(exc)
+        return failed_envelope(cog_dir, task, detail, raw=stdout)
+    malformed = envelope_problems(envelope)
+    if malformed:
+        return failed_envelope(cog_dir, task, " ".join(malformed), raw=envelope)
+    if completed.returncode != 0:
+        detail = (f"the Cog command for task {task!r} exited "
+                  f"{completed.returncode}")
+        if stderr:
+            detail += f": {stderr[-400:]}"
+        return failed_envelope(cog_dir, task, detail, raw=envelope,
+                               carried=envelope)
+    return envelope
 
 
 def gate_envelope(envelope):
     """The Gate: a three-state decision over one envelope, with reasons."""
     reasons = []
-    if envelope.get("envelope") != 1:
-        reasons.append("Cog result is not envelope v1.")
-    if not envelope.get("ok"):
+    if not isinstance(envelope, dict) or envelope.get("envelope") != 1:
+        return {
+            "policy": op_spec.GATE_POLICY, "status": "fail",
+            "reasons": ["Cog result is not envelope v1."],
+            "decided_at": op_track.utc_now(), "guards": [],
+        }
+    if envelope.get("ok") is not True:
         error = envelope.get("error") or {}
+        error = error if isinstance(error, dict) else {}
         reasons.append(
             f"Cog invocation failed: {error.get('code', 'unknown')}: "
             f"{error.get('detail', '')}".rstrip())
-    error_problems = [p for p in envelope.get("problems") or []
-                      if p.get("severity") == "error"]
+    listed = envelope.get("problems") or []
+    if not isinstance(listed, list) or any(not isinstance(p, dict)
+                                           for p in listed):
+        reasons.append("the Cog reported problems that are not problem "
+                       "objects.")
+        listed = [p for p in (listed if isinstance(listed, list) else [])
+                  if isinstance(p, dict)]
+    error_problems = [p for p in listed if p.get("severity") == "error"]
     reasons.extend(str(p.get("detail") or p.get("check")
                        or "contract check failed") for p in error_problems)
     if reasons:
         status = "fail"
-    elif envelope.get("problems"):
+    elif listed:
         status = "pass-with-problems"
-        reasons = [str(p.get("detail") or p.get("check"))
-                   for p in envelope["problems"]]
+        reasons = [str(p.get("detail") or p.get("check")) for p in listed]
     else:
         status = "pass"
     return {
@@ -310,13 +381,25 @@ def run(package_root, request_path, dry_run=False, runs_dir=None):
     if dry_run:
         return _plan(spec, track, run_dir, context)
 
+    # Every step's Cog declaration is checked BEFORE any step is invoked: a
+    # spec naming a task the Cog does not declare for the usage audience is
+    # an invalid spec, not a mid-run surprise. (This is a declaration check;
+    # authority over what a Cog may then do is a separate question — see the
+    # contract's §0 amendment.)
+    declaration = op_spec.declaration_problems(spec, package_root)
+    if declaration:
+        raise op_spec.OpSpecError(declaration)
+
     dependents = spec.dependents()
     statuses, blocked = {}, set()
-    for step in spec.ordered:
+    for position, step in enumerate(spec.ordered):
         sid = step["id"]
         if sid in blocked:
             track["steps"].append(op_track.step_record(step, "blocked"))
             statuses[sid] = "blocked"
+            # A blocked step has no result: its payload is null in the output
+            # context, so a mapping over it resolves rather than exploding.
+            context["steps"][sid] = {"payload": None, "envelope": None}
             op_track.save(track, run_dir)
             continue
         cog_dir = (package_root / step["cog"]["source"]).resolve()
@@ -339,6 +422,11 @@ def run(package_root, request_path, dry_run=False, runs_dir=None):
         op_track.save(track, run_dir)
 
         if status == "failed":
+            # The run stops here: every step it never reached is recorded as
+            # `not-reached`, so a Track always lists every step of the spec.
+            for later in spec.ordered[position + 1:]:
+                track["steps"].append(
+                    op_track.step_record(later, "not-reached"))
             track["status"] = "failed"
             track["ended_at"] = op_track.utc_now()
             track_path = op_track.save(track, run_dir)
@@ -346,16 +434,24 @@ def run(package_root, request_path, dry_run=False, runs_dir=None):
                        "run_dir": str(run_dir), "track": track_path}
         if status == "skipped":
             blocked |= dependents.get(sid, set())
-            continue
+            if step.get("foreach") is None:
+                # The step failed its Gate; its payload is not evidence. A
+                # foreach step keeps its aggregate (null per failed element).
+                payload = None
         context["steps"][sid] = {"payload": payload,
                                  "envelope": envelope_for_context}
 
-    if spec.outputs:
-        track["outputs"] = op_spec.evaluate(spec.outputs, context)
     problematic = any(s["status"] in ("passed-with-problems", "skipped",
                                       "blocked") for s in track["steps"])
     track["status"] = "completed-with-problems" if problematic else "completed"
     track["ended_at"] = op_track.utc_now()
+    if spec.outputs:
+        try:
+            track["outputs"] = op_spec.evaluate(spec.outputs, context)
+        except op_spec.OpSpecError:
+            track["outputs"] = None      # the Track stays readable and final
+            op_track.save(track, run_dir)
+            raise
     track_path = op_track.save(track, run_dir)
     output = {"ok": True, "status": track["status"],
               "run_dir": str(run_dir), "track": track_path}

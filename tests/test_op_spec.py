@@ -292,5 +292,154 @@ class OrderTests(unittest.TestCase):
         self.assertEqual(spec.dependents()["a"], {"b", "c"})
 
 
+class ReviewRegressionTests(unittest.TestCase):
+    """Codex review 2026-09-17 (phase2-codex-review-1-cog-smith.md), findings
+    3, 7, 8, 11, 13, 14 — the spec half."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.run_dir = self.root / "runs" / "run-1"
+        self.run_dir.mkdir(parents=True)
+        self.escape = self.root / "mapped-escape"
+        self.ctx = {"inputs": {"dest": str(self.escape)}, "steps": {},
+                    "run": {"dir": str(self.run_dir), "id": "run-1"},
+                    "request": {"dir": str(self.root)}}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    # ---------------------------------------------------------- finding 3 --
+
+    def test_run_dir_refuses_an_absolute_subpath_and_creates_nothing(self):
+        outside = self.root / "outside"
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.evaluate({"$run_dir": str(outside)}, self.ctx)
+        self.assertIn("inside this run", str(caught.exception))
+        self.assertFalse(outside.exists())
+
+    def test_run_dir_refuses_a_traversal_and_creates_nothing(self):
+        with self.assertRaises(op_spec.OpSpecError):
+            op_spec.evaluate({"$run_dir": "../escaped"}, self.ctx)
+        self.assertFalse((self.run_dir.parent / "escaped").exists())
+
+    def test_run_dir_refuses_an_escape_through_a_symlink(self):
+        outside = self.root / "elsewhere"
+        outside.mkdir()
+        (self.run_dir / "link").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(op_spec.OpSpecError):
+            op_spec.evaluate({"$run_dir": "link/artifacts"}, self.ctx)
+        self.assertFalse((outside / "artifacts").exists())
+
+    def test_run_dir_refuses_an_absolute_path_that_arrived_as_mapped_data(self):
+        with self.assertRaises(op_spec.OpSpecError):
+            op_spec.evaluate({"$run_dir": {"$from": "inputs.dest"}}, self.ctx)
+        self.assertFalse(self.escape.exists())
+
+    def test_run_dir_still_creates_a_directory_inside_the_run(self):
+        value = op_spec.evaluate({"$run_dir": "transcription/audio"}, self.ctx)
+        self.assertTrue(Path(value).is_dir())
+        self.assertTrue(Path(value).resolve().is_relative_to(
+            self.run_dir.resolve()))
+
+    def test_a_literal_run_dir_escape_is_refused_at_load(self):
+        step = fx.cog_step("first")
+        step["input"] = {"out": {"$run_dir": "../escaped"}}
+        self.assertIn("inside this run", one(fx.spec_doc([step])))
+
+    # ---------------------------------------------------------- finding 7 --
+
+    def test_an_explicit_null_satisfies_a_required_nullable_input(self):
+        spec = op_spec.OpSpec(fx.spec_doc(inputs=[
+            {"name": "note", "schema": {"type": ["string", "null"]}}]))
+        self.assertEqual(spec.build_inputs({"note": None}), {"note": None})
+
+    def test_an_explicit_null_is_not_replaced_by_the_default(self):
+        spec = op_spec.OpSpec(fx.spec_doc(inputs=[
+            {"name": "note", "required": False, "default": "fallback"}]))
+        self.assertEqual(spec.build_inputs({"note": None}), {"note": None})
+
+    def test_a_declared_null_default_satisfies_an_omitted_required_input(self):
+        spec = op_spec.OpSpec(fx.spec_doc(inputs=[
+            {"name": "note", "required": True, "default": None}]))
+        self.assertEqual(spec.build_inputs({}), {"note": None})
+
+    # ---------------------------------------------------------- finding 8 --
+
+    def test_an_invalid_input_schema_is_refused_at_load(self):
+        text = one(fx.spec_doc(inputs=[{"name": "note",
+                                        "schema": {"type": "not-a-type"}}]))
+        self.assertIn("not valid JSON Schema", text)
+
+    def test_a_false_schema_rejects_every_value(self):
+        spec = op_spec.OpSpec(fx.spec_doc(inputs=[{"name": "note",
+                                                   "schema": False}]))
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            spec.build_inputs({"note": "anything"})
+        self.assertIn("violates its declared schema", str(caught.exception))
+
+    def test_an_explicit_null_is_validated_against_the_schema(self):
+        spec = op_spec.OpSpec(fx.spec_doc(inputs=[{"name": "note",
+                                                   "schema": {"type": "string"}}]))
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            spec.build_inputs({"note": None})
+        self.assertIn("violates its declared schema", str(caught.exception))
+
+    # --------------------------------------------------------- finding 11 --
+
+    def test_a_step_made_ready_runs_before_a_later_independent_step(self):
+        a = fx.cog_step("a", depends_on=["b"])
+        b = fx.cog_step("b")
+        c = fx.cog_step("c")
+        a["input"] = {"note": {"$from": "steps.b.payload.text"}}
+        spec = op_spec.OpSpec(fx.spec_doc([a, b, c]))
+        self.assertEqual([s["id"] for s in spec.ordered], ["b", "a", "c"])
+
+    # --------------------------------------------------------- finding 13 --
+
+    def test_a_non_string_step_id_is_a_named_problem(self):
+        step = fx.cog_step("first")
+        step["id"] = ["first"]
+        self.assertIn("must be an object with an id", one(fx.spec_doc([step])))
+
+    def test_a_non_list_depends_on_is_a_named_problem(self):
+        step = fx.cog_step("first")
+        step["depends_on"] = 1
+        self.assertIn("depends_on is a list", one(fx.spec_doc([step])))
+
+    def test_a_non_string_input_key_is_a_named_problem(self):
+        step = fx.cog_step("first")
+        step["input"] = {3: {"$from": "inputs.note"}}
+        self.assertIn("not a string", one(fx.spec_doc([step])))
+
+    def test_a_non_string_input_name_is_a_named_problem(self):
+        self.assertIn("must be an object with a name",
+                      one(fx.spec_doc(inputs=[{"name": 7}])))
+
+    # --------------------------------------------------------- finding 14 --
+
+    def test_an_object_with_an_operator_key_and_siblings_is_ordinary_data(self):
+        step = fx.cog_step("first")
+        step["input"] = {"annotated": {"$from": "literal text", "label": "x"}}
+        self.assertEqual(problems(fx.spec_doc([step])), [])
+        self.assertEqual(
+            op_spec.evaluate({"$from": "literal text", "label": "x"}, self.ctx),
+            {"$from": "literal text", "label": "x"})
+
+    def test_an_all_dollar_key_set_that_is_not_an_operator_is_refused(self):
+        step = fx.cog_step("first")
+        step["input"] = {"note": {"$from": "inputs.note", "$stem": "x"}}
+        text = one(fx.spec_doc([step]))
+        self.assertIn("unknown mapping operator", text)
+        with self.assertRaises(op_spec.OpSpecError):
+            op_spec.evaluate({"$from": "inputs.note", "$stem": "x"}, self.ctx)
+
+    def test_an_ordinary_object_carrying_a_step_read_still_reads_steps(self):
+        self.assertFalse(op_spec.reads_steps(
+            {"$from": "steps.a.payload", "label": "not an operator"}))
+        self.assertTrue(op_spec.reads_steps(
+            {"wrapped": {"$from": "steps.a.payload"}}))
+
+
 if __name__ == "__main__":
     unittest.main()

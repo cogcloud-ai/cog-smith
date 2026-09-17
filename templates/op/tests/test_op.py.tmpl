@@ -43,13 +43,18 @@ class SpecTests(unittest.TestCase):
 class DryRunTests(unittest.TestCase):
     def test_dry_run_writes_a_planned_track(self):
         request = ROOT / "examples" / "request.json"
+        spec = op_spec.load(ROOT / "op.yaml")
+        try:
+            # ONLY an unfilled starter request is a skip: the example is
+            # checked against the declared inputs here, so a broken mapping
+            # in the dry run below fails the suite instead of hiding in it.
+            spec.build_inputs(json.loads(request.read_text()))
+        except op_spec.OpSpecError as exc:
+            self.skipTest("examples/request.json is still the generated "
+                          "starter: " + "; ".join(exc.problems))
         with tempfile.TemporaryDirectory() as directory:
-            try:
-                code, output = op_runner.run(ROOT, request, dry_run=True,
-                                             runs_dir=directory)
-            except op_spec.OpSpecError as exc:
-                self.skipTest("examples/request.json is still the generated "
-                              "starter: " + "; ".join(exc.problems))
+            code, output = op_runner.run(ROOT, request, dry_run=True,
+                                         runs_dir=directory)
             self.assertEqual(code, 0)
             track = json.loads(Path(output["track"]).read_text())
             self.assertEqual(track["status"], "planned")

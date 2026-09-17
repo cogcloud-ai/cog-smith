@@ -393,6 +393,9 @@ def cmd_op_new(args):
 def cmd_op_check(args):
     started = time.monotonic()
     findings = smith_op.check(args.path, run_tests=args.tests)
+    # An invalid SPEC exits 2 wherever it is found — `op new`, the runner,
+    # and here — so a refused construct always has the same exit code.
+    invalid = smith_op.invalid_spec(findings)
     if args.envelope:
         errors = [f for f in findings if f["level"] == "error"]
         _emit(envelope("op check", True, payload={
@@ -400,24 +403,32 @@ def cmd_op_check(args):
             "pass": not errors,
             "errors": len(errors),
             "warnings": len(findings) - len(errors),
+            "invalid_spec": invalid,
             "machinery_version": smith_op.MACHINERY_VERSION,
         }, problems=_problems(findings), started=started))
-        return 1 if errors else 0
-    return smith_check.report(findings)
+        return 2 if invalid else (1 if errors else 0)
+    code = smith_check.report(findings)
+    return 2 if invalid else code
 
 
 def cmd_op_run(args):
-    """Exec the Op package's own runner — smith adds nothing to the run."""
-    runner = Path(args.path) / "src" / "op_runner.py"
+    """Exec the Op package's own runner — smith adds nothing to the run.
+
+    Every path is resolved against the CALLER's directory first: the child
+    runs with the package as its working directory, so a relative package,
+    request, or runs directory would otherwise change meaning."""
+    package = Path(args.path).resolve()
+    runner = package / "src" / "op_runner.py"
     if not runner.exists():
         return _cli_error(args, f"{args.path} carries no src/op_runner.py — "
                                 f"run `smith op check` on it first")
-    command = [sys.executable, str(runner), "--request", str(args.request)]
+    command = [sys.executable, str(runner),
+               "--request", str(Path(args.request).resolve())]
     if args.dry_run:
         command.append("--dry-run")
     if args.runs_dir:
-        command += ["--runs-dir", str(args.runs_dir)]
-    return subprocess.run(command, cwd=str(Path(args.path).resolve())).returncode
+        command += ["--runs-dir", str(Path(args.runs_dir).resolve())]
+    return subprocess.run(command, cwd=str(package)).returncode
 
 
 def _cli_error(args, detail):

@@ -85,16 +85,25 @@ class CreateTests(SmithOpCase):
         self.assertIn("test =", pixi)
 
     def test_example_request_carries_defaults_and_placeholders(self):
+        """A placeholder only where a REQUIRED input declares no default: an
+        optional input, and one that declares `default: null`, get null."""
         doc = self.spec_doc()
         doc["inputs"] = [{"name": "note", "default": "a default"},
                          {"name": "items", "schema": {"type": "array"}},
                          {"name": "maybe", "schema": {"type": ["string", "null"]}},
-                         {"name": "free"}]
+                         {"name": "free"},
+                         {"name": "nullable", "required": False,
+                          "default": None},
+                         {"name": "optional", "required": False},
+                         {"name": "nullable_required", "required": True,
+                          "default": None}]
         self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
         smith_op.create(self.spec_path, self.dest)
         example = json.loads((self.dest / "examples" / "request.json").read_text())
         self.assertEqual(example, {"note": "a default", "items": [],
-                                   "maybe": "REPLACE_ME", "free": "REPLACE_ME"})
+                                   "maybe": "REPLACE_ME", "free": "REPLACE_ME",
+                                   "nullable": None, "optional": None,
+                                   "nullable_required": None})
 
     def test_creates_into_an_existing_directory_without_collisions(self):
         self.dest.mkdir()
@@ -270,6 +279,66 @@ class CliTests(SmithOpCase):
                             str(request), "--dry-run")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "planned")
+
+
+class ReviewRegressionTests(SmithOpCase):
+    """Codex review 2026-09-17, findings 5 and 15: the CLI's paths and its
+    exit code for an invalid spec."""
+
+    def smith(self, *args, cwd=None):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=cwd)
+
+    def invalid_spec_package(self):
+        smith_op.create(self.spec_path, self.dest)
+        doc = self.spec_doc()
+        doc["steps"][0]["tool"] = {"name": "gh"}
+        (self.dest / "op.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+
+    def test_op_check_exits_two_for_an_invalid_spec(self):
+        self.invalid_spec_package()
+        result = self.smith("op", "check", str(self.dest))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("phase 3", result.stdout)
+
+    def test_op_check_envelope_mode_exits_two_for_an_invalid_spec(self):
+        self.invalid_spec_package()
+        result = self.smith("op", "check", str(self.dest), "--envelope")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        env = json.loads(result.stdout)
+        self.assertTrue(env["payload"]["invalid_spec"])
+        self.assertTrue(any("phase 3" in p["detail"] for p in env["problems"]))
+
+    def test_op_check_still_exits_one_for_an_ordinary_package_finding(self):
+        smith_op.create(self.spec_path, self.dest)
+        (self.dest / "src" / "helpers.py").write_text("x = 1\n")
+        result = self.smith("op", "check", str(self.dest))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_the_generated_suite_fails_a_broken_mapping_instead_of_skipping(self):
+        """Finding 16: only an unfilled starter request is a skip. A request
+        that validates but whose mapping cannot be evaluated must FAIL."""
+        doc = self.spec_doc()
+        doc["inputs"] = [{"name": "note", "default": "a string"}]
+        doc["steps"][0]["input"] = {"note": {"$from": "inputs.note.deeper"}}
+        doc["steps"][1]["input"] = {"text": {"$from": "steps.first.payload"}}
+        self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+        smith_op.create(self.spec_path, self.dest)
+        findings = smith_op.check(self.dest, run_tests=True)
+        details = " ".join(f["detail"] for f in self.errors(findings))
+        self.assertIn("is not available in this run", details)
+
+    def test_op_run_takes_relative_package_and_request_paths(self):
+        nested = self.root / "ops" / "example"
+        smith_op.create(self.spec_path, nested)
+        result = self.smith("op", "run", "ops/example", "--request",
+                            "ops/example/examples/request.json", "--dry-run",
+                            "--runs-dir", "elsewhere", cwd=str(self.root))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["status"], "planned")
+        self.assertTrue(Path(output["track"]).is_relative_to(
+            (self.root / "elsewhere").resolve()))
 
 
 if __name__ == "__main__":

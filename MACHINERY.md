@@ -48,7 +48,7 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
-## Op machinery (0.4.2, 2026-09-17): `templates/op/src/`
+## Op machinery (0.4.3, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
 Op package carries verbatim, and `smith op check` enforces them by hash
@@ -66,6 +66,78 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.4.3 — the phase-2 review fixes
+
+One bullet per finding of `planning/current/phase2-codex-review-1-cog-smith.md`
+(findings 1 and 2 landed as 0.4.1 and 0.4.2); each has a regression test that
+failed before the fix.
+
+- **3 — `$run_dir` stays inside the run.** The subpath must be a relative
+  string, and the resolved destination must be under the run directory;
+  absolute operands, `..` escapes, and symlinks out of the run are refused
+  BEFORE anything is created (`op_spec.run_dir_path`), including when the
+  subpath arrived as mapped data. A literal escape is also refused at load.
+- **4 — declarations are checked before anything runs.** The runner calls
+  `op_spec.declaration_problems` for EVERY step before invoking the first
+  one: the source must carry that Cog and the task must be one of its
+  declared usage interfaces, or the run exits 2 having invoked nothing.
+  `smith op check` now shares that code (`op_spec.cog_step_findings`), which
+  reads a Cog's manifest straight from `pixi.toml [tool.cog]` or `cog.yaml`
+  so the vendored machinery never imports cog-smith. (A declaration check —
+  not authority enforcement; see the contract's §0 amendment.)
+- **5 — `smith op run` resolves its paths first.** Package, runner, request,
+  and `--runs-dir` are resolved against the CALLER's directory before the
+  child is launched into the package directory.
+- **6 — skipped and blocked steps have a result in the output context.** A
+  blocked step's payload is null, a skipped single step's payload is null
+  (it failed its Gate), and a skipped `foreach` step keeps its aggregate
+  list. Outputs over them resolve instead of raising, so the run still ends
+  `completed-with-problems`/0. If an output mapping does raise, the Track is
+  finalised and saved before the error propagates.
+- **7 — presence, not truthiness, for inputs.** An explicit `null` is a
+  supplied value (never replaced by a default), a declared `default: null`
+  satisfies an omitted required input, and only a genuinely absent input is
+  missing.
+- **8 — declared input schemas are checked at load and always applied.**
+  `schema:` is validated with `check_schema` when the spec loads; at request
+  time validation runs on schema PRESENCE (so `false` and `null` values are
+  validated too), and a jsonschema complaint becomes an `OpSpecError`.
+- **9 — the process boundary is part of the result.** A launch failure
+  (`OSError`) and a nonzero exit — even after an envelope was printed — are
+  invocation failures with a synthetic `ok: false` envelope carrying the exit
+  code, so they route through the ordinary Gate, retry, and Track handling.
+  The emitted envelope is kept in `raw` (with its identity, binding and
+  problems carried across) rather than thrown away.
+- **10 — a malformed envelope fails in a controlled way.** Field TYPES are
+  checked (`envelope: 1`, boolean `ok`, `problems` a list of objects); output
+  that is not an envelope becomes an invocation failure with the output kept
+  as evidence, and `gate_envelope` itself never raises on malformed input.
+- **11 — one ready step at a time.** `_order` takes the EARLIEST ready step
+  in spec order each round, so a step made ready mid-batch runs before a
+  later independent one.
+- **12 — Track rewrites are atomic.** `op_track.write_json` writes a
+  temporary sibling, flushes and fsyncs it, then `os.replace`s it into place,
+  so an interrupted rewrite leaves the previous Track readable.
+- **13 — malformed spec field types are named problems.** A non-string step
+  id or input name, a non-list `depends_on`, a non-string dependency, and a
+  non-string mapping key are reported as `OpSpecError` problems (exit 2)
+  instead of raising `TypeError`/`AttributeError`.
+- **14 — only an EXACT key set is an operator.** `{"$from": "literal text",
+  "label": "x"}` is ordinary data and is walked recursively; an object whose
+  keys are ALL `$`-prefixed but unrecognized is still refused by name.
+- **15 — `op check` exits 2 for an invalid spec.** Spec problems carry the
+  `opspec-invalid` check name, and both output modes exit 2 for them, as
+  `op new` and the runner do. Ordinary package findings still exit 1.
+- **16 — the generated suite only skips an unfilled starter.** The template
+  validates `examples/request.json` against the declared inputs and skips on
+  THAT; the dry run then runs outside the `try`, so a broken mapping fails.
+
+Also in 0.4.3, from the integration agent's report: `op new` writes a
+placeholder only where a REQUIRED input declares no default (an optional
+input, and one declaring `default: null`, get `null`), and a run stopped by
+`on_fail: stop` records every step it never reached with status
+`not-reached`, so a Track always lists every step of the spec.
 
 ### 0.4.2 — an envelope may be pretty-printed
 

@@ -13,6 +13,7 @@ step status, attempts, and foreach elements.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,9 +35,23 @@ def new_run_id():
 
 
 def write_json(path, value):
+    """Write one JSON document, atomically: a temporary sibling is written
+    and flushed, then replaces the destination in one step. Rewriting the
+    Track can therefore never destroy the previous readable one — an
+    interrupted write leaves the earlier file exactly as it was."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
+    text = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 def new_track(spec, run_id, input_request, status="running"):
@@ -52,6 +67,13 @@ def new_track(spec, run_id, input_request, status="running"):
         "records": (spec.track or {}).get("records") or DEFAULT_RECORDS,
         "steps": [],
     }
+
+
+#: Step statuses a Track carries. `not-reached` is a step the run never got
+#: to because an earlier `on_fail: stop` ended it — recorded so a Track
+#: always lists every step of the spec.
+STEP_STATUSES = ("passed", "passed-with-problems", "failed", "skipped",
+                 "blocked", "planned", "not-reached")
 
 
 def step_record(step, status, **fields):

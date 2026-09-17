@@ -38,11 +38,16 @@ import op_spec         # noqa: E402
 # The Op machinery lineage (MACHINERY.md). Bumped here when a master
 # changes; `op check` reports it so a package's drift has a version to
 # name.
-MACHINERY_VERSION = "0.4.2"
+MACHINERY_VERSION = "0.4.3"
 MACHINERY = ("op_runner.py", "op_spec.py", "op_track.py")
 OP_TASKS = ("op", "test")
 PLACEHOLDERS = {"object": {}, "array": [], "integer": 0, "number": 0,
                 "boolean": False, "string": "REPLACE_ME"}
+
+#: The check name spec problems carry. An invalid SPEC is a different kind of
+#: failure from a package finding: the CLI exits 2 for it, exactly as `op new`
+#: and the runner do (contract §2).
+INVALID_SPEC = "opspec-invalid"
 
 
 class OpCreateError(Exception):
@@ -81,12 +86,19 @@ def _tokens(spec, dest):
 
 
 def example_request(spec):
-    """A starting request: declared defaults, type-shaped placeholders where
-    the spec declares none."""
+    """A starting request: declared defaults, and a type-shaped placeholder
+    only where a REQUIRED input declares none.
+
+    Presence, not truthiness: an input that declares `default: null` gets
+    null, and so does an optional input with no default — a placeholder there
+    would be a value the author never asked for."""
     out = {}
     for declared in spec.inputs:
-        if declared.get("default") is not None:
+        if "default" in declared:
             out[declared["name"]] = declared["default"]
+            continue
+        if not declared.get("required", True):
+            out[declared["name"]] = None
             continue
         schema = declared.get("schema") or {}
         kind = schema.get("type")
@@ -173,7 +185,7 @@ def check(root, run_tests=False):
         spec = op_spec.load(spec_file)
     except op_spec.OpSpecError as exc:
         for problem in exc.problems:
-            err("core", "opspec", problem)
+            err("core", INVALID_SPEC, problem)
         return findings
 
     # ---------------------------------------------------- runtime layer --
@@ -222,46 +234,13 @@ def check(root, run_tests=False):
                                     "example request is how an Op is tried.")
 
     # ---------------------------------------------------- profile layer --
+    # The same declaration check the runner makes before it invokes anything
+    # (op_spec.cog_step_findings), so the builder and the package refuse the
+    # same steps for the same reasons.
     for step in spec.steps:
-        cog = step.get("cog") or {}
-        source = root / str(cog.get("source"))
-        if not source.is_dir():
-            warn("profile", "steps",
-                 f"Op step {step['id']!r} names cog source {cog.get('source')!r}, "
-                 f"which is not present here — the task declaration could not "
-                 f"be verified on this machine.")
-            continue
-        try:
-            manifest, _, _ = smith_manifest.load(source)
-        except smith_manifest.ManifestError as exc:
-            err("profile", "steps",
-                f"Op step {step['id']!r} names {cog.get('source')!r}, whose "
-                f"manifest is unreadable: {exc}.")
-            continue
-        if cog.get("id") and manifest.get("id") != cog["id"]:
-            err("profile", "steps",
-                f"Op step {step['id']!r} declares cog id {cog['id']!r} but "
-                f"{cog.get('source')!r} identifies as {manifest.get('id')!r}.")
-        if cog.get("version") and manifest.get("version") != cog["version"]:
-            warn("profile", "steps",
-                 f"Op step {step['id']!r} declares version {cog['version']!r} "
-                 f"but {cog.get('source')!r} is at "
-                 f"{manifest.get('version')!r}.")
-        interfaces = [i for i in manifest.get("interfaces") or []
-                      if i.get("task") == cog.get("task")]
-        if not interfaces:
-            err("profile", "steps",
-                f"Op step {step['id']!r} names task {cog.get('task')!r}, which "
-                f"{manifest.get('id')!r} does not declare as an interface.")
-            continue
-        audiences = {i.get("audience") or
-                     ("lifecycle" if i.get("task") in smith_core.LIFECYCLE_TASKS
-                      else "usage") for i in interfaces}
-        if "usage" not in audiences:
-            err("profile", "steps",
-                f"Op step {step['id']!r} names task {cog.get('task')!r}, which "
-                f"{manifest.get('id')!r} declares for the {sorted(audiences)[0]} "
-                f"audience — Op steps use a Cog's usage interfaces.")
+        source = root / str((step.get("cog") or {}).get("source"))
+        for level, detail in op_spec.cog_step_findings(step, source):
+            (err if level == "error" else warn)("profile", "steps", detail)
 
     if run_tests and not any(f["level"] == "error" for f in findings):
         result = subprocess.run([sys.executable, "-m", "unittest", "discover",
@@ -270,3 +249,8 @@ def check(root, run_tests=False):
         if result.returncode != 0:
             err("runtime", "tests", (result.stderr or result.stdout)[-800:])
     return findings
+
+
+def invalid_spec(findings):
+    """True when op.yaml itself is invalid — the CLI exits 2, not 1."""
+    return any(f["check"] == INVALID_SPEC for f in findings)

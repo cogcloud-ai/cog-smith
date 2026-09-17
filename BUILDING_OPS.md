@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.0
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.3
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: tool steps, human steps, and durable state
@@ -81,7 +81,11 @@ python src/cogsmith_cli.py op check ../op-my-workflow --tests [--envelope]
 
 `op check` also reads each step's Cog and confirms that the task you named is
 one that Cog declares for the **usage** audience. If the Cog simply is not on
-this machine, that is a warning, not an error.
+this machine, that is a warning, not an error. **The runner makes the same
+check before it invokes anything**, so a spec naming a lifecycle task or a
+task the Cog does not declare exits 2 having run no step at all. An invalid
+spec exits 2 from `op check` too — the same code `op new` and the runner give
+it.
 
 ## 3. A complete spec
 
@@ -165,7 +169,7 @@ operator; everything else is walked, and scalars are literals.
 | `{$from: <path>}` | Read `inputs.<name>`, `steps.<id>.payload`, `steps.<id>.envelope`, `run.dir`, `run.id`, `request.dir`, or the `foreach` loop variable. Dotted keys index objects; integers index arrays. |
 | `{$from: ..., $default: <expr>}` | The value when present and not null, else the default (itself an expression). |
 | `{$path: <expr>}` | A filesystem path resolved against the request file's directory, absolute. |
-| `{$run_dir: <subpath>}` | A directory inside this run, absolute and created. |
+| `{$run_dir: <subpath>}` | A directory inside this run, absolute and created. The subpath is RELATIVE and never leaves the run: an absolute value, a `..` escape, or a symlink out of the run is refused before anything is created — including when the value arrived as mapped data. |
 | `{$stem: <expr>}` | `Path(value).stem`. |
 | `{$literal: <any>}` | The value verbatim — the escape hatch for data that looks like an operator. |
 
@@ -195,7 +199,9 @@ element failed); the step's Gate fails if any element failed, and is
 
 ### When a step fails
 
-`on_fail: stop` (the default) ends the run `failed` and names the step.
+`on_fail: stop` (the default) ends the run `failed` and names the step; every
+step the run never reached is recorded with status `not-reached`, so a Track
+always lists every step of the spec.
 `skip` records the step as `skipped` and every step that transitively depends
 on it as `blocked` — recorded, never run — and the run ends
 `completed-with-problems`. `retry-once` re-invokes exactly once, and only
@@ -203,12 +209,32 @@ when the Cog reported `ok: false` (a transport or model failure); an
 error-severity problem in an `ok` envelope is a judgement, not a glitch, and
 is never retried. Both envelopes stay in the Track.
 
+### Inputs, defaults, and null
+
+An input is supplied when the request carries its KEY: an explicit `null` is a
+value, and a declared default never replaces it. A declared `default:` (even
+`default: null`) covers an omitted input; only a genuinely absent input with
+no default is missing. A declared `schema:` is checked when the spec loads and
+applied to whatever value results — including `null`, so a nullable input
+declares `type: [string, "null"]` rather than relying on nulls being skipped.
+
+`op new` fills `examples/request.json` from the declared defaults, and writes a
+type-shaped placeholder (`"REPLACE_ME"`, `{}`, `[]`, `0`, `false`) only where a
+REQUIRED input declares no default; an optional input gets `null`. The
+generated test skips its dry-run assertions only while that starter request
+does not validate — a request that validates but maps badly FAILS the suite.
+
 ## 4. Gates, Guards, and the Track
 
 The only policy in this subset is `envelope-ok-no-error-problems`: a step
 fails when the Cog reports `ok: false` or a contract-check problem with
 severity `error`; warnings produce `pass-with-problems` and the run
-continues. A Cog reports; **the Gate decides, never the Cog**. Guards —
+continues. A Cog that could not be launched, exited nonzero, or printed
+something that is not a well-formed envelope v1 is an *invocation failure*:
+the Op layer synthesises an `ok: false` envelope, keeps what the Cog did emit
+as evidence in `raw`, and the Gate decides about that like any other result.
+A step that is `skipped` or `blocked` still has a result in the Track and a
+null payload downstream, so an output mapping over it resolves. A Cog reports; **the Gate decides, never the Cog**. Guards —
 independent, system-side verifiers of the system's requirements — are not in
 this subset, and the Track records `guards: []` rather than pretending.
 

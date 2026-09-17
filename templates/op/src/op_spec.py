@@ -59,6 +59,11 @@ OPERATORS = (
 OPERATOR_NAMES = "$from, $from/$default, $path, $run_dir, $stem, $literal"
 PATH_ROOTS = ("inputs", "steps", "run", "request")
 
+# A Cog's conventional lifecycle tasks, for steps whose interface declares no
+# audience. Kept here (not imported from cog-smith) because this module is
+# vendored into every Op package and must run without cog-smith installed.
+LIFECYCLE_TASKS = {"resolve", "use", "check", "eval", "test", "bundle", "serve"}
+
 
 class OpSpecError(Exception):
     """One or more one-sentence problems with a spec, request, or mapping."""
@@ -97,17 +102,62 @@ def lookup(path, ctx):
     return True, current
 
 
+def dollar_keys(expr):
+    """The `$`-prefixed keys of a mapping-expression object."""
+    return sorted(k for k in expr if isinstance(k, str) and k.startswith("$"))
+
+
+def operator_keys(expr):
+    """The operator key set of a mapping-expression object, or None when the
+    object is an ordinary one to walk recursively.
+
+    Only an EXACT recognized key set is an operator (contract §2). An object
+    that mixes a known key with siblings — `{"$from": "literal text",
+    "label": "x"}` — is ordinary data. An object whose keys are ALL
+    `$`-prefixed but are not a recognized set is an unknown operator, which
+    is always refused.
+    """
+    keys = frozenset(expr)
+    if keys in OPERATORS:
+        return keys
+    dollars = dollar_keys(expr)
+    if dollars and len(dollars) == len(keys):
+        raise OpSpecError(
+            f"mapping expression {dollars} is not a known operator; the "
+            f"mapping vocabulary is closed ({OPERATOR_NAMES}).")
+    return None
+
+
+def run_dir_path(subpath, run_dir):
+    """`<run dir>/<subpath>`, created — refusing anything that would land
+    outside the run. `$run_dir` makes a directory INSIDE this run, so an
+    absolute operand, a `..` escape, and a symlink out of the run are all
+    refused BEFORE anything is created."""
+    if subpath is None:
+        subpath = ""
+    if not isinstance(subpath, str):
+        raise OpSpecError(f"$run_dir takes a relative subpath string, got "
+                          f"{subpath!r}.")
+    candidate = Path(subpath)
+    base = Path(run_dir).resolve()
+    if candidate.is_absolute():
+        raise OpSpecError(f"$run_dir subpath {subpath!r} is absolute; "
+                          f"$run_dir names a directory inside this run.")
+    target = (base / candidate).resolve()
+    if target != base and base not in target.parents:
+        raise OpSpecError(f"$run_dir subpath {subpath!r} resolves outside the "
+                          f"run directory; $run_dir names a directory inside "
+                          f"this run.")
+    target.mkdir(parents=True, exist_ok=True)
+    return str(target)
+
+
 def evaluate(expr, ctx):
     """Resolve a mapping expression against a run context
     {inputs, steps, run, request, <loop variables>}."""
     if isinstance(expr, dict):
-        keys = frozenset(expr)
-        if any(k.startswith("$") for k in keys):
-            if keys not in OPERATORS:
-                raise OpSpecError(
-                    f"mapping expression {sorted(keys)} is not a known "
-                    f"operator; the mapping vocabulary is closed "
-                    f"({OPERATOR_NAMES}).")
+        keys = operator_keys(expr)
+        if keys is not None:
             if "$literal" in keys:
                 return expr["$literal"]
             if "$from" in keys:
@@ -131,9 +181,7 @@ def evaluate(expr, ctx):
                 return str(path.resolve())
             if "$run_dir" in keys:
                 value = evaluate(expr["$run_dir"], ctx)
-                path = (Path(ctx["run"]["dir"]) / str(value or "")).resolve()
-                path.mkdir(parents=True, exist_ok=True)
-                return str(path)
+                return run_dir_path(value, ctx["run"]["dir"])
             if "$stem" in keys:
                 value = evaluate(expr["$stem"], ctx)
                 return None if value is None else Path(str(value)).stem
@@ -153,7 +201,8 @@ def reads_steps(expr):
             keys = frozenset(node)
             if keys in OPERATORS and "$literal" in keys:
                 return
-            if "$from" in keys and str(node["$from"]).split(".")[0] == "steps":
+            if (keys in OPERATORS and "$from" in keys
+                    and str(node["$from"]).split(".")[0] == "steps"):
                 found.append(True)
             for value in node.values():
                 walk(value)
@@ -171,13 +220,7 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                    problems):
     if isinstance(expr, dict):
         keys = frozenset(expr)
-        if any(k.startswith("$") for k in keys):
-            if keys not in OPERATORS:
-                problems.append(
-                    f"{where} uses unknown mapping operator(s) "
-                    f"{sorted(k for k in keys if k.startswith('$'))}; the "
-                    f"mapping vocabulary is closed ({OPERATOR_NAMES}).")
-                return
+        if keys in OPERATORS:
             if "$literal" in keys:
                 return
             if "$from" in keys:
@@ -187,12 +230,32 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                     _expr_problems(expr["$default"], where, input_names,
                                    step_ids, dep_ids, loop_vars, problems)
                 return
+            if "$run_dir" in keys and isinstance(expr["$run_dir"], str):
+                subpath = expr["$run_dir"]
+                if (Path(subpath).is_absolute()
+                        or ".." in Path(subpath).parts):
+                    problems.append(
+                        f"{where} asks $run_dir for {subpath!r}; $run_dir "
+                        f"names a directory inside this run, so the subpath "
+                        f"is relative and never leaves the run directory.")
+                    return
             for key in ("$path", "$run_dir", "$stem"):
                 if key in keys:
                     _expr_problems(expr[key], where, input_names, step_ids,
                                    dep_ids, loop_vars, problems)
             return
+        dollars = dollar_keys(expr)
+        if dollars and len(dollars) == len(keys):
+            problems.append(
+                f"{where} uses unknown mapping operator(s) {dollars}; the "
+                f"mapping vocabulary is closed ({OPERATOR_NAMES}).")
+            return
         for key, value in expr.items():
+            if not isinstance(key, str):
+                problems.append(f"{where} has key {key!r}, which is not a "
+                                f"string; a request document's keys are "
+                                f"strings.")
+                continue
             _expr_problems(value, f"{where}.{key}", input_names, step_ids,
                            dep_ids, loop_vars, problems)
     elif isinstance(expr, list):
@@ -239,30 +302,47 @@ def _path_problems(path, where, input_names, step_ids, dep_ids, loop_vars,
                         f"step's foreach variable.")
 
 
+def _has_id(step):
+    """True when a step is an object with a string id — checked before the id
+    is hashed, matched, or used in a message."""
+    return isinstance(step, dict) and isinstance(step.get("id"), str) \
+        and bool(step["id"])
+
+
+def _deps(step):
+    """A step's declared depends_on, as a list (malformed values are reported
+    by `validate`, which runs before any ordering)."""
+    declared = step.get("depends_on")
+    return list(declared) if isinstance(declared, list) else []
+
+
 def _order(steps, problems):
     """Topological order, ties broken by spec order. Records a cycle as a
-    problem and returns the steps unordered."""
+    problem and returns the steps unordered.
+
+    ONE step at a time: the earliest ready step in spec order runs next, so a
+    step that becomes ready mid-batch still runs before a later independent
+    step (contract §3, "ties break by spec order")."""
     ids = [s.get("id") for s in steps]
     pending = list(steps)
     done, ordered = set(), []
     while pending:
-        ready = [s for s in pending
-                 if all(d in done for d in (s.get("depends_on") or []))]
-        if not ready:
+        index = next((i for i, s in enumerate(pending)
+                      if all(d in done for d in _deps(s))), None)
+        if index is None:
             stuck = sorted(str(s.get("id")) for s in pending)
             problems.append(f"the Op spec's steps form a dependency cycle "
                             f"among {stuck}; depends_on must be acyclic.")
             return list(steps)
-        for step in ready:
-            ordered.append(step)
-            done.add(step.get("id"))
-            pending.remove(step)
+        step = pending.pop(index)
+        ordered.append(step)
+        done.add(step.get("id"))
     assert len(ordered) == len(ids)
     return ordered
 
 
 def _transitive(steps):
-    direct = {s.get("id"): list(s.get("depends_on") or []) for s in steps}
+    direct = {s.get("id"): _deps(s) for s in steps}
     out = {}
 
     def collect(sid, seen):
@@ -280,6 +360,21 @@ def _transitive(steps):
     return out
 
 
+def schema_problems(schema, name):
+    """Why a declared input `schema:` is not a usable JSON Schema. Checked at
+    LOAD, so a bad schema is a named problem rather than a surprise
+    jsonschema error at request time."""
+    if _SchemaValidator is None:                       # pragma: no cover
+        return []
+    try:
+        _SchemaValidator.check_schema(schema)
+    except Exception as exc:                           # jsonschema.SchemaError
+        detail = " ".join(str(exc).split())[:160]
+        return [f"Op input {name!r} declares a schema that is not valid JSON "
+                f"Schema: {detail}."]
+    return []
+
+
 def validate(doc):
     """Every problem with a spec document, as one-sentence strings."""
     problems = []
@@ -291,7 +386,7 @@ def validate(doc):
         if key in doc:
             problems.append(f"the Op spec declares {key}:, which the runner "
                             f"subset does not carry — {phase} adds it.")
-    for key in sorted(set(doc) - TOP_KEYS - set(REFUSED_TOP)):
+    for key in sorted(str(k) for k in set(doc) - TOP_KEYS - set(REFUSED_TOP)):
         problems.append(f"unknown top-level Op spec key {key!r}; the Op spec "
                         f"vocabulary is closed.")
     if doc.get("schema") != SCHEMA_STRING:
@@ -308,16 +403,21 @@ def validate(doc):
                         "input declarations.")
         inputs = []
     for index, declared in enumerate(inputs):
-        if not isinstance(declared, dict) or not declared.get("name"):
-            problems.append(f"Op input #{index} must be an object with a name.")
+        if not isinstance(declared, dict) or not isinstance(
+                declared.get("name"), str) or not declared["name"]:
+            problems.append(f"Op input #{index} must be an object with a "
+                            f"name (a string).")
             continue
-        for key in sorted(set(declared) - INPUT_KEYS):
+        for key in sorted(str(k) for k in set(declared) - INPUT_KEYS):
             problems.append(f"unknown key {key!r} on Op input "
                             f"{declared['name']!r}; the input vocabulary is "
                             f"closed.")
         if declared["name"] in input_names:
             problems.append(f"Op input {declared['name']!r} is declared twice.")
         input_names.add(declared["name"])
+        if "schema" in declared:
+            problems.extend(schema_problems(declared["schema"],
+                                            declared["name"]))
 
     track = doc.get("track")
     if track is not None:
@@ -325,7 +425,7 @@ def validate(doc):
             problems.append("the Op spec's track must be an object with a "
                             "records list.")
         else:
-            for key in sorted(set(track) - TRACK_KEYS):
+            for key in sorted(str(k) for k in set(track) - TRACK_KEYS):
                 problems.append(f"unknown key {key!r} under track:; the Track "
                                 f"vocabulary is closed.")
 
@@ -336,8 +436,9 @@ def validate(doc):
 
     step_ids = set()
     for index, step in enumerate(steps):
-        if not isinstance(step, dict) or not step.get("id"):
-            problems.append(f"Op step #{index} must be an object with an id.")
+        if not _has_id(step):
+            problems.append(f"Op step #{index} must be an object with an id "
+                            f"(a string).")
             continue
         sid = step["id"]
         if sid in step_ids:
@@ -349,7 +450,7 @@ def validate(doc):
                             f"alphanumerics and single hyphens.")
 
     for step in steps:
-        if not isinstance(step, dict) or not step.get("id"):
+        if not _has_id(step):
             continue
         sid = step["id"]
         for key, phase in REFUSED_STEP.items():
@@ -357,10 +458,21 @@ def validate(doc):
                 problems.append(f"Op step {sid!r} declares a {key}: step, "
                                 f"which the runner subset does not carry — "
                                 f"{phase} adds it.")
-        for key in sorted(set(step) - STEP_KEYS - set(REFUSED_STEP)):
+        for key in sorted(str(k) for k in set(step) - STEP_KEYS
+                          - set(REFUSED_STEP)):
             problems.append(f"unknown key {key!r} on Op step {sid!r}; the step "
                             f"vocabulary is closed.")
-        for dep in step.get("depends_on") or []:
+        declared_deps = step.get("depends_on")
+        if declared_deps is not None and not isinstance(declared_deps, list):
+            problems.append(f"Op step {sid!r} declares depends_on "
+                            f"{declared_deps!r}; depends_on is a list of step "
+                            f"ids.")
+            declared_deps = []
+        for dep in declared_deps or []:
+            if not isinstance(dep, str):
+                problems.append(f"Op step {sid!r} depends on {dep!r}, which is "
+                                f"not a step id.")
+                continue
             if dep not in step_ids:
                 problems.append(f"Op step {sid!r} depends on {dep!r}, which "
                                 f"the Op spec does not declare.")
@@ -373,7 +485,7 @@ def validate(doc):
                 problems.append(f"Op step {sid!r} declares no cog:; a Cog step "
                                 f"is the only step kind in the runner subset.")
         else:
-            for key in sorted(set(cog) - COG_KEYS):
+            for key in sorted(str(k) for k in set(cog) - COG_KEYS):
                 problems.append(f"unknown key {key!r} under Op step {sid!r}'s "
                                 f"cog:; the step vocabulary is closed.")
             for field in ("id", "source", "task"):
@@ -386,7 +498,7 @@ def validate(doc):
                 problems.append(f"Op step {sid!r}'s gate must be an object "
                                 f"with a policy.")
             else:
-                for key in sorted(set(gate) - GATE_KEYS):
+                for key in sorted(str(k) for k in set(gate) - GATE_KEYS):
                     problems.append(f"unknown key {key!r} under Op step "
                                     f"{sid!r}'s gate:; the Gate vocabulary is "
                                     f"closed.")
@@ -417,7 +529,7 @@ def validate(doc):
                 problems.append(f"Op step {sid!r}'s foreach must be an object "
                                 f"with items and as.")
             else:
-                for key in sorted(set(foreach) - FOREACH_KEYS):
+                for key in sorted(str(k) for k in set(foreach) - FOREACH_KEYS):
                     problems.append(f"unknown key {key!r} under Op step "
                                     f"{sid!r}'s foreach:; the step vocabulary "
                                     f"is closed.")
@@ -506,24 +618,33 @@ class OpSpec:
                               "inputs.")
         declared = {i["name"]: i for i in self.inputs}
         problems, values = [], {}
-        for key in sorted(set(request) - set(declared)):
+        for key in sorted(str(k) for k in set(request) - set(declared)):
             problems.append(f"the Op request carries undeclared input "
                             f"{key!r}; declare it in op.yaml or remove it.")
         for name, spec in declared.items():
-            if request.get(name) is not None:
+            # Presence, not truthiness: an explicit null is a supplied value,
+            # a declared `default: null` satisfies an omitted input, and a
+            # default never replaces a value the request actually carries.
+            if name in request:
                 values[name] = request[name]
-            elif spec.get("default") is not None:
+            elif "default" in spec:
                 values[name] = spec["default"]
             elif spec.get("required", True):
                 problems.append(f"the Op request is missing required input "
                                 f"{name!r}.")
                 continue
             else:
-                values[name] = spec.get("default")
-            schema = spec.get("schema")
-            if schema and _SchemaValidator and values.get(name) is not None:
-                validator = _SchemaValidator(schema)
-                for error in list(validator.iter_errors(values[name]))[:3]:
+                values[name] = None
+            if "schema" in spec and _SchemaValidator is not None:
+                try:
+                    validator = _SchemaValidator(spec["schema"])
+                    errors = list(validator.iter_errors(values[name]))[:3]
+                except Exception as exc:               # jsonschema complaints
+                    detail = " ".join(str(exc).split())[:160]
+                    problems.append(f"Op input {name!r} declares a schema this "
+                                    f"runner cannot apply: {detail}.")
+                    continue
+                for error in errors:
                     where = ".".join(str(x) for x in error.absolute_path) or "$"
                     problems.append(f"Op input {name!r} violates its declared "
                                     f"schema at {where}: {error.message}.")
@@ -553,3 +674,108 @@ def load_document(path):
 def load(path):
     """Load and validate an Op spec file."""
     return OpSpec(load_document(path), path=path)
+
+
+# ------------------------------------------------- the Cogs a step names --
+#
+# Shared by the runner (which checks EVERY step before invoking any of them)
+# and by `smith op check`. It lives here, in the vendored machinery, so an Op
+# package validates its own declarations without cog-smith installed: a Cog's
+# profile manifest is read straight from `pixi.toml [tool.cog]` or `cog.yaml`.
+
+def read_cog_manifest(source):
+    """(manifest, problem) for the Cog package at SOURCE. Exactly one profile
+    manifest is expected: `[tool.cog]` in pixi.toml, or cog.yaml."""
+    source = Path(source)
+    pixi, standalone = source / "pixi.toml", source / "cog.yaml"
+    doc = None
+    if pixi.exists():
+        try:
+            import tomllib
+            with open(pixi, "rb") as handle:
+                doc = tomllib.load(handle)
+        except Exception as exc:
+            return None, f"pixi.toml is not readable ({exc})"
+    in_pixi = bool(doc and isinstance(doc.get("tool"), dict)
+                   and isinstance(doc["tool"].get("cog"), dict))
+    if in_pixi and standalone.exists():
+        return None, ("both pixi.toml [tool.cog] and cog.yaml are present — a "
+                      "package carries exactly one profile manifest")
+    if in_pixi:
+        manifest = dict(doc["tool"]["cog"])
+        workspace = doc.get("workspace") or doc.get("project") or {}
+        for key, source_key in (("version", "version"),
+                                ("summary", "description")):
+            if key not in manifest and workspace.get(source_key) is not None:
+                manifest[key] = workspace[source_key]
+        return manifest, None
+    if standalone.exists():
+        try:
+            manifest = yaml.safe_load(standalone.read_text())
+        except yaml.YAMLError as exc:
+            return None, f"cog.yaml is not readable ({exc})"
+        if not isinstance(manifest, dict):
+            return None, "cog.yaml is not a manifest mapping"
+        return manifest, None
+    return None, ("it carries no profile manifest: neither pixi.toml with a "
+                  "[tool.cog] table nor cog.yaml")
+
+
+def cog_step_findings(step, source_dir):
+    """[(level, detail)] for one Cog step's declaration, checked against the
+    Cog at SOURCE_DIR: it must be that Cog, and the task must be one of its
+    declared USAGE interfaces. A source that is simply absent is a warning —
+    the declaration could not be verified on this machine."""
+    cog = step.get("cog") or {}
+    sid = step.get("id")
+    source = Path(source_dir)
+    if not source.is_dir():
+        return [("warn", f"Op step {sid!r} names cog source "
+                         f"{cog.get('source')!r}, which is not present here — "
+                         f"the task declaration could not be verified on this "
+                         f"machine.")]
+    manifest, problem = read_cog_manifest(source)
+    if manifest is None:
+        return [("error", f"Op step {sid!r} names {cog.get('source')!r}, whose "
+                          f"manifest is unreadable: {problem}.")]
+    findings = []
+    if cog.get("id") and manifest.get("id") != cog["id"]:
+        findings.append(("error", f"Op step {sid!r} declares cog id "
+                                  f"{cog['id']!r} but {cog.get('source')!r} "
+                                  f"identifies as {manifest.get('id')!r}."))
+    if cog.get("version") and manifest.get("version") != cog["version"]:
+        findings.append(("warn", f"Op step {sid!r} declares version "
+                                 f"{cog['version']!r} but "
+                                 f"{cog.get('source')!r} is at "
+                                 f"{manifest.get('version')!r}."))
+    interfaces = [i for i in manifest.get("interfaces") or []
+                  if isinstance(i, dict) and i.get("task") == cog.get("task")]
+    if not interfaces:
+        findings.append(("error", f"Op step {sid!r} names task "
+                                  f"{cog.get('task')!r}, which "
+                                  f"{manifest.get('id')!r} does not declare as "
+                                  f"an interface."))
+        return findings
+    audiences = {i.get("audience")
+                 or ("lifecycle" if i.get("task") in LIFECYCLE_TASKS
+                     else "usage")
+                 for i in interfaces}
+    if "usage" not in audiences:
+        findings.append(("error", f"Op step {sid!r} names task "
+                                  f"{cog.get('task')!r}, which "
+                                  f"{manifest.get('id')!r} declares for the "
+                                  f"{sorted(audiences)[0]} audience — Op steps "
+                                  f"use a Cog's usage interfaces."))
+    return findings
+
+
+def declaration_problems(spec, package_root):
+    """Every ERROR a step's Cog declaration carries, across the whole spec —
+    what the runner refuses before it invokes anything."""
+    problems = []
+    for step in spec.ordered:
+        source = (Path(package_root)
+                  / str((step.get("cog") or {}).get("source"))).resolve()
+        problems.extend(detail for level, detail
+                        in cog_step_findings(step, source) if level == "error")
+    return problems
