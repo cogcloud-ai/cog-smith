@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.4
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.5
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: tool steps, human steps, and durable state
@@ -260,8 +260,12 @@ Every synthetic failure carries its process evidence in ONE place —
 tail the last 2000 characters), plus `previous_attempts` with the same fields
 when the seam had tried the other request flag first. `returncode` is `null`
 only when the command could not be launched at all.
-A step that is `skipped` or `blocked` still has a result in the Track and a
-null payload downstream, so an output mapping over it resolves. A Cog reports; **the Gate decides, never the Cog**. Guards —
+A step that is `skipped` or `blocked` still has a result in the Track, and a
+mapping over it always resolves. What it resolves TO depends on the step's
+shape: a skipped or blocked SINGLE step has a **null payload** downstream
+(its result failed the Gate, so it is not evidence), while a skipped FOREACH
+step keeps its **aggregate list** — one entry per element, null only where
+that element failed — because the elements that passed are still evidence. A Cog reports; **the Gate decides, never the Cog**. Guards —
 independent, system-side verifiers of the system's requirements — are not in
 this subset, and the Track records `guards: []` rather than pretending.
 

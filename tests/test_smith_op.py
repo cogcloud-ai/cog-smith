@@ -123,6 +123,20 @@ class CreateTests(SmithOpCase):
         spec = op_spec.load(self.dest / "op.yaml")
         self.assertEqual(spec.build_inputs(example), {})
 
+    def test_a_required_input_with_a_boolean_schema_creates_and_checks(self):
+        """Final round, item 2: `schema: true` is a valid JSON Schema (it
+        accepts anything) and used to raise AttributeError out of `op new`.
+        It has no `type`, so it gets the generic placeholder."""
+        doc = self.spec_doc()
+        doc["inputs"] = [{"name": "note", "required": True, "schema": True}]
+        self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+        smith_op.create(self.spec_path, self.dest)
+        example = json.loads((self.dest / "examples" / "request.json").read_text())
+        self.assertEqual(example, {"note": "REPLACE_ME"})
+        spec = op_spec.load(self.dest / "op.yaml")
+        self.assertEqual(spec.build_inputs(example), {"note": "REPLACE_ME"})
+        self.assertEqual(self.errors(smith_op.check(self.dest)), [])
+
     def test_creates_into_an_existing_directory_without_collisions(self):
         self.dest.mkdir()
         (self.dest / "NOTES.md").write_text("the design record\n")

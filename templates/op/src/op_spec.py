@@ -544,7 +544,6 @@ def validate(doc):
                             f"choose one of {list(ON_FAIL)}.")
 
         foreach = step.get("foreach")
-        loop_vars = set()
         if foreach is not None:
             if not isinstance(foreach, dict):
                 problems.append(f"Op step {sid!r}'s foreach must be an object "
@@ -569,8 +568,16 @@ def validate(doc):
                                     f"{loop_var!r}; a loop variable is a name "
                                     f"(letters, digits and underscores, not "
                                     f"starting with a digit).")
-                else:
-                    loop_vars.add(loop_var)
+                elif loop_var in PATH_ROOTS:
+                    # A loop variable becomes a context key for the element.
+                    # `as: run` would replace the run context and redirect
+                    # every `$run_dir` in the step to the element's own
+                    # `dir` — containment is enforced at LOAD, by refusing
+                    # the collision, not at write time.
+                    problems.append(f"Op step {sid!r} declares foreach.as "
+                                    f"{loop_var!r}; {list(PATH_ROOTS)} name "
+                                    f"the run context and cannot be loop "
+                                    f"variables.")
 
     if problems:
         raise OpSpecError(problems)
@@ -689,13 +696,6 @@ class OpSpec:
         if problems:
             raise OpSpecError(problems)
         return values
-
-    def example_request(self):
-        """A starting request document: the declared defaults. An optional
-        input with no declared default is OMITTED — writing null there would
-        supply a value the author never declared."""
-        return {i["name"]: i.get("default") for i in self.inputs
-                if "default" in i or i.get("required", True)}
 
 
 def load_document(path):

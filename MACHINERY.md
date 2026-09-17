@@ -48,7 +48,7 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
-## Op machinery (0.4.4, 2026-09-17): `templates/op/src/`
+## Op machinery (0.4.5, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
 Op package carries verbatim, and `smith op check` enforces them by hash
@@ -66,6 +66,32 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.4.5 — the final-review fixes
+
+One bullet per "New findings" item of
+`planning/current/phase2-codex-review-4-cog-smith-final.md`, which reviewed
+0.4.4. Each behavioral fix has a regression test that failed before it.
+
+- **1 — a loop variable can no longer overwrite the run context.**
+  `foreach.as` is refused at LOAD when it collides with a path root
+  (`inputs`, `steps`, `run`, `request`). `as: run` used to replace the run
+  context with the element, so an element carrying `dir` redirected every
+  `$run_dir` in that step outside the actual run directory; containment is
+  now enforced by refusing the collision, not at write time.
+- **2 — a boolean JSON Schema no longer crashes package creation.** A JSON
+  Schema may be `true` (accept anything); `smith_op.example_request` reads
+  `type` only from DICTIONARY schemas and gives a boolean schema the generic
+  `REPLACE_ME` placeholder, where a required input with `schema: true` used
+  to raise `AttributeError` out of `op new`.
+- **3 — BUILDING_OPS.md states the skipped-step rule correctly.** A skipped
+  or blocked SINGLE step has a null payload downstream; a skipped FOREACH
+  step keeps its aggregate list, null only for the elements that failed.
+- **4 — the dead code is gone.** `gate_envelope`'s malformed-problems branch
+  (unreachable after `envelope_problems`), the write-only `statuses`
+  dictionary in `run`, and the discarded first `loop_vars` accumulator in
+  `op_spec` are removed, and the unused `OpSpec.example_request` is deleted:
+  `smith_op.example_request` is the one starter-request generator.
 
 ### 0.4.4 — the verification-round fixes
 

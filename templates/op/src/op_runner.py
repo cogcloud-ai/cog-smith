@@ -246,13 +246,9 @@ def gate_envelope(envelope):
         reasons.append(
             f"Cog invocation failed: {error.get('code', 'unknown')}: "
             f"{error.get('detail', '')}".rstrip())
+    # `envelope_problems` above has already established that `problems` is a
+    # list of objects: the policy reads it without re-checking its type.
     listed = envelope.get("problems") or []
-    if not isinstance(listed, list) or any(not isinstance(p, dict)
-                                           for p in listed):
-        reasons.append("the Cog reported problems that are not problem "
-                       "objects.")
-        listed = [p for p in (listed if isinstance(listed, list) else [])
-                  if isinstance(p, dict)]
     error_problems = [p for p in listed if p.get("severity") == "error"]
     reasons.extend(str(p.get("detail") or p.get("check")
                        or "contract check failed") for p in error_problems)
@@ -455,12 +451,11 @@ def run(package_root, request_path, dry_run=False, runs_dir=None):
         return _plan(spec, track, run_dir, context)
 
     dependents = spec.dependents()
-    statuses, blocked = {}, set()
+    blocked = set()
     for position, step in enumerate(spec.ordered):
         sid = step["id"]
         if sid in blocked:
             track["steps"].append(op_track.step_record(step, "blocked"))
-            statuses[sid] = "blocked"
             # A blocked step has no result: its payload is null in the output
             # context, so a mapping over it resolves rather than exploding.
             context["steps"][sid] = {"payload": None, "envelope": None}
@@ -482,7 +477,6 @@ def run(package_root, request_path, dry_run=False, runs_dir=None):
         else:
             status = STEP_STATUS[gate["status"]]
         track["steps"].append(op_track.step_record(step, status, **fields))
-        statuses[sid] = status
         op_track.save(track, run_dir)
 
         if status == "failed":

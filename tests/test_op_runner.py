@@ -931,5 +931,30 @@ class PreflightOrderTests(RunnerCase):
         self.assertEqual(output["status"], "planned")
 
 
+class RunDirContainmentTests(RunnerCase):
+    """Codex final round, item 1: an element carrying `dir` must not redirect
+    `$run_dir`. `as: run` is refused at load (test_op_spec), and an ordinary
+    loop variable leaves the run context alone."""
+
+    def doc(self):
+        step = fx.cog_step("classify", task="classify")
+        step["foreach"] = {"items": {"$from": "inputs.items"}, "as": "item"}
+        step["input"] = {"id": {"$from": "item.id"},
+                         "out": {"$run_dir": "artifacts"}}
+        return fx.spec_doc([step], inputs=[{"name": "items"}])
+
+    def test_an_element_carrying_dir_does_not_redirect_run_dir(self):
+        request = {"items": [{"dir": "/outside-the-real-run", "id": "fake"}]}
+        answers = {"classify": fx.envelope(payload={"label": "a"})}
+        code, output, _, fake = self.go(self.doc(), request=request,
+                                        answers=answers)
+        self.assertEqual(code, 0)
+        run_dir = Path(output["run_dir"]).resolve()
+        written = Path(fake.calls[0]["request"]["out"]).resolve()
+        self.assertEqual(written, run_dir / "artifacts")
+        self.assertIn(run_dir, written.parents)
+        self.assertFalse(Path("/outside-the-real-run").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

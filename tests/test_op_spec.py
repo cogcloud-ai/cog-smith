@@ -514,5 +514,24 @@ class VerificationRoundTests(unittest.TestCase):
                           f"cog.{field} = {value!r}")
 
 
+class FinalRoundTests(unittest.TestCase):
+    """Codex final round (phase2-codex-review-4-cog-smith-final.md), item 1 —
+    a loop variable may not name a run-context root."""
+
+    def test_a_foreach_as_that_collides_with_a_path_root_is_refused(self):
+        for root in op_spec.PATH_ROOTS:
+            step = fx.cog_step("first")
+            step["foreach"] = {"items": {"$from": "inputs.note"}, "as": root}
+            message = one(fx.spec_doc([step]))
+            self.assertIn("declares foreach.as", message, root)
+            self.assertIn("name the run context", message, root)
+
+    def test_a_loop_variable_that_is_not_a_path_root_still_loads(self):
+        step = fx.cog_step("first")
+        step["foreach"] = {"items": {"$from": "inputs.note"}, "as": "item"}
+        step["input"] = {"title": {"$from": "item"}}
+        self.assertEqual(problems(fx.spec_doc([step])), [])
+
+
 if __name__ == "__main__":
     unittest.main()

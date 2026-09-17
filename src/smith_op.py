@@ -38,7 +38,7 @@ import op_spec         # noqa: E402
 # The Op machinery lineage (MACHINERY.md). Bumped here when a master
 # changes; `op check` reports it so a package's drift has a version to
 # name.
-MACHINERY_VERSION = "0.4.4"
+MACHINERY_VERSION = "0.4.5"
 MACHINERY = ("op_runner.py", "op_spec.py", "op_track.py")
 OP_TASKS = ("op", "test")
 PLACEHOLDERS = {"object": {}, "array": [], "integer": 0, "number": 0,
@@ -100,8 +100,10 @@ def example_request(spec):
             continue
         if not declared.get("required", True):
             continue                 # absent, not null
-        schema = declared.get("schema") or {}
-        kind = schema.get("type")
+        # A JSON Schema may be a BOOLEAN (`true` accepts anything): only a
+        # dictionary schema has a `type` to shape the placeholder from.
+        schema = declared.get("schema")
+        kind = schema.get("type") if isinstance(schema, dict) else None
         if isinstance(kind, list):  # e.g. ["string", "null"]: first concrete type
             kind = next((k for k in kind if k != "null"), None)
         out[declared["name"]] = PLACEHOLDERS.get(kind, "REPLACE_ME")
