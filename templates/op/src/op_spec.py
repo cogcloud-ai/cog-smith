@@ -44,9 +44,11 @@ FOREACH_KEYS = {"items", "as"}
 GATE_KEYS = {"policy", "guards"}
 TRACK_KEYS = {"records"}
 
-# Refused by name, with the phase that adds the construct.
+# Refused by name, with the phase that adds the construct. A value of None
+# means the construct is never added: there is no tool: step kind —
+# deterministic work is a Cog of kind: code, invoked as a cog: step.
 REFUSED_TOP = {"state": "phase 4"}
-REFUSED_STEP = {"tool": "phase 3", "human": "phase 3"}
+REFUSED_STEP = {"tool": None, "human": "phase 3"}
 
 # Mapping-expression operators: an object whose key set is EXACTLY one of
 # these is an operator; every other object is walked; scalars are literals.
@@ -466,7 +468,14 @@ def validate(doc):
             continue
         sid = step["id"]
         for key, phase in REFUSED_STEP.items():
-            if key in step:
+            if key not in step:
+                continue
+            if phase is None:
+                problems.append(f"Op step {sid!r} declares a {key}: step; there "
+                                f"is no {key}: step kind — deterministic work "
+                                f"is a Cog of kind: code, invoked as a cog: "
+                                f"step.")
+            else:
                 problems.append(f"Op step {sid!r} declares a {key}: step, "
                                 f"which the runner subset does not carry — "
                                 f"{phase} adds it.")

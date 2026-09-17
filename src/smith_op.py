@@ -38,7 +38,7 @@ import op_spec         # noqa: E402
 # The Op machinery lineage (MACHINERY.md). Bumped here when a master
 # changes; `op check` reports it so a package's drift has a version to
 # name.
-MACHINERY_VERSION = "0.4.5"
+MACHINERY_VERSION = "0.4.6"
 MACHINERY = ("op_runner.py", "op_spec.py", "op_track.py")
 OP_TASKS = ("op", "test")
 PLACEHOLDERS = {"object": {}, "array": [], "integer": 0, "number": 0,

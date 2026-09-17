@@ -331,7 +331,7 @@ class ReviewRegressionTests(SmithOpCase):
         self.invalid_spec_package()
         result = self.smith("op", "check", str(self.dest))
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("phase 3", result.stdout)
+        self.assertIn("kind: code", result.stdout)
 
     def test_op_check_envelope_mode_exits_two_for_an_invalid_spec(self):
         self.invalid_spec_package()
@@ -339,7 +339,7 @@ class ReviewRegressionTests(SmithOpCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         env = json.loads(result.stdout)
         self.assertTrue(env["payload"]["invalid_spec"])
-        self.assertTrue(any("phase 3" in p["detail"] for p in env["problems"]))
+        self.assertTrue(any("kind: code" in p["detail"] for p in env["problems"]))
 
     def test_op_check_still_exits_one_for_an_ordinary_package_finding(self):
         smith_op.create(self.spec_path, self.dest)

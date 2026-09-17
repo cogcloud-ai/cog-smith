@@ -48,7 +48,7 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
-## Op machinery (0.4.5, 2026-09-17): `templates/op/src/`
+## Op machinery (0.4.6, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
 Op package carries verbatim, and `smith op check` enforces them by hash
@@ -66,6 +66,17 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.4.6 — `tool:` is refused permanently, pointing at `kind: code`
+
+A vocabulary change, not a behavior change. The runner subset refused `tool:`
+steps with "phase 3 adds it"; phase 3 will not add it. Deterministic work in
+an Op is a model-free Cog of `kind: code` invoked as an ordinary `cog:` step
+(decided 2026-09-17, recorded in the main triage plan's "Code Cogs" section),
+so the op-manifest keeps one step kind. `REFUSED_STEP["tool"]` is now `None`
+and the load-time message says there is no `tool:` step kind and names
+`kind: code`. Rolled out to `op-video-transcription` and `op-project-triage`
+by re-copying.
 
 ### 0.4.5 — the final-review fixes
 

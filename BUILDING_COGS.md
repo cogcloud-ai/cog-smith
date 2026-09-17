@@ -76,6 +76,17 @@ CogSpec describes three broad kinds:
 | **model** | No | Yes, including the software needed to execute it |
 | **complete** | Yes | Yes |
 
+A fourth kind, **code**, was decided on 2026-09-17 for the triage Op's phase 3:
+a package with the Cog shape (manifest, entry points, envelope v1, contract
+checks, catalog card, machinery by hash) whose work is done by code with no
+model in the loop. It carries task context in the same sense a program does,
+and no model. The kind is declared, never inferred; `smith check` refuses a
+code Cog that declares a model requirement. What a code Cog has are
+dependencies and function calls, not tools; "tools" is reserved for what a
+model-driven Cog is granted during a turn. cog-smith itself has this shape.
+A `code-cog` starter follows in phase 3; the first two are the triage Op's
+GitHub read and write-back.
+
 Cog Smith currently provides a supported starter for **context Cogs**. Its
 model-catalog command, **generate-descriptors**, also creates OpenTeams deployment
 descriptors:
@@ -421,7 +432,8 @@ pixi.toml, or cog.yaml):
 
 - **id, version, summary, owner, license** — package identity and
   accountability.
-- **kind** — normally context for the current starter.
+- **kind** — normally context for the current starter; `code` for a
+  model-free Cog (no starter yet).
 - **context** — paths to instructions and schemas.
 - **requires** — capability class, locality, and default satisfier.
 - **interfaces** — names, kinds, tasks, audience, endpoint, and one default.

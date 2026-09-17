@@ -28,12 +28,13 @@ class RefusalTests(unittest.TestCase):
     def test_a_valid_spec_loads(self):
         self.assertEqual(problems(fx.spec_doc()), [])
 
-    def test_tool_step_is_refused_by_name_with_its_phase(self):
+    def test_tool_step_is_refused_by_name_pointing_at_code_cogs(self):
         step = fx.cog_step("first")
         step["tool"] = {"name": "gh"}
         text = one(fx.spec_doc([step]))
         self.assertIn("tool:", text)
-        self.assertIn("phase 3", text)
+        self.assertIn("kind: code", text)
+        self.assertNotIn("phase", text)
 
     def test_human_step_is_refused_by_name_with_its_phase(self):
         step = fx.cog_step("first")

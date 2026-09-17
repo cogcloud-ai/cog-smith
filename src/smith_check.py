@@ -141,6 +141,15 @@ def check(root, run_tests=False):
         err("profile", "interfaces",
             f"exactly one default interface required, got {len(defaults)}")
 
+    # ---- code cogs (decided 2026-09-17) ----------------------------------
+    # kind: code is a model-free Cog: the Cog shape with no model in the
+    # loop. The kind is declared, never inferred, and a code Cog that
+    # declares a model requirement is contradicting itself.
+    if m.get("kind") == "code" and (m.get("requires") or []):
+        err("profile", "declarations",
+            "kind: code declares requires — a code Cog has no model in the "
+            "loop; if it needs a model it is a context Cog")
+
     # ---- model cogs without smith machinery ------------------------------
     # Classification is DECLARED, never inferred (the same F7 rule as
     # interface audience): descriptor rules apply only when the manifest

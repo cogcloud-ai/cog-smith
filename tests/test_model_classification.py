@@ -95,5 +95,40 @@ class TestModelClassification(unittest.TestCase):
                 findings)
 
 
+class TestCodeKind(unittest.TestCase):
+    """kind: code (decided 2026-09-17) is a model-free Cog: declared, never
+    inferred, and refused when it declares a model requirement."""
+
+    def _code_manifest(self, requires):
+        return {
+            "schema": "openteams/cog-manifest [0.1]",
+            "id": "openteams/cog-code-toy", "version": "0.1.0",
+            "kind": "code", "summary": "toy", "owner": "t@example.com",
+            "license": "BSD-3-Clause", "requires": requires,
+            "io": {"accepts": ["repo-config"], "produces": ["github-items"]},
+            "interfaces": [{"name": "run", "kind": "cli", "task": "run",
+                            "audience": "usage", "default": True}],
+        }
+
+    def test_code_cog_with_model_requirement_is_an_error(self):
+        m = self._code_manifest([{"capability": "llm-chat"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = write_cog(tmp, "cog-code-toy", m)
+            findings = smith_check.check(root)
+            self.assertTrue(
+                [f for f in findings if f["level"] == "error"
+                 and f["check"] == "declarations"
+                 and "kind: code" in f["detail"]], findings)
+
+    def test_code_cog_without_requires_is_not_asked_about_a_model(self):
+        m = self._code_manifest([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = write_cog(tmp, "cog-code-toy", m)
+            findings = smith_check.check(root)
+            self.assertFalse(
+                [f for f in findings if f["check"] == "declarations"
+                 and "model dependency" in f["detail"]], findings)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,11 +1,13 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.5
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.6
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
-It is a runner SUBSET on purpose: tool steps, human steps, and durable state
-are refused by name, with the phase that adds them.
+It is a runner SUBSET on purpose: human steps and durable state are refused
+by name, with the phase that adds them. There is no `tool:` step kind and
+never will be: deterministic work in an Op is a model-free Cog of `kind: code`,
+invoked as an ordinary `cog:` step (decided 2026-09-17).
 
 Read [Building and Improving Cogs](BUILDING_COGS.md) first. This guide is the
 layer above it.
@@ -276,7 +278,7 @@ construct and the phase that adds it — never discovered mid-run:
 
 | Construct | Message says |
 |---|---|
-| `tool:` step | phase 3 |
+| `tool:` step | never — deterministic work is a Cog of `kind: code`, invoked as a `cog:` step |
 | `human:` step | phase 3 |
 | `gate.policy: human` | phase 3 |
 | `state:` | phase 4 |
