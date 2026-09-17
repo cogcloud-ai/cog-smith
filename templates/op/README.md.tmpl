@@ -1,0 +1,42 @@
+# {{OP_TITLE}}
+
+{{OP_SUMMARY}}
+
+`op.yaml` is the executable spec: identity, declared inputs, the Cog steps
+and their Gates, and what the Track records. The runner (`src/op_runner.py`)
+sequences those steps, builds each step's request from the spec's mapping
+expressions, invokes each Cog only through the usage task that Cog declares,
+gates the envelope it gets back, and writes a durable Track. No Python in
+this package is Op-specific — `src/` is cog-smith machinery, enforced by
+`smith op check`.
+
+## Steps
+
+{{OP_STEPS_MD}}
+
+## Run it
+
+```bash
+pixi install
+pixi run op -- --request examples/request.json --dry-run   # plan only
+pixi run op -- --request examples/request.json             # the real run
+```
+
+Each run writes `runs/<run id>/` with the input request, every step request,
+every Cog envelope unchanged, and `track.json` — rewritten after every step,
+so an interrupted run still leaves a readable Track.
+
+## Gate policy
+
+Every step's Gate is `envelope-ok-no-error-problems`: a step fails when the
+Cog reports `ok: false` or a contract-check problem with severity `error`.
+Warnings produce `pass-with-problems` and the run continues. This is the
+Op's policy — a Cog reports, and the Gate decides, never the other way
+round. There are no independent Guards in this package; the Track records
+that honestly as an empty list.
+
+## Changing this Op
+
+Edit `op.yaml`, then `pixi run test`. Adding a step means adding a Cog and
+declaring it; the runner never grows per-Op behaviour. See
+`cog-smith/BUILDING_OPS.md`.

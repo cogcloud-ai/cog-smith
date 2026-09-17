@@ -13,6 +13,11 @@ the single source of the machinery every created Cog carries.
   flags override request values; overlays never touch src/. Format:
   examples/cog-request.json.
 - Validate: `pixi run check -- <path> [--tests] [--envelope]`
+- Ops: `python src/cogsmith_cli.py op new --from-spec <spec> --dir <dir>` and
+  `op check <dir> [--tests] [--envelope]` — the Op half of the builder
+  (BUILDING_OPS.md). Op machinery lives in `templates/op/src/` and is
+  enforced by hash the same way Cog machinery is; an Op package carries no
+  per-Op Python at all.
 - Card: `pixi run card -- <path> [--json | --envelope]`
 - `--envelope` emits envelope v1 for Op consumption (builder-op note):
   binding null (deterministic tooling cog), findings in `problems`,
@@ -32,7 +37,9 @@ the single source of the machinery every created Cog carries.
 
 1. **Machinery is sacred:** template `src/` masters change only here, with
    MACHINERY.md updated; created Cogs never edit them (task_logic.py is the
-   sole author-owned src module). `smith check` enforces by hash.
+   sole author-owned src module). `smith check` enforces by hash. The same
+   rule covers `templates/op/src/` (Op machinery 0.4.0), where the
+   author-owned part is op.yaml and nothing else.
 2. **Envelope v1 is the emitted contract** (ENVELOPE.md): fixed `payload`
    key, structured problems, ok-may-carry-problems (gates decide), binding
    identity in every result. Changing it = versioning event, not an edit.

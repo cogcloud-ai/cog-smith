@@ -4,6 +4,8 @@
     pixi run new -- --dir ../cog-meeting-highlights [--id ...] [--yes]
     pixi run check -- ../cog-meeting-highlights [--tests]
     pixi run card -- ../cog-meeting-highlights [--json]
+    pixi run smith -- op new --from-spec spec.yaml --dir ../op-my-workflow
+    pixi run smith -- op check ../op-my-workflow [--tests]
     pixi run migrate -- ../cog-meeting-highlights [--to pixi|yaml] [--dry-run]
 
 `new` walks the builder questions interactively (Travis's list: what are
@@ -24,6 +26,11 @@ Nebi already reads, per the cog-execution ADR D9) or a standalone cog.yaml.
 `smith check` and `smith card` read either. `migrate` converts an existing
 package between the two (default: to pixi) and re-syncs its machinery.
 
+The `op` subcommand is the Op half of the builder (BUILDING_OPS.md): an Op
+package is a resolved spec (`op.yaml`) plus the shared Op machinery, and
+`op check` enforces the machinery by hash exactly as `check` does for Cogs.
+Ops compose Cogs; they never carry per-Op Python.
+
 `new --from-request request.json` creates from a COG REQUEST — one JSON
 document carrying the builder answers plus optionally the drafted
 context files (system.md, schemas, worked example, sample bundle,
@@ -36,6 +43,7 @@ BUILDING_COGS Step 2 rewrite when the drafted schemas diverge from it.
 """
 import argparse
 import json
+import subprocess
 import sys
 import time
 
@@ -49,6 +57,8 @@ import smith_card   # noqa: E402
 import smith_manifest  # noqa: E402
 import smith_migrate  # noqa: E402
 import smith_models  # noqa: E402
+import smith_op      # noqa: E402
+import op_spec       # noqa: E402  (the Op machinery master, imported by smith_op)
 
 SMITH_ROOT = Path(__file__).resolve().parent.parent
 
@@ -356,6 +366,60 @@ def cmd_migrate(args):
     return smith_check.report(findings)
 
 
+def cmd_op_new(args):
+    started = time.monotonic()
+    result = smith_op.create(args.from_spec, args.dir)
+    findings = smith_op.check(result["dest"])
+    errors = [f for f in findings if f["level"] == "error"]
+    if args.envelope:
+        _emit(envelope("op new", True, payload={
+            "dest": result["dest"],
+            "op_id": result["op_id"],
+            "steps": result["steps"],
+            "files": len(result["files"]),
+            "machinery": sorted(smith_op.MACHINERY),
+            "machinery_version": smith_op.MACHINERY_VERSION,
+            "check": {"errors": len(errors),
+                      "warnings": len(findings) - len(errors)},
+        }, problems=_problems(findings), started=started))
+        return 1 if errors else 0
+    print(f"created {result['op_id']} -> {result['dest']}")
+    print(f"  {len(result['files'])} files; steps: {', '.join(result['steps'])}")
+    print("  next: fill examples/request.json, then:")
+    print("        pixi install && pixi run op -- --request examples/request.json --dry-run")
+    return smith_check.report(findings)
+
+
+def cmd_op_check(args):
+    started = time.monotonic()
+    findings = smith_op.check(args.path, run_tests=args.tests)
+    if args.envelope:
+        errors = [f for f in findings if f["level"] == "error"]
+        _emit(envelope("op check", True, payload={
+            "path": str(Path(args.path).resolve()),
+            "pass": not errors,
+            "errors": len(errors),
+            "warnings": len(findings) - len(errors),
+            "machinery_version": smith_op.MACHINERY_VERSION,
+        }, problems=_problems(findings), started=started))
+        return 1 if errors else 0
+    return smith_check.report(findings)
+
+
+def cmd_op_run(args):
+    """Exec the Op package's own runner — smith adds nothing to the run."""
+    runner = Path(args.path) / "src" / "op_runner.py"
+    if not runner.exists():
+        return _cli_error(args, f"{args.path} carries no src/op_runner.py — "
+                                f"run `smith op check` on it first")
+    command = [sys.executable, str(runner), "--request", str(args.request)]
+    if args.dry_run:
+        command.append("--dry-run")
+    if args.runs_dir:
+        command += ["--runs-dir", str(args.runs_dir)]
+    return subprocess.run(command, cwd=str(Path(args.path).resolve())).returncode
+
+
 def _cli_error(args, detail):
     """Expected-failure exit: envelope when asked, stderr otherwise."""
     if getattr(args, "envelope", False):
@@ -437,6 +501,37 @@ def main():
                    help="emit an envelope-v1 result")
     p.set_defaults(fn=cmd_migrate)
 
+    p = sub.add_parser("op", help="create and validate Op packages "
+                                  "(see BUILDING_OPS.md)")
+    op_sub = p.add_subparsers(dest="op_cmd", required=True)
+
+    q = op_sub.add_parser("new", help="create an Op package from a resolved "
+                                      "spec")
+    q.add_argument("--from-spec", dest="from_spec", required=True,
+                   metavar="SPEC", help="the resolved Op spec (JSON or YAML); "
+                                        "written as the package's op.yaml")
+    q.add_argument("--dir", required=True,
+                   help="destination directory; it may already exist as long "
+                        "as none of the files being written are in it")
+    q.add_argument("--envelope", action="store_true",
+                   help="emit an envelope-v1 result")
+    q.set_defaults(fn=cmd_op_new, cmd="op new")
+
+    q = op_sub.add_parser("check", help="validate an Op package")
+    q.add_argument("path")
+    q.add_argument("--tests", action="store_true",
+                   help="also run the Op package's own test suite")
+    q.add_argument("--envelope", action="store_true",
+                   help="emit an envelope-v1 result (findings in problems)")
+    q.set_defaults(fn=cmd_op_check, cmd="op check")
+
+    q = op_sub.add_parser("run", help="run an Op package's own runner")
+    q.add_argument("path")
+    q.add_argument("--request", required=True)
+    q.add_argument("--dry-run", action="store_true")
+    q.add_argument("--runs-dir")
+    q.set_defaults(fn=cmd_op_run, cmd="op run", envelope=False)
+
     p = sub.add_parser("card", help="render a Cog's catalog card")
     p.add_argument("path")
     p.add_argument("--json", action="store_true")
@@ -448,7 +543,8 @@ def main():
     try:
         return args.fn(args)
     except (smith_core.CreateError, smith_models.ModelConfigError,
-            smith_migrate.MigrateError, smith_manifest.ManifestError) as e:
+            smith_migrate.MigrateError, smith_manifest.ManifestError,
+            smith_op.OpCreateError, op_spec.OpSpecError) as e:
         return _cli_error(args, str(e))
     except FileNotFoundError as e:
         return _cli_error(args, f"not found: {e.filename or e}")

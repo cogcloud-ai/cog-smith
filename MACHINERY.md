@@ -47,3 +47,27 @@ a manifest). These rules are mirrored by hand in cog-smith's
 `smith_manifest.py`; keep the two in step.
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
+
+## Op machinery (0.4.0, 2026-09-17): `templates/op/src/`
+
+A second lineage, on the same terms: `templates/op/src/` are the masters an
+Op package carries verbatim, and `smith op check` enforces them by hash
+(`smith_op.MACHINERY_VERSION` names the lineage). An Op has no author-owned
+module at all — the equivalent of `task_logic.py` is `op.yaml` itself. If an
+Op needs code, the answer is a Cog step, never a script in the Op.
+
+| File | Provenance |
+|---|---|
+| `op_runner.py` | `gate_envelope`, `parse_envelope`, and `invoke_cog` lifted from `op-video-transcription/src/run_op.py` (the 2026-08-25 sample Op, at its current working-tree state — that package is not itself a git repo); the rest is new: topological step order, foreach, `on_fail`, retry-once, dry run |
+| `op_spec.py` | NEW — `openteams/op-manifest [0.1]` load + validate + refuse-by-name, and the closed mapping-expression vocabulary (`$from`, `$default`, `$path`, `$run_dir`, `$stem`, `$literal`) |
+| `op_track.py` | Track shape extended from `op-video-transcription`'s `track.json`: step `status`, `attempts`, foreach `elements`, `spec_sha256` |
+
+Semantics implemented from `planning/current/phase2-op-runner-contract.md`
+(§1–§4, §6). Gate wording is unchanged from the sample Op: three states
+(`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
+recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+Rules are the Cog rules: fixes happen HERE, version-bumped, and roll out to
+Op packages by re-copying. A created Op package must be immediately runnable
+(`pixi run op -- --request examples/request.json --dry-run`) and immediately
+checkable (`smith op check --tests`).
