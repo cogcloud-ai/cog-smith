@@ -89,8 +89,10 @@ def example_request(spec):
             out[declared["name"]] = declared["default"]
             continue
         schema = declared.get("schema") or {}
-        out[declared["name"]] = PLACEHOLDERS.get(schema.get("type"),
-                                                 "REPLACE_ME")
+        kind = schema.get("type")
+        if isinstance(kind, list):  # e.g. ["string", "null"]: first concrete type
+            kind = next((k for k in kind if k != "null"), None)
+        out[declared["name"]] = PLACEHOLDERS.get(kind, "REPLACE_ME")
     return out
 
 

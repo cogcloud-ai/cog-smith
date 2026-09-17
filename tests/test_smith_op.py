@@ -88,12 +88,13 @@ class CreateTests(SmithOpCase):
         doc = self.spec_doc()
         doc["inputs"] = [{"name": "note", "default": "a default"},
                          {"name": "items", "schema": {"type": "array"}},
+                         {"name": "maybe", "schema": {"type": ["string", "null"]}},
                          {"name": "free"}]
         self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
         smith_op.create(self.spec_path, self.dest)
         example = json.loads((self.dest / "examples" / "request.json").read_text())
         self.assertEqual(example, {"note": "a default", "items": [],
-                                   "free": "REPLACE_ME"})
+                                   "maybe": "REPLACE_ME", "free": "REPLACE_ME"})
 
     def test_creates_into_an_existing_directory_without_collisions(self):
         self.dest.mkdir()
