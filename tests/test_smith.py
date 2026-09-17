@@ -12,23 +12,28 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import smith_card   # noqa: E402
-import smith_check  # noqa: E402
-import smith_core   # noqa: E402
+import smith_card      # noqa: E402
+import smith_check     # noqa: E402
+import smith_core      # noqa: E402
+import smith_manifest  # noqa: E402
 
 
-def create_tmp(tmp, name="cog-toy", **overrides):
+def create_tmp(tmp, name="cog-toy", manifest_format="pixi", **overrides):
     dest = Path(tmp) / name
     tokens = smith_core.default_tokens(name, **overrides)
-    smith_core.create(dest, tokens)
+    smith_core.create(dest, tokens, manifest_format=manifest_format)
     return dest
+
+
+def manifest_of(root):
+    return smith_manifest.load(root)[0]
 
 
 class TestCreate(unittest.TestCase):
     def test_create_produces_complete_package(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = create_tmp(tmp)
-            for rel in ("cog.yaml", "COG.md", "pixi.toml", ".gitignore",
+            for rel in ("COG.md", "pixi.toml", ".gitignore",
                         "context/system.md", "context/input-schema.json",
                         "context/output-schema.json",
                         "context/output-example.json",
@@ -37,8 +42,12 @@ class TestCreate(unittest.TestCase):
                         "src/cog_core.py", "src/task_logic.py",
                         "src/cog_binding.py", "src/cog_resolve.py"):
                 self.assertTrue((dest / rel).exists(), rel)
-            m = yaml.safe_load((dest / "cog.yaml").read_text())
+            # default format: the manifest is [tool.cog] in pixi.toml
+            self.assertFalse((dest / "cog.yaml").exists())
+            m, fmt, path = smith_manifest.load(dest)
+            self.assertEqual((fmt, path.name), ("pixi", "pixi.toml"))
             self.assertEqual(m["id"], "openteams/cog-toy")
+            self.assertEqual(m["version"], "0.1.0")     # from [workspace]
             self.assertEqual(m["schema"], "openteams/cog-manifest [0.1]")
             # in-manifest input schema — the post-freeze upgrade, no overlays
             self.assertEqual(m["context"]["input_schema"],
@@ -62,7 +71,7 @@ class TestCreate(unittest.TestCase):
             dest = create_tmp(tmp, name="cog-ap-triage",
                             SUMMARY="Triages AP exceptions.", PORT="8123",
                             PROHIBITS_YAML="  - approve_payment")
-            m = yaml.safe_load((dest / "cog.yaml").read_text())
+            m = manifest_of(dest)
             self.assertIn("Triages AP exceptions.", m["summary"])
             self.assertIn(":8123/", m["interfaces"][0]["endpoint"])
             self.assertEqual(m["prohibits"], ["approve_payment"])
@@ -106,6 +115,18 @@ class TestCheck(unittest.TestCase):
     def test_missing_manifest_field_is_caught(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = create_tmp(tmp)
+            pixi = dest / "pixi.toml"
+            text = pixi.read_text()
+            self.assertIn('owner = "', text)
+            pixi.write_text("\n".join(l for l in text.splitlines()
+                                      if not l.startswith("owner = ")) + "\n")
+            findings = smith_check.check(dest)
+            self.assertTrue(any("owner" in f["detail"] for f in findings
+                                if f["level"] == "error"))
+
+    def test_missing_manifest_field_is_caught_yaml(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = create_tmp(tmp, manifest_format="yaml")
             m = yaml.safe_load((dest / "cog.yaml").read_text())
             del m["owner"]
             (dest / "cog.yaml").write_text(yaml.safe_dump(m))
@@ -141,7 +162,8 @@ class TestCard(unittest.TestCase):
         self.assertEqual(c["id"], "openteams/cog-smith")
         # F7: check is USAGE for smith (validates OTHER cogs) — declared, not inferred
         self.assertEqual(set(c["ops"]["usage"]),
-                         {"new", "card", "generate-descriptors", "check"})
+                         {"new", "card", "generate-descriptors", "check",
+                          "migrate"})
         self.assertEqual(c["card"], 1)
 
 
@@ -162,20 +184,23 @@ class TestGenerateDescriptors(unittest.TestCase):
                 self.assertEqual(errors, [], (name, findings))
 
     def test_descriptor_shape(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            smith_models.generate_from_config(CATALOG, tmp)
-            m = yaml.safe_load(
-                (Path(tmp) / "cog-qwen35b-collab" / "cog.yaml").read_text())
-            self.assertEqual(m["kind"], "model")
-            self.assertIn("model-endpoint/openai-compatible", m["provides"])
-            d = m["interfaces"][0]
-            self.assertEqual(d["address"], "install-time")
-            self.assertNotIn("endpoint", d)
-            self.assertEqual(d["api_key_env"], "COLLAB_API_KEY")
-            ep = yaml.safe_load(
-                (Path(tmp) / "cog-qwen3b-localdev" / "cog.yaml").read_text())
-            self.assertEqual(ep["interfaces"][0]["endpoint"],
-                             "http://127.0.0.1:8080/v1")
+        for fmt in ("pixi", "yaml"):
+            with tempfile.TemporaryDirectory() as tmp:
+                smith_models.generate_from_config(CATALOG, tmp,
+                                                  manifest_format=fmt)
+                root = Path(tmp) / "cog-qwen35b-collab"
+                m, got, path = smith_manifest.load(root)
+                self.assertEqual(got, fmt)
+                self.assertEqual(m["kind"], "model")
+                self.assertEqual(m["version"], "0.1.0")
+                self.assertIn("model-endpoint/openai-compatible", m["provides"])
+                d = m["interfaces"][0]
+                self.assertEqual(d["address"], "install-time")
+                self.assertNotIn("endpoint", d)
+                self.assertEqual(d["api_key_env"], "COLLAB_API_KEY")
+                ep = manifest_of(Path(tmp) / "cog-qwen3b-localdev")
+                self.assertEqual(ep["interfaces"][0]["endpoint"],
+                                 "http://127.0.0.1:8080/v1")
 
     def test_existing_cogs_are_skipped_not_clobbered(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -215,7 +240,8 @@ class TestGenerateDescriptors(unittest.TestCase):
 
     def test_descriptor_check_catches_missing_provides(self):
         with tempfile.TemporaryDirectory() as tmp:
-            smith_models.generate_from_config(CATALOG, tmp)
+            smith_models.generate_from_config(CATALOG, tmp,
+                                              manifest_format="yaml")
             root = Path(tmp) / "cog-sonnet-gateway"
             m = yaml.safe_load((root / "cog.yaml").read_text())
             del m["provides"]
@@ -237,7 +263,8 @@ class TestGenerateDescriptors(unittest.TestCase):
 
 class TestSelf(unittest.TestCase):
     def test_own_manifest_is_wellformed(self):
-        m = yaml.safe_load((ROOT / "cog.yaml").read_text())
+        m, fmt, path = smith_manifest.load(ROOT)
+        self.assertEqual((fmt, path.name), ("pixi", "pixi.toml"))   # dogfood
         for f in smith_check.PROFILE_FIELDS:
             self.assertIn(f, m)
         self.assertEqual(m["schema"], smith_check.SCHEMA_STRING)

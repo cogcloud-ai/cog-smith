@@ -13,6 +13,14 @@ A created Cog = rendered templates (identity, context, examples, tests) +
 verbatim machinery (everything in templates/<t>/src/ except task_logic.py,
 which the author owns). `smith check` verifies machinery against these
 masters — the same copy-sync discipline as cog-forge.
+
+Manifest format (cog-execution ADR D9): the profile manifest is written into
+``pixi.toml`` under ``[tool.cog]`` by default, or into a standalone
+``cog.yaml`` (``manifest_format="yaml"``). Each template carries both
+renderings: ``cog.yaml.tmpl`` (emitted only for yaml) and
+``_partials/manifest.toml.tmpl`` (rendered into the ``{{MANIFEST_TOML}}``
+token of ``pixi.toml.tmpl`` only for pixi). ``_partials/`` is never emitted
+as files.
 """
 import hashlib
 import json
@@ -32,6 +40,13 @@ AUTHOR_OWNED_SRC = {"task_logic.py"}
 LIFECYCLE_TASKS = {"resolve", "use", "check", "eval", "test", "bundle", "serve"}
 
 TOKEN_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
+
+MANIFEST_FORMATS = ("pixi", "yaml")
+DEFAULT_MANIFEST_FORMAT = "pixi"
+MANIFEST_FILES = {"pixi": "pixi.toml", "yaml": "cog.yaml"}
+PARTIALS_DIR = "_partials"
+MANIFEST_PARTIAL = "manifest.toml.tmpl"
+YAML_MANIFEST_TEMPLATE = "cog.yaml.tmpl"
 
 # CogSpec core name grammar: lowercase alphanumerics, single hyphens,
 # starts with a letter, no consecutive hyphens, no underscores.
@@ -112,19 +127,56 @@ def validate_request(tokens):
         raise CreateError("invalid create request:\n  - " + "\n  - ".join(problems))
 
 
+def _prohibits_list(tokens):
+    """The prohibited actions as a list, from the request's YAML-list token."""
+    items = []
+    for line in str(tokens.get("PROHIBITS_YAML", "")).splitlines():
+        item = line.strip().lstrip("- ").strip()
+        if item:
+            items.append(item)
+    return items
+
+
 def _serialization_tokens(tokens):
     """Derived tokens for structured-format insertion points (F2):
     values are produced by serializers, not raw substitution."""
     out = dict(tokens)
     summary = _one_line(tokens.get("SUMMARY", ""))
     out.setdefault("SUMMARY_ONELINE", summary[:160])
-    # TOML basic string (json string escaping is valid TOML):
-    out["SUMMARY_TOML"] = json.dumps(f"Context Cog: {out['SUMMARY_ONELINE']}")
+    # TOML basic strings (json string escaping is valid TOML). The workspace
+    # description IS the profile summary when the manifest lives in
+    # pixi.toml (stated once — ADR D9), so it carries the full sentence.
+    out["SUMMARY_TOML"] = json.dumps(summary)
+    out["PROHIBITS_TOML"] = json.dumps(_prohibits_list(tokens))
+    for key in ("COG_ID", "OWNER", "LICENSE", "MODEL_COG_ID",
+                "MODEL_COG_SOURCE", "PRODUCES"):
+        if key in out:
+            out[f"{key}_TOML"] = json.dumps(str(out[key]))
     # YAML double-quoted scalars for frontmatter lines:
     out["DESCRIPTION_YAML"] = json.dumps(
         f"Context Cog. {summary} Depends on a Cog providing an "
         f"OpenAI-compatible model endpoint.")
     out["SUMMARY"] = summary          # single-line; safe inside block scalars
+    return out
+
+
+def _manifest_tokens(tokens, troot, manifest_format):
+    """MANIFEST_FILE (what COG.md points at) and MANIFEST_TOML (the rendered
+    [tool.cog] block, empty for the yaml format)."""
+    if manifest_format not in MANIFEST_FORMATS:
+        raise CreateError(f"unknown manifest format {manifest_format!r}; "
+                          f"choose one of {list(MANIFEST_FORMATS)}")
+    out = dict(tokens)
+    out["MANIFEST_FILE"] = MANIFEST_FILES[manifest_format]
+    partial = troot / PARTIALS_DIR / MANIFEST_PARTIAL
+    if manifest_format == "pixi":
+        if not partial.exists():
+            raise CreateError(f"template {troot.name!r} has no "
+                              f"{PARTIALS_DIR}/{MANIFEST_PARTIAL}; it cannot "
+                              f"write a pixi.toml manifest")
+        out["MANIFEST_TOML"] = render(partial.read_text(), out)
+    else:
+        out["MANIFEST_TOML"] = ""
     return out
 
 
@@ -151,10 +203,16 @@ def default_tokens(cog_name, **overrides):
     return tokens
 
 
-def create(dest, tokens, template="context-cog", validate=True, overlays=None):
+def create(dest, tokens, template="context-cog", validate=True, overlays=None,
+           manifest_format=DEFAULT_MANIFEST_FORMAT):
     """Create a new Cog package at dest, atomically. The destination never
     exists half-built: rendering happens in a staging sibling which is
     renamed into place only after every file rendered cleanly.
+
+    manifest_format: "pixi" (default) writes the profile manifest into
+    pixi.toml under [tool.cog] and emits no cog.yaml; "yaml" writes the
+    standalone cog.yaml and a plain pixi.toml. COG.md's `manifest:` pointer
+    names whichever was written.
 
     overlays: optional {relative-path: text} written into the staging
     directory AFTER template rendering and the leftover-token check, so a
@@ -172,6 +230,7 @@ def create(dest, tokens, template="context-cog", validate=True, overlays=None):
     if validate and template == "context-cog":
         validate_request(tokens)
     tokens = _serialization_tokens(tokens)
+    tokens = _manifest_tokens(tokens, troot, manifest_format)
 
     staging = dest.parent / f".smith-{dest.name}.tmp"
     if staging.exists():
@@ -182,6 +241,10 @@ def create(dest, tokens, template="context-cog", validate=True, overlays=None):
             if not path.is_file():
                 continue
             rel = path.relative_to(troot)
+            if rel.parts[0] == PARTIALS_DIR:
+                continue                       # rendered into tokens, never emitted
+            if rel.name == YAML_MANIFEST_TEMPLATE and manifest_format != "yaml":
+                continue
             if rel.parts[0] == "src":
                 out = staging / rel
                 out.parent.mkdir(parents=True, exist_ok=True)
@@ -220,4 +283,5 @@ def create(dest, tokens, template="context-cog", validate=True, overlays=None):
         shutil.rmtree(staging, ignore_errors=True)
         raise
     return {"dest": str(dest), "files": written,
+            "manifest": MANIFEST_FILES[manifest_format],
             "machinery": sorted(machinery_hashes(template).keys())}

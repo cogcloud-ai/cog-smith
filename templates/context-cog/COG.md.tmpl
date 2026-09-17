@@ -5,7 +5,7 @@ description: {{DESCRIPTION_YAML}}
 version: "0.1.0"
 license: {{LICENSE}}
 publisher: {{PUBLISHER}}
-manifest: cog.yaml
+manifest: {{MANIFEST_FILE}}
 manifest_schema: openteams/cog-manifest [0.1]
 ---
 
@@ -26,7 +26,7 @@ the grounding rule: what must every output cite/quote?)*
 ## Unsupported work
 
 *(Name the adjacent work this Cog deliberately does NOT do — and which
-prohibitions in cog.yaml make that structural.)*
+prohibitions in the manifest make that structural.)*
 
 ## Using it
 
@@ -49,4 +49,4 @@ key, structured `problems`, complete `binding` identity in every result.
 Everything in `src/` except `task_logic.py` is shared cog-smith machinery
 derived from cog-forge @7fe8aca (engineering-gates PASS) — do not edit it
 here; `smith check` verifies the copies. This Cog's identity lives in
-`cog.yaml`, `context/`, and `src/task_logic.py`.
+its manifest (`{{MANIFEST_FILE}}`), `context/`, and `src/task_logic.py`.

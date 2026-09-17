@@ -6,7 +6,9 @@
                 (Not yet the full reference validator — see the note in
                 AGENTS.md; findings are labeled so the layers never blur.)
 - **profile** — openteams/cog-manifest [0.1] fields and semantics, incl.
-                the cog.yaml filename convention (a PROFILE rule, not core).
+                the manifest-file convention (a PROFILE rule, not core):
+                `[tool.cog]` in pixi.toml (default, ADR D9) or cog.yaml —
+                exactly one, and COG.md's `manifest:` pointer must agree.
 - **runtime** — cog-smith machinery copy-sync, tasks, schemas, fixtures,
                 and (optionally) the Cog's own test suite. Skipped, with a
                 note, for packages that don't carry smith machinery
@@ -25,7 +27,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import smith_core       # noqa: E402
-import toml_compat      # noqa: E402
+import smith_manifest   # noqa: E402
 
 try:
     import jsonschema
@@ -90,21 +92,26 @@ def check(root, run_tests=False):
                 err("core", "cogmd", "description must be a string")
 
     # ==================================================== profile layer ==
-    mp = root / "cog.yaml"
-    if not mp.exists():
-        err("profile", "manifest",
-            f"{root} has no cog.yaml (the openteams profile fixes the "
-            f"manifest filename; core CogSpec lets COG.md name it)")
-        return findings
-    if meta and meta.get("manifest") not in (None, "cog.yaml"):
-        err("core", "cogmd", f"frontmatter names manifest "
-                             f"{meta.get('manifest')!r}; profile requires "
-                             f"cog.yaml")
     try:
-        m = yaml.safe_load(mp.read_text()) or {}
-    except yaml.YAMLError as e:
-        err("profile", "manifest", f"cog.yaml is not valid YAML: {e}")
+        m, fmt, mp = smith_manifest.load(root)
+    except smith_manifest.ManifestError as e:
+        err("profile", "manifest", str(e))
         return findings
+    if meta and meta.get("manifest") not in (None, mp.name):
+        err("core", "cogmd", f"frontmatter names manifest "
+                             f"{meta.get('manifest')!r}, but the profile "
+                             f"manifest found is {mp.name}")
+    pixi_doc = smith_manifest.read_pixi(root) if fmt == "pixi" else None
+    if pixi_doc is not None:
+        ws = pixi_doc.get("workspace") or pixi_doc.get("project") or {}
+        tool = pixi_doc["tool"]["cog"]
+        if "version" in tool and ws.get("version") not in (None, tool["version"]):
+            err("profile", "manifest",
+                f"[tool.cog].version {tool['version']!r} != [workspace].version "
+                f"{ws.get('version')!r} — state the version once, in [workspace]")
+        if not ws.get("version"):
+            err("profile", "manifest",
+                "[workspace].version is required (it is the manifest version)")
 
     required = tuple(f for f in PROFILE_FIELDS
                      if not (m.get("kind") == "model" and f == "io"))
@@ -214,13 +221,16 @@ def check(root, run_tests=False):
         err("runtime", "machinery", "src/task_logic.py missing (the "
                                     "author-owned module)")
 
-    pixi_path = root / "pixi.toml"
     tasks = {}
-    if not pixi_path.exists():
+    try:
+        pixi_doc = pixi_doc if pixi_doc is not None else smith_manifest.read_pixi(root)
+    except ValueError as e:
+        pixi_doc = None
+        err("runtime", "interfaces", f"pixi.toml unreadable: {e}")
+    if pixi_doc is None:
         err("runtime", "interfaces", "pixi.toml missing")
     else:
-        with open(pixi_path, "rb") as f:
-            tasks = (toml_compat.load(f).get("tasks")) or {}
+        tasks = pixi_doc.get("tasks") or {}
     for i in m.get("interfaces") or []:
         t = i.get("task")
         if t and tasks and t not in tasks:

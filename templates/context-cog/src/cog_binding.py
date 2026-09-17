@@ -41,10 +41,67 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
 # ---------------------------------------------------------------- manifest --
+#
+# The profile manifest (openteams/cog-manifest [0.1]) lives in ONE of:
+#   - pixi.toml under [tool.cog]  (default; cog-execution ADR D9) — `version`
+#     and `summary` may be omitted there and fall back to [workspace]
+#     version / description, so each is stated once;
+#   - cog.yaml                     (the standalone YAML form).
+# Same rules as cog-smith's smith_manifest.py — kept in step by hand because
+# machinery is copied verbatim into every Cog and cannot import smith.
+
+MANIFEST_TOOL_TABLE = "cog"
+
+
+def _read_pixi_manifest(root):
+    p = Path(root) / "pixi.toml"
+    if not p.exists():
+        return None
+    try:
+        import tomllib
+    except ImportError as e:                          # Python < 3.11
+        raise RuntimeError("reading a [tool.cog] manifest in pixi.toml needs "
+                           "Python 3.11+ (tomllib)") from e
+    with open(p, "rb") as f:
+        doc = tomllib.load(f)
+    tool = doc.get("tool")
+    if not (isinstance(tool, dict) and isinstance(tool.get(MANIFEST_TOOL_TABLE), dict)):
+        return None
+    m = dict(tool[MANIFEST_TOOL_TABLE])
+    ws = doc.get("workspace") or doc.get("project") or {}
+    if "version" not in m and ws.get("version") is not None:
+        m["version"] = ws["version"]
+    if "summary" not in m and ws.get("description") is not None:
+        m["summary"] = ws["description"]
+    return m
+
+
+def manifest_path(root):
+    """The file this Cog's manifest lives in (pixi.toml or cog.yaml), or None."""
+    root = Path(root)
+    if _read_pixi_manifest(root) is not None:
+        return root / "pixi.toml"
+    if (root / "cog.yaml").exists():
+        return root / "cog.yaml"
+    return None
+
 
 def load_manifest(root):
-    """This Cog's own cog.yaml: identity and declared requirements."""
-    return yaml.safe_load((Path(root) / "cog.yaml").read_text())
+    """This Cog's own manifest: identity and declared requirements.
+    Raises FileNotFoundError when the package carries neither form, and
+    ValueError when it carries both (readers could disagree about the Cog)."""
+    root = Path(root)
+    pixi = _read_pixi_manifest(root)
+    yaml_path = root / "cog.yaml"
+    if pixi is not None and yaml_path.exists():
+        raise ValueError(f"{root}: both pixi.toml [tool.cog] and cog.yaml are "
+                         f"present — a package carries exactly one manifest")
+    if pixi is not None:
+        return pixi
+    if yaml_path.exists():
+        return yaml.safe_load(yaml_path.read_text()) or {}
+    raise FileNotFoundError(f"{root}: no manifest — neither pixi.toml with a "
+                            f"[tool.cog] table nor cog.yaml")
 
 
 def declared_locality_constraint(manifest):

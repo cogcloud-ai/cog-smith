@@ -2,7 +2,7 @@
 """(cog-smith machinery: derived from cog-forge @7fe8aca; envelope-v1 deltas marked.)
 Run this Cog's declared evaluation fixtures against the bound model.
 
-    pixi run eval                  # every fixture declared in cog.yaml
+    pixi run eval                  # every fixture declared in the manifest
     pixi run eval -- --fixture evals/smoke.fixture.yaml
     pixi run eval -- --report      # also write evals/last-report.json
     pixi run eval -- --baseline    # retain a named report under evals/reports/
@@ -29,7 +29,8 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import cog_core  # noqa: E402
+import cog_binding  # noqa: E402
+import cog_core     # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -250,7 +251,7 @@ def main():
     if args.fixture:
         fixtures = [Path(f) for f in args.fixture]
     else:
-        manifest = yaml.safe_load((ROOT / "cog.yaml").read_text())
+        manifest = cog_binding.load_manifest(ROOT)
         declared = ((manifest.get("evaluation") or {}).get("fixtures")) or []
         fixtures = [ROOT / f for f in declared]
     if not fixtures:

@@ -68,7 +68,8 @@ class TestCreateFromRequest(unittest.TestCase):
             env = json.loads(r.stdout)
             self.assertTrue(env["ok"], env)
             self.assertIn("Flag summary wins.",
-                          (dest / "cog.yaml").read_text())
+                          (dest / "pixi.toml").read_text())
+            self.assertFalse((dest / "cog.yaml").exists())
 
     def test_request_is_non_interactive_without_yes(self):
         # subprocess stdin is not a tty; --from-request alone must not

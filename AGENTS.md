@@ -49,9 +49,11 @@ the single source of the machinery every created Cog carries.
    checks guards. (Machinery wording was swept in the 0.2.0 release; fix any future
    drift only with a machinery version bump, never inside a created Cog.)
 6. **Checker layers (review 2026-08-22, F1):** findings are labeled
-   core / profile / runtime and the layers must never blur — cog.yaml
-   is a PROFILE convention, not a core rule. Known gap, queued: compose
-   the CogSpec reference validator into the core layer.
+   core / profile / runtime and the layers must never blur — the manifest
+   file (`[tool.cog]` in pixi.toml by default, or cog.yaml; exactly one,
+   named by COG.md's `manifest:` pointer) is a PROFILE convention, not a
+   core rule. Known gap, queued: compose the CogSpec reference validator
+   into the core layer.
 7. **Lockfile policy (F6):** pixi.lock files are generated ONLY on
    Trent's Mac (conda-forge is 403-blocked in the sandbox and device VM)
    and committed once generated; created Cogs follow the same policy.

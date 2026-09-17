@@ -1,12 +1,14 @@
 [workspace]
 name = "cog-smith"
-version = "0.1.0"
-description = "The Cog builder: create, validate, and describe Cogs."
+version = "0.2.0"
+description = "Creates, validates, and describes Cogs: `new` scaffolds a complete runnable package from review-hardened machinery, `check` enforces manifest and copy-sync discipline, `card` renders the catalog card consumers see."
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
 
 [dependencies]
-python = ">=3.10"
+# 3.11+: [tool.cog] manifests are read with tomllib (toml_compat degrades
+# honestly on older interpreters — it refuses to half-read a manifest)
+python = ">=3.11"
 pyyaml = "*"
 jsonschema = "*"
 
@@ -14,5 +16,68 @@ jsonschema = "*"
 new = "python src/cogsmith_cli.py new"
 check = "python src/cogsmith_cli.py check"
 card = "python src/cogsmith_cli.py card"
+migrate = "python src/cogsmith_cli.py migrate"
 generate-descriptors = "python src/cogsmith_cli.py generate-descriptors"
 test = "python -m unittest discover -s tests -v"
+
+# ---------------------------------------------------------------------------
+# cog-smith is itself a Cog: the builder is a cognitive-capability
+# provisioner whose bundled usage ops create, validate, and describe Cogs.
+# v0 ops are deterministic; the model-backed `draft` op arrives in v1
+# (it will declare a model-endpoint requirement then).
+#
+# Profile manifest: openteams/cog-manifest [0.1], hosted here under
+# [tool.cog] (cog-execution ADR D9). `version` and `summary` are stated once,
+# in [workspace] above; readers fall back to them.
+# ---------------------------------------------------------------------------
+[tool.cog]
+schema = "openteams/cog-manifest [0.1]"
+id = "openteams/cog-smith"
+kind = "context"
+owner = "trent@openteams.com"
+license = "BSD-3-Clause"
+frames = []
+requires = []
+memory = "none"
+prohibits = [
+  "overwrite_existing_package",
+  "publish_to_registry",   # creating is local; publishing is a separate, deliberate act
+]
+
+[[tool.cog.interfaces]]
+name = "new"
+kind = "command"
+task = "new"
+audience = "usage"
+default = true
+
+[[tool.cog.interfaces]]
+name = "check"
+kind = "command"
+task = "check"
+audience = "usage"      # validates OTHER cogs — a user-facing capability here
+
+[[tool.cog.interfaces]]
+name = "generate-descriptors"
+kind = "command"
+task = "generate-descriptors"
+audience = "usage"
+
+[[tool.cog.interfaces]]
+name = "card"
+kind = "command"
+task = "card"
+audience = "usage"
+
+[[tool.cog.interfaces]]
+name = "migrate"
+kind = "command"
+task = "migrate"
+audience = "usage"      # converts OTHER cogs' manifests between formats
+
+[tool.cog.io]
+accepts = ["build_request"]
+produces = ["cog_package", "check_report", "catalog_card", "migrated_package"]
+
+[tool.cog.evaluation]
+fixtures = []

@@ -1,0 +1,11 @@
+[workspace]
+name = "{{COG_NAME}}"
+version = "0.1.0"
+description = {{SUMMARY_TOML}}
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "linux-64"]
+
+# A deployment descriptor carries no runtime: no dependencies, no tasks.
+# The workspace exists so the package is a Nebi-publishable pixi workspace.
+[dependencies]
+{{MANIFEST_TOML}}

@@ -27,8 +27,8 @@ different layers:
 | Layer | What it defines | Where to look |
 |---|---|---|
 | **CogSpec core** | The portable artifact: COG.md, its frontmatter, and the manifest it identifies | [CogSpec](../cog-spec/SPEC.md) |
-| **OpenTeams/Collab profile** | The current manifest fields, entry-point conventions, result envelope, binding, and hosting expectations used by this workspace | [Envelope](ENVELOPE.md) and the generated cog.yaml |
-| **A particular Cog** | One worker's purpose, inputs, outputs, instructions, contract checks, tests, and declared dependencies | Its COG.md, cog.yaml, context/, and task_logic.py |
+| **OpenTeams/Collab profile** | The current manifest fields, entry-point conventions, result envelope, binding, and hosting expectations used by this workspace | [Envelope](ENVELOPE.md) and the generated manifest (`[tool.cog]` in pixi.toml, or cog.yaml) |
+| **A particular Cog** | One worker's purpose, inputs, outputs, instructions, contract checks, tests, and declared dependencies | Its COG.md, manifest, context/, and task_logic.py |
 
 A Cog can conform to the public core while not being runnable in a particular
 hosting environment. A hosting environment is allowed to require a stricter
@@ -46,7 +46,7 @@ The smallest possible Cog is therefore:
 
     cog-example/
     ├── COG.md
-    └── cog.yaml
+    └── cog.yaml            # or pixi.toml carrying a [tool.cog] table
 
 The public core intentionally does not dictate the manifest's contents. It makes
 the artifact recognizable, inspectable, and self-identifying. The OpenTeams
@@ -225,13 +225,13 @@ durable workflow state. See
 
 ## 5. Anatomy of a Cog Smith context Cog
 
-A fresh Cog currently looks like this:
+A fresh Cog currently looks like this (`--manifest yaml` adds a standalone
+`cog.yaml` and leaves pixi.toml without the `[tool.cog]` table):
 
     cog-example/
     ├── .gitignore
     ├── COG.md
-    ├── cog.yaml
-    ├── pixi.toml
+    ├── pixi.toml           # environment + the [tool.cog] profile manifest
     ├── context/
     │   ├── system.md
     │   ├── input-schema.json
@@ -262,8 +262,10 @@ definition of done are pre-wired; do not weaken it.
 You are expected to edit:
 
 - **COG.md** — the readable work contract.
-- **cog.yaml** — identity, context references, requirements, interfaces,
-  input/output labels, memory, prohibitions, and fixtures.
+- **the manifest** — `[tool.cog]` in pixi.toml (default) or cog.yaml:
+  identity, context references, requirements, interfaces, input/output
+  labels, memory, prohibitions, and fixtures. In pixi.toml, `version` and
+  the summary live once in `[workspace]` (version / description).
 - **context/system.md** — the instructions sent to the model.
 - **context/input-schema.json** — the normative task-bundle contract.
 - **context/output-schema.json** — the normative payload contract.
@@ -384,7 +386,7 @@ Use grep -rnE with the same pattern if ripgrep is not installed. Review every
 match. A complete rewrite normally touches:
 
 1. COG.md;
-2. cog.yaml;
+2. the manifest (`[tool.cog]` in pixi.toml, or cog.yaml);
 3. all four files under context/;
 4. examples/sample-bundle.json;
 5. evals/smoke.fixture.yaml;
@@ -414,7 +416,8 @@ structures.
 
 ### Step 4: update the manifest
 
-At minimum, review these sections of cog.yaml:
+At minimum, review these sections of the manifest (`[tool.cog]` in
+pixi.toml, or cog.yaml):
 
 - **id, version, summary, owner, license** — package identity and
   accountability.
@@ -584,7 +587,7 @@ If the descriptor defers its address until installation:
       --satisfier ../models/cog-approved-model \
       --endpoint https://model.example.org/v1
 
-Never put a credential value in cog.yaml, a descriptor, model.json, or a command
+Never put a credential value in the manifest, a descriptor, model.json, or a command
 line. Descriptors name an environment variable. Export the secret only in the
 runtime environment:
 
@@ -663,7 +666,7 @@ A Cog is ready for review when all of the following are true:
 - [ ] COG.md accurately describes purpose, scope, boundaries, inputs, outputs,
       method, and limitations.
 - [ ] The package name and frontmatter conform to CogSpec.
-- [ ] cog.yaml declarations match the implementation.
+- [ ] Manifest declarations match the implementation.
 - [ ] No starter-specific highlights language remains unintentionally.
 - [ ] The sample bundle passes the input schema.
 - [ ] The output example passes the output schema exactly.
@@ -700,7 +703,7 @@ Examples:
 - insufficient fixtures or tests; or
 - an inaccurate manifest declaration.
 
-Make those changes in COG.md, cog.yaml, context/, examples/, evals/, tests/, or
+Make those changes in COG.md, the manifest, context/, examples/, evals/, tests/, or
 src/task_logic.py.
 
 ### Change Cog Smith when the issue affects every created Cog
@@ -741,7 +744,7 @@ versioning event.
 A coding agent working on a Cog should follow this sequence:
 
 1. Read the nearest AGENTS.md and this guide completely.
-2. Read the target Cog's COG.md and cog.yaml before editing code.
+2. Read the target Cog's COG.md and manifest before editing code.
 3. Identify whether the requested change is task-specific or shared machinery.
 4. Inspect input schema, output schema, worked example, fixture, and
    task_logic.py as one contract.

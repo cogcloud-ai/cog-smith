@@ -9,6 +9,12 @@ except [tasks]: a value it can't read elsewhere is skipped (we never consume
 it), but an unreadable value inside [tasks] raises, because silently dropping
 a task would make an operation vanish from the UI without explanation.
 
+A `[tool.cog]` profile manifest (nested tables, arrays of tables, inline
+tables) is beyond the fallback on purpose: it raises rather than returning a
+half-read manifest, since a manifest with silently missing declarations is
+worse than no manifest. Reading `[tool.cog]` needs a real TOML parser
+(Python 3.11+).
+
 Same portability class as the jsonschema Draft202012→Draft7 fallback in the
 forge Cogs (SPEC-NOTES §14): prefer the real library, degrade honestly.
 """
@@ -48,6 +54,11 @@ def _fallback_parse(text):
         m = _SECTION.match(line)
         if m:
             name = m.group(1).strip()
+            if name.startswith("[") or name == "tool.cog" or name.startswith("tool.cog."):
+                raise ValueError(
+                    f"pixi.toml line {lineno}: [{name}] — the fallback TOML "
+                    f"parser (no tomllib on this interpreter) cannot read a "
+                    f"[tool.cog] manifest; use Python 3.11+")
             table = doc.setdefault(name, {})
             in_tasks = name == "tasks"
             continue

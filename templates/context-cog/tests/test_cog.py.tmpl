@@ -9,11 +9,10 @@ import sys
 import unittest
 from pathlib import Path
 
-import yaml
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import cog_binding  # noqa: E402
 import cog_core     # noqa: E402
 import task_logic   # noqa: E402
 
@@ -24,7 +23,8 @@ def sample_bundle():
 
 class TestManifestConsistency(unittest.TestCase):
     def setUp(self):
-        self.manifest = yaml.safe_load((ROOT / "cog.yaml").read_text())
+        # either format: [tool.cog] in pixi.toml, or cog.yaml
+        self.manifest = cog_binding.load_manifest(ROOT)
 
     def test_identity_fields(self):
         for field in ("schema", "id", "version", "kind", "summary", "owner",

@@ -5,21 +5,16 @@ import json
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import smith_core       # noqa: E402
-import toml_compat      # noqa: E402
+import smith_manifest   # noqa: E402
 
 
 def card(root):
     root = Path(root).resolve()
-    m = yaml.safe_load((root / "cog.yaml").read_text()) or {}
-    pixi = root / "pixi.toml"
-    tasks = {}
-    if pixi.exists():
-        with open(pixi, "rb") as f:
-            tasks = (toml_compat.load(f).get("tasks")) or {}
+    m, fmt, mp = smith_manifest.load(root)      # either manifest format
+    pixi_doc = smith_manifest.read_pixi(root)
+    tasks = (pixi_doc or {}).get("tasks") or {}
 
     interfaces = m.get("interfaces") or []
     # F7 (review 2026-08-22): audience is contextual, not lexical — a
@@ -61,6 +56,7 @@ def card(root):
     model = m.get("model") or {}
     return {
         "card": 1,
+        "manifest": mp.name,
         "audience_inferred": inferred,
         "provides": m.get("provides") or [],
         "locality": m.get("locality"),

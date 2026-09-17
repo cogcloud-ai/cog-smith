@@ -4,6 +4,7 @@
     pixi run new -- --dir ../cog-meeting-highlights [--id ...] [--yes]
     pixi run check -- ../cog-meeting-highlights [--tests]
     pixi run card -- ../cog-meeting-highlights [--json]
+    pixi run migrate -- ../cog-meeting-highlights [--to pixi|yaml] [--dry-run]
 
 `new` walks the builder questions interactively (Travis's list: what are
 you, what model class, what do you prohibit…), or takes everything as flags
@@ -16,6 +17,12 @@ can consume smith at the Op seam like any other Cog. cog-smith is a
 deterministic tooling Cog with no model dependency, so its envelopes
 carry `binding: null`; checker findings travel in `problems`
 (ok-with-problems: the run succeeded, a Gate decides about the findings).
+
+`--manifest pixi|yaml` on new/generate-descriptors picks where the profile
+manifest is written: `[tool.cog]` in pixi.toml (the default — one file that
+Nebi already reads, per the cog-execution ADR D9) or a standalone cog.yaml.
+`smith check` and `smith card` read either. `migrate` converts an existing
+package between the two (default: to pixi) and re-syncs its machinery.
 
 `new --from-request request.json` creates from a COG REQUEST — one JSON
 document carrying the builder answers plus optionally the drafted
@@ -39,17 +46,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import smith_core   # noqa: E402
 import smith_check  # noqa: E402
 import smith_card   # noqa: E402
+import smith_manifest  # noqa: E402
+import smith_migrate  # noqa: E402
 import smith_models  # noqa: E402
 
 SMITH_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _self_identity():
-    """This Cog's own id/version, from its manifest."""
+    """This Cog's own id/version, from its manifest (either format)."""
     try:
-        m = yaml.safe_load((SMITH_ROOT / "cog.yaml").read_text()) or {}
+        m, _, _ = smith_manifest.load(SMITH_ROOT)
         return {"id": m.get("id"), "version": m.get("version")}
-    except OSError:                                    # pragma: no cover
+    except (OSError, ValueError, smith_manifest.ManifestError):  # pragma: no cover
         return {"id": "openteams/cog-smith", "version": None}
 
 
@@ -91,7 +100,8 @@ def _prompt(label, default, explain=None):
 
 COG_REQUEST_KEYS = {"cog_request", "dir", "name", "id", "summary", "owner",
                      "license", "publisher", "port", "produces", "model_cog",
-                     "prohibits", "cog_md", "context", "examples", "evals"}
+                     "prohibits", "cog_md", "context", "examples", "evals",
+                     "manifest"}
 
 
 def _load_cog_request(path):
@@ -102,6 +112,10 @@ def _load_cog_request(path):
     unknown = sorted(set(req) - COG_REQUEST_KEYS)
     if unknown:
         raise smith_core.CreateError(f"unknown cog-request keys: {unknown}")
+    if req.get("manifest") not in (None, *smith_core.MANIFEST_FORMATS):
+        raise smith_core.CreateError(
+            f"manifest must be one of {list(smith_core.MANIFEST_FORMATS)}, "
+            f"got {req.get('manifest')!r}")
     return req
 
 
@@ -182,6 +196,9 @@ def cmd_new(args):
     overrides = {k: v for k, v in req_overrides.items() if v is not None}
     overrides.update({k: v for k, v in flag_overrides.items() if v is not None})
     tokens = smith_core.default_tokens(name, **overrides)
+    # request supplies the manifest format; the explicit flag overrides it
+    manifest_format = (args.manifest or req.get("manifest")
+                       or smith_core.DEFAULT_MANIFEST_FORMAT)
 
     scripted = args.yes or bool(args.from_request)
     if not scripted and not sys.stdin.isatty():
@@ -236,7 +253,8 @@ def cmd_new(args):
             f"  - {p.strip()}" for p in raw.split(",") if p.strip())
         tokens["SUMMARY_ONELINE"] = " ".join(tokens["SUMMARY"].split())[:160]
 
-    result = smith_core.create(dest, tokens, overlays=overlays)
+    result = smith_core.create(dest, tokens, overlays=overlays,
+                               manifest_format=manifest_format)
     findings = smith_check.check(result["dest"])
     if args.envelope:
         errors = [f for f in findings if f["level"] == "error"]
@@ -244,6 +262,7 @@ def cmd_new(args):
             "dest": result["dest"],
             "cog_id": tokens["COG_ID"],
             "files": len(result["files"]),
+            "manifest": result["manifest"],
             "machinery": result["machinery"],
             "from_request": bool(args.from_request),
             "overlays": sorted(overlays) if overlays else [],
@@ -253,14 +272,16 @@ def cmd_new(args):
         return 1 if errors else 0
 
     print(f"created {tokens['COG_ID']} -> {result['dest']}")
-    print(f"  {len(result['files'])} files; machinery: {', '.join(result['machinery'])}")
+    print(f"  {len(result['files'])} files; manifest: {result['manifest']}; "
+          f"machinery: {', '.join(result['machinery'])}")
     print("  next: edit context/system.md + src/task_logic.py, then:")
     print("        pixi install && pixi run resolve && pixi run test")
     return smith_check.report(findings)
 
 
 def cmd_generate_descriptors(args):
-    result = smith_models.generate_from_config(args.config, args.out_dir)
+    result = smith_models.generate_from_config(args.config, args.out_dir,
+                                               manifest_format=args.manifest)
     for name in result["created"]:
         print(f"created {name} -> {result['out_dir']}/{name}")
     for name in result["skipped"]:
@@ -303,6 +324,38 @@ def cmd_card(args):
     return 0
 
 
+def cmd_migrate(args):
+    started = time.monotonic()
+    p = smith_migrate.plan(args.path, to=args.to, machinery=not args.no_machinery)
+    changed = bool(p["writes"] or p["copies"] or p["removes"])
+    checked = changed and not args.dry_run
+    if checked:
+        smith_migrate.apply(p)
+    findings = smith_check.check(p["root"]) if checked else []
+    if args.envelope:
+        errors = [f for f in findings if f["level"] == "error"]
+        _emit(envelope("migrate", True, payload={
+            "path": p["root"], "from": p["format"], "to": p["to"],
+            "dry_run": bool(args.dry_run), "applied": changed and not args.dry_run,
+            "writes": sorted(p["writes"]), "synced": [rel for _, rel in p["copies"]],
+            "removed": p["removes"], "dropped": p["dropped"],
+            "leftover": p["leftover"], "notes": p["notes"],
+            "check": ({"errors": len(errors),
+                       "warnings": len(findings) - len(errors)}
+                      if checked else None),
+        }, problems=_problems(findings), started=started))
+        return 1 if errors else 0
+    smith_migrate.describe(p)
+    if args.dry_run:
+        print("\ndry run — nothing written")
+        return 0
+    if not changed:
+        print("\nnothing to do")
+        return 0
+    print()
+    return smith_check.report(findings)
+
+
 def _cli_error(args, detail):
     """Expected-failure exit: envelope when asked, stderr otherwise."""
     if getattr(args, "envelope", False):
@@ -338,6 +391,11 @@ def main():
     p.add_argument("--model-source", dest="model_source")
     p.add_argument("--prohibit", action="append",
                    help="prohibited action (repeatable)")
+    p.add_argument("--manifest", choices=smith_core.MANIFEST_FORMATS,
+                   help="where the profile manifest is written: pixi "
+                        "([tool.cog] in pixi.toml, the default) or yaml "
+                        "(a standalone cog.yaml); overrides the request's "
+                        "\"manifest\"")
     p.add_argument("--yes", action="store_true", help="non-interactive")
     p.add_argument("--envelope", action="store_true",
                    help="emit an envelope-v1 result (use with --yes)")
@@ -350,6 +408,10 @@ def main():
                    help="model catalog YAML (see examples/model-catalog.yaml)")
     p.add_argument("--out-dir", required=True,
                    help="directory to create the descriptor cogs into")
+    p.add_argument("--manifest", choices=smith_core.MANIFEST_FORMATS,
+                   help="manifest format for every generated descriptor: "
+                        "pixi (default) or yaml; overrides the catalog's "
+                        "top-level `manifest:`")
     p.set_defaults(fn=cmd_generate_descriptors)
 
     p = sub.add_parser("check", help="validate a Cog package")
@@ -359,6 +421,21 @@ def main():
     p.add_argument("--envelope", action="store_true",
                    help="emit an envelope-v1 result (findings in problems)")
     p.set_defaults(fn=cmd_check)
+
+    p = sub.add_parser("migrate",
+                       help="convert a Cog's manifest between formats "
+                            "(default: cog.yaml -> [tool.cog] in pixi.toml) "
+                            "and re-sync its cog-smith machinery")
+    p.add_argument("path")
+    p.add_argument("--to", choices=smith_core.MANIFEST_FORMATS, default="pixi",
+                   help="target manifest format (default: pixi)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report the plan; write nothing")
+    p.add_argument("--no-machinery", action="store_true",
+                   help="convert the manifest only; leave src/ as it is")
+    p.add_argument("--envelope", action="store_true",
+                   help="emit an envelope-v1 result")
+    p.set_defaults(fn=cmd_migrate)
 
     p = sub.add_parser("card", help="render a Cog's catalog card")
     p.add_argument("path")
@@ -370,7 +447,8 @@ def main():
     args = ap.parse_args()
     try:
         return args.fn(args)
-    except (smith_core.CreateError, smith_models.ModelConfigError) as e:
+    except (smith_core.CreateError, smith_models.ModelConfigError,
+            smith_migrate.MigrateError, smith_manifest.ManifestError) as e:
         return _cli_error(args, str(e))
     except FileNotFoundError as e:
         return _cli_error(args, f"not found: {e.filename or e}")

@@ -16,10 +16,11 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-import smith_card    # noqa: E402
-import smith_check   # noqa: E402
-import smith_core    # noqa: E402
-import smith_models  # noqa: E402
+import smith_card      # noqa: E402
+import smith_check     # noqa: E402
+import smith_core      # noqa: E402
+import smith_manifest  # noqa: E402
+import smith_models    # noqa: E402
 
 
 def create_tmp(tmp, name="cog-toy", **overrides):
@@ -77,21 +78,26 @@ class TestF2CreateSafety(unittest.TestCase):
     def test_punctuation_summary_survives_every_format(self):
         """Review repro: colon+quotes corrupted YAML frontmatter, TOML, and
         left a broken directory behind."""
-        with tempfile.TemporaryDirectory() as tmp:
-            dest = create_tmp(tmp, SUMMARY=self.PUNCT)
-            m = yaml.safe_load((dest / "cog.yaml").read_text())
-            self.assertIn("monthly: invoices", m["summary"])
-            fm = smith_check.FRONTMATTER_RE.match((dest / "COG.md").read_text())
-            meta = yaml.safe_load(fm.group(1))
-            self.assertIn("monthly: invoices", meta["description"])
-            import toml_compat
-            with open(dest / "pixi.toml", "rb") as f:
-                data = toml_compat.load(f)
-            self.assertIn("monthly: invoices",
-                          data["workspace"]["description"])
-            errors = [f for f in smith_check.check(dest)
-                      if f["level"] == "error"]
-            self.assertEqual(errors, [])
+        for fmt in ("pixi", "yaml"):
+            with tempfile.TemporaryDirectory() as tmp:
+                dest = Path(tmp) / "cog-toy"
+                smith_core.create(dest, smith_core.default_tokens(
+                    "cog-toy", SUMMARY=self.PUNCT), manifest_format=fmt)
+                m = smith_manifest.load(dest)[0]
+                self.assertIn("monthly: invoices", m["summary"])
+                self.assertEqual(m["version"], "0.1.0")
+                fm = smith_check.FRONTMATTER_RE.match(
+                    (dest / "COG.md").read_text())
+                meta = yaml.safe_load(fm.group(1))
+                self.assertIn("monthly: invoices", meta["description"])
+                import toml_compat
+                with open(dest / "pixi.toml", "rb") as f:
+                    data = toml_compat.load(f)
+                self.assertIn("monthly: invoices",
+                              data["workspace"]["description"])
+                errors = [f for f in smith_check.check(dest)
+                          if f["level"] == "error"]
+                self.assertEqual(errors, [], (fmt, errors))
 
     def test_invalid_request_fails_before_any_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -282,8 +288,7 @@ class TestF8Catalog(unittest.TestCase):
             cfg = self._cfg([{"name": "x", "served_model_id": "m",
                               "endpoint": "https://x/v1"}], tmp)
             smith_models.generate_from_config(cfg, Path(tmp) / "out")
-            m = yaml.safe_load(
-                (Path(tmp) / "out" / "cog-x" / "cog.yaml").read_text())
+            m = smith_manifest.load(Path(tmp) / "out" / "cog-x")[0]
             self.assertTrue(m["model"]["descriptor"])
 
 

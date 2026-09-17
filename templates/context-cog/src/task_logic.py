@@ -2,7 +2,8 @@
 
 Everything else in src/ is shared cog-smith machinery, byte-identical across
 created Cogs and verified by `smith check`. Your Cog's identity lives in:
-  - cog.yaml (what you are, what you require, what you prohibit)
+  - the manifest — [tool.cog] in pixi.toml, or cog.yaml — (what you are,
+    what you require, what you prohibit)
   - context/ (system.md instructions, input/output schemas, worked example)
   - this file (how input becomes a prompt; what makes output trustworthy)
 

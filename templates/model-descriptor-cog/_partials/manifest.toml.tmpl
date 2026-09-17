@@ -1,0 +1,39 @@
+
+# ---------------------------------------------------------------------------
+# Profile manifest: openteams/cog-manifest [0.1], hosted in pixi.toml under
+# [tool.cog] (cog-execution ADR D9). `version` and `summary` are stated once,
+# in [workspace] above (version / description); readers fall back to them.
+#
+# This is a DEPLOYMENT DESCRIPTOR model Cog (see the header comment of the
+# cog.yaml rendering in cog-smith's template for the full rationale): it
+# carries the PINNABLE IDENTITY of a model deployment as package content.
+# The reachable ADDRESS is an installation fact — either declared here or
+# `address = "install-time"`. Credentials are REFERENCES (api_key_env names
+# an environment variable); a descriptor never contains a key.
+# ---------------------------------------------------------------------------
+[tool.cog]
+schema = "openteams/cog-manifest [0.1]"
+id = {{COG_ID_TOML}}
+kind = "model"
+owner = {{OWNER_TOML}}
+license = {{LICENSE_TOML}}
+# Where this deployment runs. A context Cog's requires[].locality constraint
+# is checked against this at resolution — sovereignty is enforced at bind
+# time, not just displayed in a catalog.
+locality = "{{LOCALITY}}"
+provides = ["model-endpoint/openai-compatible"]
+
+[tool.cog.model]
+# Profile marker (review 2026-08-22, F5): a descriptor is a model Cog whose
+# carried content is the deployment's pinnable identity, not the weights.
+descriptor = true
+name = {{MODEL_NAME_TOML}}
+{{MODEL_EXTRA_TOML}}
+[[tool.cog.interfaces]]
+name = "web-api"
+kind = "openai-compatible"
+audience = "usage"
+{{ADDRESS_TOML}}
+served_model_id = {{SERVED_MODEL_ID_TOML}}
+api_key_env = "{{API_KEY_ENV}}"
+default = true

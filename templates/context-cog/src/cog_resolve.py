@@ -53,13 +53,14 @@ SCHEMA_CAPABLE_RUNTIMES = {"llama.cpp", "llama-server"}
 
 
 def load_cog(path):
-    manifest = Path(path) / "cog.yaml"
-    if not manifest.exists():
-        return None, f"no cog.yaml at {manifest}"
+    """(manifest, error) for the Cog at path — either manifest format
+    (pixi.toml [tool.cog] or cog.yaml; see cog_binding.load_manifest)."""
     try:
-        return yaml.safe_load(manifest.read_text()), None
-    except yaml.YAMLError as e:
-        return None, f"{manifest} is not valid YAML: {e}"
+        return cog_binding.load_manifest(path), None
+    except FileNotFoundError:
+        return None, f"no manifest (pixi.toml [tool.cog] or cog.yaml) at {path}"
+    except (ValueError, yaml.YAMLError) as e:
+        return None, f"{path}: unreadable manifest: {e}"
 
 
 def served_model_pin(model):

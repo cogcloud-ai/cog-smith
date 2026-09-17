@@ -1,0 +1,63 @@
+
+# ---------------------------------------------------------------------------
+# Profile manifest: openteams/cog-manifest [0.1], hosted in pixi.toml under
+# [tool.cog] (cog-execution ADR D9). `version` and `summary` are stated once,
+# in [workspace] above (version / description); readers fall back to them.
+# ---------------------------------------------------------------------------
+[tool.cog]
+schema = "openteams/cog-manifest [0.1]"
+id = {{COG_ID_TOML}}
+kind = "context"
+owner = {{OWNER_TOML}}
+license = {{LICENSE_TOML}}
+frames = []
+memory = "none"
+# Evidence-tier boundary: prohibitions are structural today (no tool grants
+# exist that could perform them); they become Guard-enforced when a hosting
+# environment supplies tools.
+prohibits = {{PROHIBITS_TOML}}
+
+[tool.cog.context]
+instructions = "context/system.md"
+input_schema = "context/input-schema.json"
+output_schema = "context/output-schema.json"
+output_example = "context/output-example.json"
+
+# The requirement is a CAPABILITY; the named Cog is one satisfier, not the
+# only one. `pixi run resolve` verifies the candidate and writes the binding
+# record (model.json — gitignored installation state). A hosting environment
+# may re-satisfy this with its own model cog.
+[[tool.cog.requires]]
+capability = "model-endpoint/openai-compatible"
+locality = "any"
+satisfied_by = { cog = {{MODEL_COG_ID_TOML}}, version = ">=0.1.0", source = {{MODEL_COG_SOURCE_TOML}} }
+
+# Entry points. `default = true` = the programmatic binding target. Tasks are
+# labeled by audience: usage ops face users and the Op layer; lifecycle ops
+# (resolve/serve/check/eval/test) face the hosting environment.
+[[tool.cog.interfaces]]
+name = "web-api"
+kind = "http-json"
+task = "serve"
+endpoint = "http://127.0.0.1:{{PORT}}/ask"
+audience = "usage"      # the endpoint is the usage surface; starting it is lifecycle
+default = true
+
+[[tool.cog.interfaces]]
+name = "cli"
+kind = "command"
+task = "ask"
+audience = "usage"
+
+[[tool.cog.interfaces]]
+name = "health"
+kind = "command"
+task = "check"
+audience = "lifecycle"
+
+[tool.cog.io]
+accepts = ["task_request"]
+produces = [{{PRODUCES_TOML}}]
+
+[tool.cog.evaluation]
+fixtures = ["evals/smoke.fixture.yaml"]

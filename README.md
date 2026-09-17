@@ -12,7 +12,11 @@ workflow, and the rules coding agents should follow when improving one.
 pixi install
 pixi run new -- --dir ../cog-my-worker          # interactive builder questions
 pixi run new -- --dir ../cog-my-worker --yes    # scripted, defaults
+pixi run new -- --dir ../cog-my-worker --yes --manifest yaml  # standalone cog.yaml
+                                                # instead of [tool.cog] in pixi.toml
 pixi run check -- ../cog-my-worker --envelope   # envelope-v1 JSON (Op seam)
+pixi run migrate -- ../cog-older-worker          # cog.yaml -> [tool.cog] in pixi.toml,
+                                                # re-sync machinery (--dry-run to preview)
 pixi run new -- --from-request request.json --envelope  # create from a drafting
                                                 # cog's request (see examples/)
 cd ../cog-my-worker
@@ -26,6 +30,16 @@ machinery, a grounding contract check (verbatim quotes), an eval fixture, and
 a model-free test suite that passes at creation time. Edit `context/` and
 `src/task_logic.py`; everything else is shared machinery enforced by
 `pixi run check` (“smith check”).
+
+**Manifest format.** By default the profile manifest (`openteams/cog-manifest
+[0.1]`) is written into `pixi.toml` under `[tool.cog]` — one file that Nebi
+already publishes, with `version` and the summary stated once in
+`[workspace]` (cog-execution ADR D9). `--manifest yaml` writes the standalone
+`cog.yaml` instead. A package carries exactly one; COG.md's `manifest:`
+pointer names it, and `check`, `card`, and the created Cog's own machinery
+read either. `migrate` converts an existing package in either direction
+(`--to yaml` for the reverse) without regenerating pixi.toml — comments,
+tasks, and dependencies stay as they are.
 
 ## Creating a hosting environment's model offering
 

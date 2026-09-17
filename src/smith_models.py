@@ -10,6 +10,7 @@ Config shape (YAML):
       owner: trent@openteams.com
       license: BSD-3-Clause
       publisher: OpenTeams
+    manifest: pixi                # optional: pixi (default) | yaml
     models:
       - name: qwen35b-collab            # -> cog-<name> unless cog_name given
         model_name: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
@@ -27,6 +28,7 @@ Identity rule (one cog per served model, never a parameterized gateway cog):
 pinning and identity verification are per served model — that property is
 what makes Gates and Tracks trustworthy.
 """
+import json
 import re
 from pathlib import Path
 
@@ -79,6 +81,7 @@ def _entry_tokens(entry, defaults):
                 f"{name}: endpoint must be https:// or loopback http "
                 f"(non-loopback plaintext is refused at resolution anyway)")
         address_yaml = f"    endpoint: {endpoint}"
+        address_toml = f"endpoint = {json.dumps(endpoint)}"
         resolve_hint = ""
     else:
         if address not in (None, "install-time"):
@@ -86,6 +89,9 @@ def _entry_tokens(entry, defaults):
         address_yaml = ("    # The address is an installation fact — resolution"
                         " requires --endpoint.\n"
                         "    address: install-time")
+        address_toml = ("# The address is an installation fact — resolution"
+                        " requires --endpoint.\n"
+                        "address = \"install-time\"")
         resolve_hint = " --endpoint <URL>"
 
     provider = e.get("provider", "externally provided")
@@ -95,6 +101,21 @@ def _entry_tokens(entry, defaults):
         f"deployment; credentials and (where install-time) the address are "
         f"installation facts.")
     revision = e.get("revision")
+    revision_str = "null" if revision in (None, "null", "") else str(revision)
+
+    # TOML has no null: optional identity fields are present only when set.
+    # (The YAML rendering writes `null` explicitly; both read back as None.)
+    extra = []
+    if e.get("quantization"):
+        extra.append(f"quantization = {json.dumps(str(e['quantization']))}")
+    if e.get("runtime"):
+        extra.append(f"runtime = {json.dumps(str(e['runtime']))}")
+    if revision_str != "null":
+        extra.append(f"revision = {json.dumps(revision_str)}")
+    else:
+        extra.append("# revision: unpinned — bindings pin (id, version, model "
+                     "identity) and say so")
+    model_extra_toml = "\n".join(extra) + "\n"
 
     return name, {
         "COG_NAME": name,
@@ -109,19 +130,32 @@ def _entry_tokens(entry, defaults):
         "MODEL_NAME": model_name,
         "QUANTIZATION": e.get("quantization") or "null",
         "RUNTIME": e.get("runtime") or "null",
-        "REVISION": "null" if revision in (None, "null", "") else str(revision),
+        "REVISION": revision_str,
         "SERVED_MODEL_ID": served,
         "API_KEY_ENV": api_key_env,
         "ADDRESS_YAML": address_yaml,
+        "ADDRESS_TOML": address_toml,
+        "MODEL_NAME_TOML": json.dumps(str(model_name)),
+        "SERVED_MODEL_ID_TOML": json.dumps(str(served)),
+        "MODEL_EXTRA_TOML": model_extra_toml,
         "RESOLVE_HINT": resolve_hint,
         "PROVIDER_NOTE": provider,
     }
 
 
-def generate_from_config(config_path, out_dir):
+def generate_from_config(config_path, out_dir, manifest_format=None):
     """Create one descriptor model cog per config entry. Returns a summary;
-    refuses to overwrite existing directories (skips them with a note)."""
+    refuses to overwrite existing directories (skips them with a note).
+
+    manifest_format: "pixi" (default) — [tool.cog] in pixi.toml; "yaml" —
+    cog.yaml. A top-level `manifest:` key in the config sets the default
+    for that catalog; the argument (the CLI flag) wins when given."""
     cfg = yaml.safe_load(Path(config_path).read_text()) or {}
+    if manifest_format is None:
+        manifest_format = cfg.get("manifest") or smith_core.DEFAULT_MANIFEST_FORMAT
+    if manifest_format not in smith_core.MANIFEST_FORMATS:
+        raise ModelConfigError(f"manifest format {manifest_format!r} not in "
+                               f"{list(smith_core.MANIFEST_FORMATS)}")
     models = cfg.get("models")
     if not isinstance(models, list) or not models:
         raise ModelConfigError("config needs a non-empty `models:` list")
@@ -147,6 +181,6 @@ def generate_from_config(config_path, out_dir):
             skipped.append(name)
             continue
         smith_core.create(dest, tokens, template="model-descriptor-cog",
-                        validate=False)
+                          validate=False, manifest_format=manifest_format)
         created.append(name)
     return {"created": created, "skipped": skipped, "out_dir": str(out_dir)}

@@ -5,7 +5,7 @@ description: Context Cog. The Cog builder — creates complete runnable Cogs fro
 version: "0.2.0"
 license: BSD-3-Clause
 publisher: OpenTeams
-manifest: cog.yaml
+manifest: pixi.toml
 manifest_schema: openteams/cog-manifest [0.1]
 ---
 
