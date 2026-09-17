@@ -49,16 +49,36 @@ def parse_envelope(stdout):
     raise ValueError("Cog command did not emit a JSON envelope")
 
 
+#: Request-file flags the seam will try, in order. `--request` is the seam's
+#: flag; `--bundle` is the flag cog-smith's own context-cog machinery gives a
+#: created Cog, so an Op must be able to call one. A later flag is tried ONLY
+#: when the Cog's CLI rejected the earlier one by name before doing any work
+#: (argparse exits non-zero with "unrecognized arguments"), so nothing
+#: effectful can run twice.
+REQUEST_FLAGS = ("--request", "--bundle")
+
+
+def _rejected_flag(completed, flag):
+    """True when the Cog's CLI refused FLAG by name without running."""
+    if completed.returncode == 0:
+        return False
+    text = f"{completed.stdout}\n{completed.stderr}"
+    return "unrecognized arguments" in text and flag in text
+
+
 def invoke_cog(cog_dir, task, request_path):
     """Run one declared Cog task and return its envelope. A Cog that emits
     no envelope yields a synthetic ok:false envelope (invocation-failed) so
     the Gate always has something to decide about."""
     cog_dir = Path(cog_dir)
-    command = [
-        "pixi", "run", "--manifest-path", str(cog_dir / "pixi.toml"),
-        task, "--", "--request", str(request_path),
-    ]
-    completed = subprocess.run(command, text=True, capture_output=True)
+    for flag in REQUEST_FLAGS:
+        command = [
+            "pixi", "run", "--manifest-path", str(cog_dir / "pixi.toml"),
+            task, "--", flag, str(request_path),
+        ]
+        completed = subprocess.run(command, text=True, capture_output=True)
+        if not _rejected_flag(completed, flag):
+            break
     try:
         return parse_envelope(completed.stdout)
     except ValueError as exc:

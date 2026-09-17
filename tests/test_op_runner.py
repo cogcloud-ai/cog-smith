@@ -371,5 +371,68 @@ class DryRunTests(RunnerCase):
         self.assertIsNone(self.step(track, "second")["request"])
 
 
+class RequestFlagTests(unittest.TestCase):
+    """The Cog seam negotiates the request-file flag: `--request` first, then
+    `--bundle` (what cog-smith's own context-cog machinery accepts), and only
+    when the CLI refused the first flag by name before doing any work."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def setUp(self):
+        self.real_run = op_runner.subprocess.run
+        self.calls = []
+
+    def tearDown(self):
+        op_runner.subprocess.run = self.real_run
+
+    def fake_subprocess(self, answer):
+        def run(command, **kwargs):
+            self.calls.append(command)
+            return answer(command)
+        op_runner.subprocess.run = run
+
+    def flag_of(self, command):
+        return command[-2]
+
+    def test_request_flag_is_tried_first_and_kept(self):
+        envelope = json.dumps(fx.envelope(payload={"x": 1}))
+        self.fake_subprocess(lambda c: self.Result(0, envelope))
+        result = op_runner.invoke_cog(Path("/nowhere/cog"), "ask", Path("/r.json"))
+        self.assertTrue(result["ok"])
+        self.assertEqual([self.flag_of(c) for c in self.calls], ["--request"])
+
+    def test_bundle_flag_is_tried_when_request_is_refused_by_name(self):
+        envelope = json.dumps(fx.envelope(payload={"x": 1}))
+
+        def answer(command):
+            if self.flag_of(command) == "--request":
+                return self.Result(
+                    2, "", "ask: error: unrecognized arguments: --request /r.json")
+            return self.Result(0, envelope)
+
+        self.fake_subprocess(answer)
+        result = op_runner.invoke_cog(Path("/nowhere/cog"), "ask", Path("/r.json"))
+        self.assertTrue(result["ok"])
+        self.assertEqual([self.flag_of(c) for c in self.calls],
+                         ["--request", "--bundle"])
+
+    def test_an_ordinary_failure_is_never_reinvoked(self):
+        self.fake_subprocess(lambda c: self.Result(1, "", "model endpoint refused"))
+        result = op_runner.invoke_cog(Path("/nowhere/cog"), "ask", Path("/r.json"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "invocation-failed")
+        self.assertEqual([self.flag_of(c) for c in self.calls], ["--request"])
+
+    def test_both_flags_refused_yields_one_failed_envelope(self):
+        self.fake_subprocess(lambda c: self.Result(
+            2, "", f"ask: error: unrecognized arguments: {self.flag_of(c)} /r.json"))
+        result = op_runner.invoke_cog(Path("/nowhere/cog"), "ask", Path("/r.json"))
+        self.assertFalse(result["ok"])
+        self.assertEqual([self.flag_of(c) for c in self.calls],
+                         ["--request", "--bundle"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -48,7 +48,7 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
-## Op machinery (0.4.0, 2026-09-17): `templates/op/src/`
+## Op machinery (0.4.1, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
 Op package carries verbatim, and `smith op check` enforces them by hash
@@ -66,6 +66,19 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.4.1 — the request-file flag is negotiated at the seam
+
+`invoke_cog` invoked every Cog as `... <task> -- --request <file>`, but
+cog-smith's OWN context-cog machinery (`templates/context-cog/src/cog_cli.py`)
+accepts `--bundle`, so an Op could not call a created context Cog at all — the
+first live triage run failed with `ask: error: unrecognized arguments:
+--request`. The seam now tries `--request` and then `--bundle`, and only when
+the Cog's CLI refused the first flag BY NAME (argparse exits non-zero with
+"unrecognized arguments") — before doing any work, so nothing effectful can run
+twice. An ordinary failure is never re-invoked. The lasting fix is to make the
+two lineages agree on one flag; until they do, this keeps the Op layer able to
+call the Cogs cog-smith itself creates.
 
 Rules are the Cog rules: fixes happen HERE, version-bumped, and roll out to
 Op packages by re-copying. A created Op package must be immediately runnable
