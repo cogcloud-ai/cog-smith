@@ -36,7 +36,11 @@ tests — never a script in the Op.
 
 Ops use Cogs; they never import them. Every step runs
 `pixi run --manifest-path <cog>/pixi.toml <task> -- --request <file>`, where
-`<task>` is a **usage** interface that Cog declares for itself.
+`<task>` is a **usage** interface that Cog declares for itself. If the Cog's
+CLI refuses `--request` by name — cog-smith's context-cog machinery takes
+`--bundle` — the seam retries with `--bundle`, before the Cog has done any
+work. Two flags for one thing is an accident of two machinery lineages, not a
+feature to build on.
 
 ## 2. The path
 
