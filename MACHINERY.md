@@ -48,7 +48,7 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
-## Op machinery (0.4.3, 2026-09-17): `templates/op/src/`
+## Op machinery (0.4.4, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
 Op package carries verbatim, and `smith op check` enforces them by hash
@@ -66,6 +66,54 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.4.4 — the verification-round fixes
+
+One bullet per "New and residual findings" item of
+`planning/current/phase2-codex-review-3-cog-smith-verification.md`, which
+verified 0.4.3 and completed the rows left PARTIAL (1, 9, 10, 13, 14). Each
+has a regression test that failed before the fix.
+
+- **1 — the request flag is negotiated once, safely.** `_rejected_flag` now
+  requires all three of argparse's exit code (2), the diagnostic
+  `unrecognized arguments: <flag>` on **stderr**, and NO envelope anywhere on
+  stdout. A result — including an `ok: false` envelope whose detail quotes
+  that diagnostic — is never re-invoked, so an effectful Cog cannot run twice
+  (contract §0). When the fallback also fails, both attempts are kept as
+  evidence. (The Cog's declared interface would be the better source, but a
+  manifest does not say which request flag its CLI takes.)
+- **2 — absence is not null.** An omitted OPTIONAL input with no `default`
+  key is absent from the built inputs: `$from` on it takes its `$default` or
+  is the named "not available in this run" error, and it is NOT validated as
+  an explicit null. Supplied values and declared defaults (including
+  `default: null`) are still validated. `smith_op.example_request` omits such
+  inputs from `examples/request.json` instead of writing null, which used to
+  make a starter request invalid against its own declared schema.
+- **3 — the remaining malformed spec types are named problems.** `foreach.as`
+  must be an identifier-shaped string (a list used to raise `TypeError` when
+  it was added to the loop-variable set) and `cog.id/version/source/task`
+  must be strings (a list-valued `source` used to load and then fail at path
+  construction). CLI-level tests assert exit 2 and no traceback for both.
+- **4 — malformed envelopes cannot pass the Gate.** The version discriminator
+  is `type(x) is int and x == 1` (Python equates `True` with `1`), `ok` must
+  be a bool, and `problems` is REQUIRED to be a list of objects — missing or
+  null is malformed. `gate_envelope` shares `envelope_problems`, so a
+  malformed result fails with its reasons listed instead of being decided.
+- **5 — the operator boundary is the contract's.** An object is an operator
+  only when its key set EXACTLY matches a known operator's; any other object
+  carrying a `$`-prefixed key that is not a known operator NAME is refused
+  (siblings do not launder `$join`); every other object is walked. So
+  `{"$from": ..., "$stem": ...}` is ordinary data, and the 0.4.3 test that
+  codified the opposite is replaced.
+- **6 — synthetic failures always carry their process evidence.** ONE place:
+  `error.evidence` = `{command, returncode, stdout_tail, stderr_tail}` (tails
+  bounded at 2000 characters), plus `previous_attempts` when the seam tried
+  the other request flag first. A silent crash and a malformed envelope with
+  stderr now keep their exit code and streams; a launch failure records a
+  null `returncode`. Documented in BUILDING_OPS §4.
+- **7 — the declaration preflight runs before anything is created.** A
+  refused declaration exits 2 leaving NO run directory and no Track stuck at
+  `status: running`. Dry runs are unaffected and still need no Cogs present.
 
 ### 0.4.3 — the phase-2 review fixes
 

@@ -176,9 +176,23 @@ class RequestTests(unittest.TestCase):
         spec = self.spec([{"name": "note", "default": "fallback"}])
         self.assertEqual(spec.build_inputs({}), {"note": "fallback"})
 
-    def test_optional_input_without_default_is_null(self):
+    def test_an_omitted_optional_input_without_a_default_is_absent(self):
+        """Absence is not a value: the input is simply not there, so a
+        declared schema never judges a null the request never carried."""
         spec = self.spec([{"name": "note", "required": False}])
-        self.assertEqual(spec.build_inputs({}), {"note": None})
+        self.assertEqual(spec.build_inputs({}), {})
+
+    def test_an_omitted_optional_typed_input_is_not_validated_as_null(self):
+        spec = self.spec([{"name": "note", "required": False,
+                           "schema": {"type": "string"}}])
+        self.assertEqual(spec.build_inputs({}), {})
+
+    def test_a_declared_null_default_is_still_validated(self):
+        spec = self.spec([{"name": "note", "required": False, "default": None,
+                           "schema": {"type": "string"}}])
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            spec.build_inputs({})
+        self.assertIn("violates its declared schema", str(caught.exception))
 
     def test_declared_schema_is_validated(self):
         spec = self.spec([{"name": "note", "schema": {"type": "object"}}])
@@ -426,19 +440,78 @@ class ReviewRegressionTests(unittest.TestCase):
             op_spec.evaluate({"$from": "literal text", "label": "x"}, self.ctx),
             {"$from": "literal text", "label": "x"})
 
-    def test_an_all_dollar_key_set_that_is_not_an_operator_is_refused(self):
+    def test_a_known_key_set_that_is_not_an_operator_is_ordinary_data(self):
+        """Contract §2: an operator is an EXACT key set. `{$from, $stem}` is
+        not one, and its keys are known names, so it is walked as data."""
         step = fx.cog_step("first")
         step["input"] = {"note": {"$from": "inputs.note", "$stem": "x"}}
-        text = one(fx.spec_doc([step]))
-        self.assertIn("unknown mapping operator", text)
+        self.assertEqual(problems(fx.spec_doc([step])), [])
+        self.assertEqual(
+            op_spec.evaluate({"$from": "inputs.note", "$stem": "x"}, self.ctx),
+            {"$from": "inputs.note", "$stem": "x"})
+
+    def test_an_unknown_dollar_key_is_refused_even_with_siblings(self):
+        """Finding 5 (round 3): sibling keys do not turn `$join` into data;
+        an unknown operator name is refused wherever it appears."""
+        step = fx.cog_step("first")
+        step["input"] = {"joined": {"$join": ["a", "b"], "label": "x"}}
+        self.assertIn("unknown mapping operator", one(fx.spec_doc([step])))
         with self.assertRaises(op_spec.OpSpecError):
-            op_spec.evaluate({"$from": "inputs.note", "$stem": "x"}, self.ctx)
+            op_spec.evaluate({"$join": ["a", "b"], "label": "x"}, self.ctx)
+
+    def test_an_unknown_dollar_key_nested_in_data_is_refused(self):
+        step = fx.cog_step("first")
+        step["input"] = {"wrapper": {"inner": {"$concat": ["a"]}}}
+        self.assertIn("unknown mapping operator", one(fx.spec_doc([step])))
 
     def test_an_ordinary_object_carrying_a_step_read_still_reads_steps(self):
         self.assertFalse(op_spec.reads_steps(
             {"$from": "steps.a.payload", "label": "not an operator"}))
         self.assertTrue(op_spec.reads_steps(
             {"wrapped": {"$from": "steps.a.payload"}}))
+
+
+class VerificationRoundTests(unittest.TestCase):
+    """Codex verification round (phase2-codex-review-3-cog-smith-verification.md),
+    items 2 and 3 — the spec half."""
+
+    def ctx(self, values):
+        return {"inputs": values, "steps": {}, "run": {"dir": "/tmp", "id": "r"},
+                "request": {"dir": "/tmp"}}
+
+    def test_a_from_on_an_absent_optional_input_takes_its_default(self):
+        spec = op_spec.OpSpec(fx.spec_doc(inputs=[
+            {"name": "note", "required": False, "schema": {"type": "string"}}]))
+        values = spec.build_inputs({})
+        self.assertEqual(
+            op_spec.evaluate({"$from": "inputs.note", "$default": "fallback"},
+                             self.ctx(values)), "fallback")
+
+    def test_a_from_on_an_absent_optional_input_without_a_default_is_named(self):
+        spec = op_spec.OpSpec(fx.spec_doc(inputs=[
+            {"name": "note", "required": False}]))
+        values = spec.build_inputs({})
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.evaluate({"$from": "inputs.note"}, self.ctx(values))
+        self.assertIn("not available in this run", str(caught.exception))
+
+    def test_a_list_valued_foreach_as_is_a_named_problem_not_a_typeerror(self):
+        step = fx.cog_step("first")
+        step["foreach"] = {"items": {"$from": "inputs.note"}, "as": ["item"]}
+        self.assertIn("declares foreach.as", one(fx.spec_doc([step])))
+
+    def test_a_foreach_as_that_is_not_a_name_is_a_named_problem(self):
+        step = fx.cog_step("first")
+        step["foreach"] = {"items": {"$from": "inputs.note"}, "as": "the item"}
+        self.assertIn("declares foreach.as", one(fx.spec_doc([step])))
+
+    def test_non_string_cog_fields_are_named_problems(self):
+        for field, value in (("source", ["../cog-x"]), ("id", 7),
+                             ("task", {"name": "ask"}), ("version", 1)):
+            step = fx.cog_step("first")
+            step["cog"][field] = value
+            self.assertIn(f"declares cog.{field}", one(fx.spec_doc([step])),
+                          f"cog.{field} = {value!r}")
 
 
 if __name__ == "__main__":

@@ -723,5 +723,213 @@ class ForeachBoundaryTests(RunnerCase):
         self.assertEqual(self.step(track, "report")["status"], "not-reached")
 
 
+class FlagNegotiationTests(unittest.TestCase):
+    """Verification round, item 1: an effectful Cog must never be invoked
+    twice by accident (contract §0). A second flag is tried only for a real
+    argument-parser rejection that produced no result."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def setUp(self):
+        self.real_run = op_runner.subprocess.run
+        self.calls = []
+
+    def tearDown(self):
+        op_runner.subprocess.run = self.real_run
+
+    def fake_subprocess(self, answer):
+        def run(command, **kwargs):
+            self.calls.append(command)
+            return answer(command)
+        op_runner.subprocess.run = run
+
+    def flags(self):
+        return [c[-2] for c in self.calls]
+
+    def invoke(self):
+        return op_runner.invoke_cog(Path("/nowhere/cog"), "ask",
+                                    Path("/r.json"))
+
+    def test_an_envelope_quoting_the_diagnostic_is_never_reinvoked(self):
+        """The Cog RAN and reported a failure whose detail happens to quote
+        `unrecognized arguments: --request` — a result, not a rejection."""
+        envelope = json.dumps({**fx.envelope(ok=False), "error": {
+            "code": "tool-failed",
+            "detail": "gh: error: unrecognized arguments: --request"}})
+        self.fake_subprocess(lambda c: self.Result(1, envelope))
+        result = self.invoke()
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.flags(), ["--request"])
+
+    def test_an_envelope_on_stdout_of_an_exit_two_is_never_reinvoked(self):
+        envelope = json.dumps(fx.envelope(payload={"x": 1}))
+        self.fake_subprocess(lambda c: self.Result(
+            2, envelope, "ask: error: unrecognized arguments: --request"))
+        self.invoke()
+        self.assertEqual(self.flags(), ["--request"])
+
+    def test_the_diagnostic_on_stdout_alone_is_never_reinvoked(self):
+        self.fake_subprocess(lambda c: self.Result(
+            2, "ask: error: unrecognized arguments: --request /r.json", ""))
+        self.invoke()
+        self.assertEqual(self.flags(), ["--request"])
+
+    def test_a_nonzero_exit_that_is_not_argparses_is_never_reinvoked(self):
+        self.fake_subprocess(lambda c: self.Result(
+            1, "", "ask: error: unrecognized arguments: --request /r.json"))
+        self.invoke()
+        self.assertEqual(self.flags(), ["--request"])
+
+    def test_both_attempts_are_kept_as_evidence_when_the_fallback_fails(self):
+        self.fake_subprocess(lambda c: self.Result(
+            2, "", f"ask: error: unrecognized arguments: {c[-2]} /r.json"))
+        result = self.invoke()
+        self.assertEqual(self.flags(), ["--request", "--bundle"])
+        evidence = result["error"]["evidence"]
+        self.assertIn("--bundle", evidence["command"])
+        self.assertIn("--bundle", evidence["stderr_tail"])
+        self.assertEqual(len(evidence["previous_attempts"]), 1)
+        first = evidence["previous_attempts"][0]
+        self.assertIn("--request", first["command"])
+        self.assertEqual(first["returncode"], 2)
+        self.assertIn("--request", first["stderr_tail"])
+
+
+class MalformedEnvelopeTests(unittest.TestCase):
+    """Verification round, item 4: the envelope's required fields are checked
+    by TYPE before the Gate decides anything."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def setUp(self):
+        self.real_run = op_runner.subprocess.run
+
+    def tearDown(self):
+        op_runner.subprocess.run = self.real_run
+
+    def answer(self, value):
+        op_runner.subprocess.run = (
+            lambda command, **kwargs: self.Result(0, json.dumps(value)))
+        return op_runner.invoke_cog(Path("/nowhere/cog"), "ask",
+                                    Path("/r.json"))
+
+    def test_a_boolean_envelope_version_is_malformed_not_version_one(self):
+        """`True == 1` in Python; `type(x) is int` is the discriminator."""
+        bad = {"envelope": True, "ok": True, "problems": []}
+        self.assertTrue(op_runner.envelope_problems(bad))
+        result = self.answer(bad)
+        self.assertFalse(result["ok"])
+        self.assertIn("not envelope v1", result["error"]["detail"])
+        self.assertEqual(op_runner.gate_envelope(bad)["status"], "fail")
+
+    def test_null_problems_are_malformed(self):
+        bad = {"envelope": 1, "ok": True, "problems": None}
+        result = self.answer(bad)
+        self.assertFalse(result["ok"])
+        self.assertIn("problem objects", result["error"]["detail"])
+        self.assertEqual(op_runner.gate_envelope(bad)["status"], "fail")
+
+    def test_missing_problems_are_malformed(self):
+        bad = {"envelope": 1, "ok": True}
+        result = self.answer(bad)
+        self.assertFalse(result["ok"])
+        self.assertIn("problem objects", result["error"]["detail"])
+        self.assertEqual(op_runner.gate_envelope(bad)["status"], "fail")
+
+    def test_a_float_envelope_version_is_malformed(self):
+        self.assertTrue(op_runner.envelope_problems(
+            {"envelope": 1.0, "ok": True, "problems": []}))
+
+
+class EvidenceTests(unittest.TestCase):
+    """Verification round, item 6: every synthetic failure carries the same
+    process evidence, in one place — `error.evidence`."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def setUp(self):
+        self.real_run = op_runner.subprocess.run
+
+    def tearDown(self):
+        op_runner.subprocess.run = self.real_run
+
+    def answer(self, result):
+        def run(command, **kwargs):
+            if isinstance(result, Exception):
+                raise result
+            return result
+        op_runner.subprocess.run = run
+        return op_runner.invoke_cog(Path("/nowhere/cog"), "ask",
+                                    Path("/r.json"))
+
+    def test_a_silent_crash_records_its_return_code(self):
+        result = self.answer(self.Result(139, "", ""))
+        evidence = result["error"]["evidence"]
+        self.assertEqual(evidence["returncode"], 139)
+        self.assertEqual(evidence["stdout_tail"], "")
+
+    def test_a_malformed_envelope_keeps_the_return_code_and_stderr(self):
+        result = self.answer(self.Result(
+            1, json.dumps({"envelope": 1, "ok": "false", "problems": []}),
+            "model endpoint refused"))
+        evidence = result["error"]["evidence"]
+        self.assertEqual(evidence["returncode"], 1)
+        self.assertIn("model endpoint refused", evidence["stderr_tail"])
+        self.assertIn("envelope", evidence["stdout_tail"])
+
+    def test_a_launch_failure_records_evidence_with_no_return_code(self):
+        result = self.answer(OSError("No such file or directory: 'pixi'"))
+        evidence = result["error"]["evidence"]
+        self.assertIsNone(evidence["returncode"])
+        self.assertIn("pixi", evidence["command"][0])
+
+    def test_the_stream_tails_are_bounded(self):
+        result = self.answer(self.Result(3, "x" * 5000, "y" * 5000))
+        evidence = result["error"]["evidence"]
+        self.assertEqual(len(evidence["stdout_tail"]), op_runner.EVIDENCE_TAIL)
+        self.assertEqual(len(evidence["stderr_tail"]), op_runner.EVIDENCE_TAIL)
+
+    def test_a_nonzero_exit_after_a_good_envelope_carries_evidence_too(self):
+        good = fx.envelope(payload={"text": "looks fine"})
+        result = self.answer(self.Result(139, json.dumps(good),
+                                         "Segmentation fault"))
+        self.assertEqual(result["error"]["evidence"]["returncode"], 139)
+        self.assertIn("Segmentation fault",
+                      result["error"]["evidence"]["stderr_tail"])
+
+
+class PreflightOrderTests(RunnerCase):
+    """Verification round, item 7: a refused declaration leaves no run
+    directory and no Track stuck at `status: running`."""
+
+    def setup_package(self, task="chat"):
+        write_cog(self.root / "cog-first", "openteams/cog-first",
+                  [{"name": task, "kind": "command", "task": task,
+                    "audience": "usage", "default": True}])
+        fx.write_package(self.package, fx.spec_doc())
+        op_runner.invoke_cog = fx.FakeCog({"ask": fx.envelope()})
+        return fx.write_request(self.root / "request.json", {"note": "hi"})
+
+    def test_a_refused_declaration_creates_no_run_directory(self):
+        path = self.setup_package()
+        runs = self.root / "runs-here"
+        with self.assertRaises(op_spec.OpSpecError):
+            op_runner.run(self.package, path, runs_dir=runs)
+        self.assertFalse(runs.exists())
+        self.assertFalse((self.package / "runs").exists())
+
+    def test_a_dry_run_is_unaffected_by_the_preflight(self):
+        path = self.setup_package()
+        code, output = op_runner.run(self.package, path, dry_run=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(output["status"], "planned")
+
+
 if __name__ == "__main__":
     unittest.main()

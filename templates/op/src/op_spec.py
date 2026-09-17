@@ -30,6 +30,8 @@ except ImportError:                                    # pragma: no cover
 SCHEMA_STRING = "openteams/op-manifest [0.1]"
 GATE_POLICY = "envelope-ok-no-error-problems"
 STEP_ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+#: A `foreach` loop variable is a name: it becomes a mapping-path root.
+LOOP_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ON_FAIL = ("stop", "skip", "retry-once")
 
 TOP_KEYS = {"schema", "id", "version", "name", "description", "inputs",
@@ -57,6 +59,11 @@ OPERATORS = (
     frozenset({"$literal"}),
 )
 OPERATOR_NAMES = "$from, $from/$default, $path, $run_dir, $stem, $literal"
+#: Every `$`-prefixed name the closed vocabulary knows. A `$` key that is not
+#: one of these is an unknown operator WHEREVER it appears — sibling keys do
+#: not turn `$join` into ordinary data (contract §2).
+KNOWN_DOLLAR_KEYS = frozenset({"$from", "$default", "$path", "$run_dir",
+                               "$stem", "$literal"})
 PATH_ROOTS = ("inputs", "steps", "run", "request")
 
 # A Cog's conventional lifecycle tasks, for steps whose interface declares no
@@ -107,23 +114,28 @@ def dollar_keys(expr):
     return sorted(k for k in expr if isinstance(k, str) and k.startswith("$"))
 
 
+def unknown_dollar_keys(expr):
+    """The `$`-prefixed keys that name no operator in the closed vocabulary."""
+    return sorted(k for k in dollar_keys(expr) if k not in KNOWN_DOLLAR_KEYS)
+
+
 def operator_keys(expr):
     """The operator key set of a mapping-expression object, or None when the
     object is an ordinary one to walk recursively.
 
-    Only an EXACT recognized key set is an operator (contract §2). An object
-    that mixes a known key with siblings — `{"$from": "literal text",
-    "label": "x"}` — is ordinary data. An object whose keys are ALL
-    `$`-prefixed but are not a recognized set is an unknown operator, which
-    is always refused.
+    Only an EXACT recognized key set is an operator (contract §2). Any other
+    object is walked — `{"$from": "literal text", "label": "x"}` and
+    `{"$from": "inputs.note", "$stem": "x"}` are both ordinary data — EXCEPT
+    that a `$`-prefixed key naming no operator at all (`{"$join": [...]}`,
+    with or without siblings) is an unknown operator and is always refused.
     """
     keys = frozenset(expr)
     if keys in OPERATORS:
         return keys
-    dollars = dollar_keys(expr)
-    if dollars and len(dollars) == len(keys):
+    unknown = unknown_dollar_keys(expr)
+    if unknown:
         raise OpSpecError(
-            f"mapping expression {dollars} is not a known operator; the "
+            f"mapping expression uses unknown operator(s) {unknown}; the "
             f"mapping vocabulary is closed ({OPERATOR_NAMES}).")
     return None
 
@@ -244,10 +256,10 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                     _expr_problems(expr[key], where, input_names, step_ids,
                                    dep_ids, loop_vars, problems)
             return
-        dollars = dollar_keys(expr)
-        if dollars and len(dollars) == len(keys):
+        unknown = unknown_dollar_keys(expr)
+        if unknown:
             problems.append(
-                f"{where} uses unknown mapping operator(s) {dollars}; the "
+                f"{where} uses unknown mapping operator(s) {unknown}; the "
                 f"mapping vocabulary is closed ({OPERATOR_NAMES}).")
             return
         for key, value in expr.items():
@@ -491,6 +503,15 @@ def validate(doc):
             for field in ("id", "source", "task"):
                 if not cog.get(field):
                     problems.append(f"Op step {sid!r} is missing cog.{field}.")
+            # A Cog's identity, source and task are STRINGS: a list-valued
+            # source is an invalid spec at load, not a path-construction
+            # crash when the step is about to run.
+            for field in ("id", "version", "source", "task"):
+                if field in cog and cog[field] is not None \
+                        and not isinstance(cog[field], str):
+                    problems.append(f"Op step {sid!r} declares cog.{field} "
+                                    f"{cog[field]!r}; cog.{field} is a "
+                                    f"string.")
 
         gate = step.get("gate")
         if gate is not None:
@@ -536,11 +557,20 @@ def validate(doc):
                 if "items" not in foreach:
                     problems.append(f"Op step {sid!r}'s foreach declares no "
                                     f"items expression.")
-                if not foreach.get("as"):
+                loop_var = foreach.get("as")
+                if not loop_var:
                     problems.append(f"Op step {sid!r}'s foreach declares no "
                                     f"loop variable (as:).")
+                elif not (isinstance(loop_var, str)
+                          and LOOP_VAR_RE.match(loop_var)):
+                    # Checked before it is ever hashed or used as a context
+                    # key: a list-valued `as` used to raise a bare TypeError.
+                    problems.append(f"Op step {sid!r} declares foreach.as "
+                                    f"{loop_var!r}; a loop variable is a name "
+                                    f"(letters, digits and underscores, not "
+                                    f"starting with a digit).")
                 else:
-                    loop_vars.add(foreach["as"])
+                    loop_vars.add(loop_var)
 
     if problems:
         raise OpSpecError(problems)
@@ -612,7 +642,15 @@ class OpSpec:
 
     def build_inputs(self, request):
         """Declared input values for a request document: required present,
-        defaults applied, declared schemas validated, unknown keys refused."""
+        defaults applied, declared schemas validated, unknown keys refused.
+
+        ABSENCE is not a value. An optional input the request omits and whose
+        declaration carries no `default` key is simply not in the built
+        inputs: a `$from` on it takes its `$default` or is the named "not
+        available in this run" error. Only SUPPLIED values and DECLARED
+        defaults (including `default: null`) are schema-validated — a
+        declaration may say `type: string` without forcing every request to
+        carry the input."""
         if not isinstance(request, dict):
             raise OpSpecError("an Op request is a JSON object of declared "
                               "inputs.")
@@ -634,7 +672,7 @@ class OpSpec:
                                 f"{name!r}.")
                 continue
             else:
-                values[name] = None
+                continue         # absent, not null: nothing to validate
             if "schema" in spec and _SchemaValidator is not None:
                 try:
                     validator = _SchemaValidator(spec["schema"])
@@ -653,8 +691,11 @@ class OpSpec:
         return values
 
     def example_request(self):
-        """A starting request document: declared defaults, nulls elsewhere."""
-        return {i["name"]: i.get("default") for i in self.inputs}
+        """A starting request document: the declared defaults. An optional
+        input with no declared default is OMITTED — writing null there would
+        supply a value the author never declared."""
+        return {i["name"]: i.get("default") for i in self.inputs
+                if "default" in i or i.get("required", True)}
 
 
 def load_document(path):

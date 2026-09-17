@@ -85,8 +85,10 @@ class CreateTests(SmithOpCase):
         self.assertIn("test =", pixi)
 
     def test_example_request_carries_defaults_and_placeholders(self):
-        """A placeholder only where a REQUIRED input declares no default: an
-        optional input, and one that declares `default: null`, get null."""
+        """A placeholder only where a REQUIRED input declares no default. An
+        input that declares `default: null` gets null; an OPTIONAL input with
+        no declared default is omitted, so the starter request never supplies
+        a value the spec did not declare (verification round, item 2)."""
         doc = self.spec_doc()
         doc["inputs"] = [{"name": "note", "default": "a default"},
                          {"name": "items", "schema": {"type": "array"}},
@@ -102,8 +104,24 @@ class CreateTests(SmithOpCase):
         example = json.loads((self.dest / "examples" / "request.json").read_text())
         self.assertEqual(example, {"note": "a default", "items": [],
                                    "maybe": "REPLACE_ME", "free": "REPLACE_ME",
-                                   "nullable": None, "optional": None,
+                                   "nullable": None,
                                    "nullable_required": None})
+        self.assertNotIn("optional", example)
+
+    def test_the_starter_request_validates_for_an_optional_typed_input(self):
+        """Verification round, item 2: `{name: note, required: false,
+        schema: {type: string}}` used to get a null the schema rejected."""
+        doc = self.spec_doc()
+        doc["inputs"] = [{"name": "note", "required": False,
+                          "schema": {"type": "string"}}]
+        doc["steps"][0]["input"] = {"note": {"$from": "inputs.note",
+                                             "$default": "none"}}
+        self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+        smith_op.create(self.spec_path, self.dest)
+        example = json.loads((self.dest / "examples" / "request.json").read_text())
+        self.assertEqual(example, {})
+        spec = op_spec.load(self.dest / "op.yaml")
+        self.assertEqual(spec.build_inputs(example), {})
 
     def test_creates_into_an_existing_directory_without_collisions(self):
         self.dest.mkdir()
@@ -339,6 +357,48 @@ class ReviewRegressionTests(SmithOpCase):
         self.assertEqual(output["status"], "planned")
         self.assertTrue(Path(output["track"]).is_relative_to(
             (self.root / "elsewhere").resolve()))
+
+
+class VerificationRoundTests(SmithOpCase):
+    """Codex verification round, item 3: a malformed spec type reaches the
+    CLI as exit 2 and one sentence — never a traceback."""
+
+    def smith(self, *args, cwd=None):
+        return subprocess.run([sys.executable, str(CLI), *args],
+                              capture_output=True, text=True, cwd=cwd)
+
+    def package_with(self, edit):
+        smith_op.create(self.spec_path, self.dest)
+        doc = self.spec_doc()
+        edit(doc)
+        (self.dest / "op.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+        return self.dest / "examples" / "request.json"
+
+    def assert_refused(self, result, phrase):
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn(phrase, result.stdout + result.stderr)
+
+    def test_a_list_valued_foreach_as_exits_two_without_a_traceback(self):
+        def edit(doc):
+            doc["steps"][0]["foreach"] = {"items": {"$from": "inputs.note"},
+                                          "as": ["item"]}
+        request = self.package_with(edit)
+        self.assert_refused(self.smith("op", "run", str(self.dest), "--request",
+                                       str(request), "--dry-run"),
+                            "declares foreach.as")
+        self.assert_refused(self.smith("op", "check", str(self.dest)),
+                            "declares foreach.as")
+
+    def test_a_list_valued_cog_source_exits_two_without_a_traceback(self):
+        def edit(doc):
+            doc["steps"][0]["cog"]["source"] = ["../cog-first"]
+        request = self.package_with(edit)
+        self.assert_refused(self.smith("op", "run", str(self.dest), "--request",
+                                       str(request), "--dry-run"),
+                            "declares cog.source")
+        self.assert_refused(self.smith("op", "check", str(self.dest)),
+                            "declares cog.source")
 
 
 if __name__ == "__main__":

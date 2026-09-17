@@ -18,7 +18,8 @@ decides; the Cog never decides its own acceptance.
 Exit codes: 0 completed (or completed-with-problems, or a planned dry run),
 1 failed, 2 an invalid spec or request. Stdout is one JSON object.
 
-A run validates every step's Cog declaration before invoking anything, and a
+A run validates every step's Cog declaration before it creates anything (so
+a refused declaration leaves no run directory and no half-open Track), and a
 run that stops records the steps it never reached as `not-reached`, so the
 Track always lists every step of the spec.
 """
@@ -39,6 +40,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 # ------------------------------------------------------- the Cog seam ----
+
+#: How much of a failed process's output is kept as evidence.
+EVIDENCE_TAIL = 2000
+
+
+def _tail(text):
+    text = (text or "").strip()
+    return text[-EVIDENCE_TAIL:]
+
 
 def parse_envelope(stdout):
     """The last JSON object on stdout that looks like an envelope.
@@ -66,19 +76,31 @@ def parse_envelope(stdout):
 
 #: Request-file flags the seam will try, in order. `--request` is the seam's
 #: flag; `--bundle` is the flag cog-smith's own context-cog machinery gives a
-#: created Cog, so an Op must be able to call one. A later flag is tried ONLY
-#: when the Cog's CLI rejected the earlier one by name before doing any work
-#: (argparse exits non-zero with "unrecognized arguments"), so nothing
-#: effectful can run twice.
+#: created Cog, so an Op must be able to call one.
 REQUEST_FLAGS = ("--request", "--bundle")
+
+#: argparse's exit code for a command line it could not parse.
+ARGPARSE_EXIT = 2
 
 
 def _rejected_flag(completed, flag):
-    """True when the Cog's CLI refused FLAG by name without running."""
-    if completed.returncode == 0:
+    """True when the Cog's CLI refused FLAG by name WITHOUT DOING ANY WORK,
+    so trying the next flag cannot run an effectful Cog twice (contract §0).
+
+    Three conditions, all required: argparse's own exit code (2), the
+    diagnostic on STDERR (where argparse writes it) naming this exact flag,
+    and no envelope anywhere on stdout. An exit-1 envelope whose error detail
+    happens to quote "unrecognized arguments: --request" is a RESULT, not a
+    rejection — the Cog already ran."""
+    if completed.returncode != ARGPARSE_EXIT:
         return False
-    text = f"{completed.stdout}\n{completed.stderr}"
-    return "unrecognized arguments" in text and flag in text
+    if f"unrecognized arguments: {flag}" not in (completed.stderr or ""):
+        return False
+    try:
+        parse_envelope(completed.stdout or "")
+    except ValueError:
+        return True
+    return False                 # it produced a result: never re-invoke
 
 
 def envelope_problems(value):
@@ -90,25 +112,36 @@ def envelope_problems(value):
     if not isinstance(value, dict):
         return ["the Cog's result is not a JSON object."]
     problems = []
-    if value.get("envelope") != 1:
+    version = value.get("envelope")
+    if type(version) is not int or version != 1:
+        # `type(x) is int`, not isinstance: True == 1 in Python, and
+        # `{"envelope": true}` is malformed output, not envelope v1.
         problems.append(f"the Cog's result declares envelope "
-                        f"{value.get('envelope')!r}, not envelope v1.")
+                        f"{version!r}, not envelope v1.")
     if not isinstance(value.get("ok"), bool):
         problems.append(f"the Cog's result declares ok {value.get('ok')!r}, "
                         f"which is not true or false.")
     listed = value.get("problems")
-    if listed is not None and (not isinstance(listed, list)
-                               or any(not isinstance(p, dict) for p in listed)):
+    if not isinstance(listed, list) or any(not isinstance(p, dict)
+                                           for p in listed):
+        # `problems` is REQUIRED: missing or null is malformed, not an empty
+        # list the Gate may assume.
         problems.append("the Cog's result declares problems that are not a "
                         "list of problem objects.")
     return problems
 
 
-def failed_envelope(cog_dir, task, detail, raw=None, carried=None):
+def failed_envelope(cog_dir, task, detail, raw=None, carried=None,
+                    evidence=None):
     """A synthetic ok:false envelope for an invocation that never produced a
     usable result. What the Cog did emit is kept in `raw` as evidence; when
     that output was a well-formed envelope, its identity, binding and
-    problems are carried across rather than thrown away."""
+    problems are carried across rather than thrown away.
+
+    `error.evidence` is the ONE place process evidence lives, on EVERY
+    synthetic failure: `{command, returncode, stdout_tail, stderr_tail}` and,
+    when the seam tried the other request flag first, `previous_attempts`
+    with the same fields (BUILDING_OPS, "When a Cog invocation fails")."""
     carried = carried if isinstance(carried, dict) else {}
     return {
         "envelope": 1,
@@ -116,7 +149,8 @@ def failed_envelope(cog_dir, task, detail, raw=None, carried=None):
                                       "version": None},
         "task": task,
         "ok": False,
-        "error": {"code": "invocation-failed", "detail": detail},
+        "error": {"code": "invocation-failed", "detail": detail,
+                  "evidence": evidence},
         "payload": None,
         "raw": raw,
         "problems": [p for p in carried.get("problems") or []
@@ -124,6 +158,20 @@ def failed_envelope(cog_dir, task, detail, raw=None, carried=None):
         "binding": carried.get("binding"),
         "timing": {"latency_s": 0},
     }
+
+
+def _evidence(command, returncode, stdout, stderr, previous):
+    """One attempt's process evidence: what was run, how it exited, and the
+    tail of each stream. Captured once, kept on every synthetic failure."""
+    record = {
+        "command": list(command),
+        "returncode": returncode,
+        "stdout_tail": _tail(stdout),
+        "stderr_tail": _tail(stderr),
+    }
+    if previous:
+        record["previous_attempts"] = list(previous)
+    return record
 
 
 def invoke_cog(cog_dir, task, request_path):
@@ -136,7 +184,8 @@ def invoke_cog(cog_dir, task, request_path):
     that dies at 139 has not succeeded), output with no envelope, and a
     malformed envelope all arrive the same way."""
     cog_dir = Path(cog_dir)
-    for flag in REQUEST_FLAGS:
+    previous = []
+    for index, flag in enumerate(REQUEST_FLAGS):
         command = [
             "pixi", "run", "--manifest-path", str(cog_dir / "pixi.toml"),
             task, "--", flag, str(request_path),
@@ -146,36 +195,49 @@ def invoke_cog(cog_dir, task, request_path):
         except OSError as exc:
             return failed_envelope(
                 cog_dir, task,
-                f"could not launch {command[0]!r} for task {task!r}: {exc}")
-        if not _rejected_flag(completed, flag):
+                f"could not launch {command[0]!r} for task {task!r}: {exc}",
+                evidence=_evidence(command, None, "", "", previous))
+        if (not _rejected_flag(completed, flag)
+                or index == len(REQUEST_FLAGS) - 1):
             break
+        # The CLI refused this flag before doing any work; the next flag is
+        # tried, and this attempt stays as evidence.
+        previous.append(_evidence(command, completed.returncode,
+                                  completed.stdout, completed.stderr, []))
     stdout = completed.stdout or ""
     stderr = (completed.stderr or "").strip()
+    evidence = _evidence(command, completed.returncode, stdout, stderr,
+                         previous)
     try:
         envelope = parse_envelope(stdout)
     except ValueError as exc:
         detail = stderr or stdout.strip() or str(exc)
-        return failed_envelope(cog_dir, task, detail, raw=stdout)
+        return failed_envelope(cog_dir, task, detail, raw=stdout,
+                               evidence=evidence)
     malformed = envelope_problems(envelope)
     if malformed:
-        return failed_envelope(cog_dir, task, " ".join(malformed), raw=envelope)
+        return failed_envelope(cog_dir, task, " ".join(malformed), raw=envelope,
+                               evidence=evidence)
     if completed.returncode != 0:
         detail = (f"the Cog command for task {task!r} exited "
                   f"{completed.returncode}")
         if stderr:
             detail += f": {stderr[-400:]}"
         return failed_envelope(cog_dir, task, detail, raw=envelope,
-                               carried=envelope)
+                               carried=envelope, evidence=evidence)
     return envelope
 
 
 def gate_envelope(envelope):
     """The Gate: a three-state decision over one envelope, with reasons."""
     reasons = []
-    if not isinstance(envelope, dict) or envelope.get("envelope") != 1:
+    malformed = envelope_problems(envelope)
+    if malformed:
+        # The Gate decides about envelope v1 and nothing else: a result whose
+        # required fields are the wrong TYPE never reaches the policy.
         return {
             "policy": op_spec.GATE_POLICY, "status": "fail",
-            "reasons": ["Cog result is not envelope v1."],
+            "reasons": ["Cog result is not envelope v1."] + malformed,
             "decided_at": op_track.utc_now(), "guards": [],
         }
     if envelope.get("ok") is not True:
@@ -362,6 +424,17 @@ def run(package_root, request_path, dry_run=False, runs_dir=None):
     request_doc = op_spec.load_document(request_path)
     values = spec.build_inputs(request_doc)
 
+    # Every step's Cog declaration is checked BEFORE anything is created: a
+    # spec naming a task the Cog does not declare for the usage audience is
+    # an invalid spec, so it leaves no run directory and no Track stuck at
+    # `status: running`. (This is a declaration check; authority over what a
+    # Cog may then do is a separate question — see the contract's §0
+    # amendment.) A dry run is portable and never checks declarations.
+    if not dry_run:
+        declaration = op_spec.declaration_problems(spec, package_root)
+        if declaration:
+            raise op_spec.OpSpecError(declaration)
+
     run_id = op_track.new_run_id()
     run_dir = (Path(runs_dir).resolve() if runs_dir
                else package_root / "runs") / run_id
@@ -380,15 +453,6 @@ def run(package_root, request_path, dry_run=False, runs_dir=None):
     op_track.save(track, run_dir)
     if dry_run:
         return _plan(spec, track, run_dir, context)
-
-    # Every step's Cog declaration is checked BEFORE any step is invoked: a
-    # spec naming a task the Cog does not declare for the usage audience is
-    # an invalid spec, not a mid-run surprise. (This is a declaration check;
-    # authority over what a Cog may then do is a separate question — see the
-    # contract's §0 amendment.)
-    declaration = op_spec.declaration_problems(spec, package_root)
-    if declaration:
-        raise op_spec.OpSpecError(declaration)
 
     dependents = spec.dependents()
     statuses, blocked = {}, set()

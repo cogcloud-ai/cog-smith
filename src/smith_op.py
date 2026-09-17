@@ -38,7 +38,7 @@ import op_spec         # noqa: E402
 # The Op machinery lineage (MACHINERY.md). Bumped here when a master
 # changes; `op check` reports it so a package's drift has a version to
 # name.
-MACHINERY_VERSION = "0.4.3"
+MACHINERY_VERSION = "0.4.4"
 MACHINERY = ("op_runner.py", "op_spec.py", "op_track.py")
 OP_TASKS = ("op", "test")
 PLACEHOLDERS = {"object": {}, "array": [], "integer": 0, "number": 0,
@@ -90,16 +90,16 @@ def example_request(spec):
     only where a REQUIRED input declares none.
 
     Presence, not truthiness: an input that declares `default: null` gets
-    null, and so does an optional input with no default — a placeholder there
-    would be a value the author never asked for."""
+    null. An OPTIONAL input with no declared default is omitted entirely —
+    writing null there supplies a value the author never declared, and a
+    declared `schema: {type: string}` would then reject the starter request."""
     out = {}
     for declared in spec.inputs:
         if "default" in declared:
             out[declared["name"]] = declared["default"]
             continue
         if not declared.get("required", True):
-            out[declared["name"]] = None
-            continue
+            continue                 # absent, not null
         schema = declared.get("schema") or {}
         kind = schema.get("type")
         if isinstance(kind, list):  # e.g. ["string", "null"]: first concrete type

@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.3
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.4
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: tool steps, human steps, and durable state
@@ -38,8 +38,12 @@ Ops use Cogs; they never import them. Every step runs
 `pixi run --manifest-path <cog>/pixi.toml <task> -- --request <file>`, where
 `<task>` is a **usage** interface that Cog declares for itself. If the Cog's
 CLI refuses `--request` by name — cog-smith's context-cog machinery takes
-`--bundle` — the seam retries with `--bundle`, before the Cog has done any
-work. Two flags for one thing is an accident of two machinery lineages, not a
+`--bundle` — the seam retries with `--bundle`. It retries ONLY on a real
+argument-parser rejection that did no work: exit code 2, the diagnostic
+`unrecognized arguments: --request` on **stderr**, and no envelope anywhere on
+stdout. Anything else, including a failed envelope whose text happens to quote
+that diagnostic, is a RESULT, and an effectful Cog is never invoked a second
+time. Two flags for one thing is an accident of two machinery lineages, not a
 feature to build on.
 
 ## 2. The path
@@ -161,8 +165,12 @@ track:
 
 ### Mapping expressions
 
-The vocabulary is CLOSED. An object whose keys are exactly one of these is an
-operator; everything else is walked, and scalars are literals.
+The vocabulary is CLOSED. An object is an operator only when its key set is
+EXACTLY one of these; every other object is walked recursively, and scalars
+are literals. So `{$from: "x", label: "y"}` and `{$from: "x", $stem: "y"}` are
+both ordinary data — but a `$`-prefixed key that names no operator at all
+(`{$join: [...]}`, with or without siblings) is refused by name wherever it
+appears.
 
 | Operator | Meaning |
 |---|---|
@@ -213,14 +221,24 @@ is never retried. Both envelopes stay in the Track.
 
 An input is supplied when the request carries its KEY: an explicit `null` is a
 value, and a declared default never replaces it. A declared `default:` (even
-`default: null`) covers an omitted input; only a genuinely absent input with
-no default is missing. A declared `schema:` is checked when the spec loads and
-applied to whatever value results — including `null`, so a nullable input
-declares `type: [string, "null"]` rather than relying on nulls being skipped.
+`default: null`) covers an omitted input; a required input with neither is
+missing.
+
+**Absence is not `null`.** An OPTIONAL input the request omits and whose
+declaration carries no `default` key is simply not among the run's inputs: a
+`{$from: inputs.note}` on it takes its `$default`, or is the named "not
+available in this run" error. It is not validated, so
+`{name: note, required: false, schema: {type: string}}` does not force every
+request to carry `note`. A declared `schema:` is checked when the spec loads
+and applied to every SUPPLIED value and every DECLARED default — including
+`null`, so a nullable input with `default: null` declares
+`type: [string, "null"]`. If a step must always send the key, declare
+`default: null` and let the schema say so.
 
 `op new` fills `examples/request.json` from the declared defaults, and writes a
 type-shaped placeholder (`"REPLACE_ME"`, `{}`, `[]`, `0`, `false`) only where a
-REQUIRED input declares no default; an optional input gets `null`. The
+REQUIRED input declares no default; an optional input with no declared default
+is OMITTED from the starter request. The
 generated test skips its dry-run assertions only while that starter request
 does not validate — a request that validates but maps badly FAILS the suite.
 
@@ -233,6 +251,15 @@ continues. A Cog that could not be launched, exited nonzero, or printed
 something that is not a well-formed envelope v1 is an *invocation failure*:
 the Op layer synthesises an `ok: false` envelope, keeps what the Cog did emit
 as evidence in `raw`, and the Gate decides about that like any other result.
+A well-formed envelope v1 is required to have `envelope: 1` (the integer, not
+`true`), a boolean `ok`, and `problems` as a list of objects; anything else is
+malformed output, not a result.
+
+Every synthetic failure carries its process evidence in ONE place —
+`error.evidence` — as `{command, returncode, stdout_tail, stderr_tail}` (each
+tail the last 2000 characters), plus `previous_attempts` with the same fields
+when the seam had tried the other request flag first. `returncode` is `null`
+only when the command could not be launched at all.
 A step that is `skipped` or `blocked` still has a result in the Track and a
 null payload downstream, so an output mapping over it resolves. A Cog reports; **the Gate decides, never the Cog**. Guards —
 independent, system-side verifiers of the system's requirements — are not in
