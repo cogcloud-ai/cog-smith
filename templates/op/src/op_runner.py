@@ -54,6 +54,7 @@ Track always lists every step of the spec.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
@@ -391,20 +392,54 @@ class RunLock:
     time) is INFORMATIONAL — it says who to look for, and is never the
     thing consulted to decide (review finding 1).
 
+    The lock FILE is a control file like the Track: contained in the run
+    and opened `O_NOFOLLOW`, so it is never a link to something else
+    (contract §9c).
+
     The descriptor is inherited by every Cog this runner launches, so a
     runner killed mid-invocation keeps the run locked until its Cog is
     finished too: the lock protects the whole execution, including an
     outstanding external effect."""
 
     def __init__(self, run_dir):
-        self.path = Path(run_dir) / LOCK_NAME
+        self.run_dir = Path(run_dir)
+        self.path = self.run_dir / LOCK_NAME
         self.fd = None
         self.held = False
 
     def acquire(self):
+        """Take the lock, then say who holds it.
+
+        The lock file is a CONTROL FILE, opened like every other one: the
+        path is contained in the run directory (no link out, no alias
+        inside), and the open itself is `O_NOFOLLOW`, so `run.lock` pointing
+        at `track.json` is refused rather than followed and truncated
+        (contract §9c, review 3 finding 3). Containment is checked before
+        the descriptor exists; `O_NOFOLLOW` closes the window between the
+        check and the open.
+
+        The metadata is written only AFTER the lock is held, and a failure
+        while writing it releases the descriptor before re-raising: an
+        embedding process that catches the exception is not left holding a
+        lock it does not know about."""
         global LOCK_FD
         op_track.ensure_dir(self.path.parent)
-        fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            op_track.contained(self.path, self.run_dir)
+        except ValueError as exc:
+            raise op_spec.OpSpecError(
+                f"the run lock {self.path} is not a real file inside the run "
+                f"({exc}); the lock is a control file of the run and is "
+                f"never opened through a link.")
+        try:
+            fd = os.open(str(self.path),
+                         os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o644)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.EMLINK):
+                raise op_spec.OpSpecError(
+                    f"{self.path} is a symlink; the run lock is a control "
+                    f"file of the run and is never opened through a link.")
+            raise
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -415,14 +450,18 @@ class RunLock:
                 f"{holder.get('pid')} (since {holder.get('at')}); one run, "
                 f"one process — wait for that process to finish.")
         self.fd, self.held, LOCK_FD = fd, True, fd
-        os.ftruncate(fd, 0)
-        os.lseek(fd, 0, os.SEEK_SET)
-        os.write(fd, json.dumps({"pid": os.getpid(),
-                                 "at": op_track.utc_now()}).encode("utf-8"))
         try:
-            os.fsync(fd)
-        except OSError:                                # pragma: no cover
-            pass
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, json.dumps({"pid": os.getpid(),
+                                     "at": op_track.utc_now()}).encode("utf-8"))
+            try:
+                os.fsync(fd)
+            except OSError:                            # pragma: no cover
+                pass
+        except BaseException:
+            self.release()
+            raise
         return self
 
     def _holder(self, fd):
@@ -488,7 +527,10 @@ def change_content_sha256(change):
 #: grant that carried `target_sha256: "yes"` would authorize a write whose
 #: staleness precondition no fetch can ever match — or, worse, one a Cog
 #: comparing loosely would treat as satisfied (contract §9b).
-HEX64 = re.compile(r"^[0-9a-f]{64}$")
+#: `fullmatch`, never `match`: with `re.match`, `"<64 hex>\n"` passed —
+#: `$` also matches before a trailing newline, so a digest with a newline
+#: glued to it was accepted as a content hash (review 3, finding 1).
+HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def hex64_problem(value, field, where):
@@ -496,7 +538,7 @@ def hex64_problem(value, field, where):
     if not isinstance(value, str) or not value:
         return (f"{where} carries {field} {value!r}; a change carries both "
                 f"hashes, and neither may be null")
-    if not HEX64.match(value):
+    if not HEX64.fullmatch(value):
         return (f"{where} carries {field} {value!r}, which is not a sha256 "
                 f"(64 hex characters)")
     return None
@@ -777,7 +819,15 @@ def pending_changes(payload, sid):
 
     Change ids are unique STRINGS. Two proposals sharing an id would collapse
     into one entry the moment they were indexed, so one approval would
-    silently authorize both: a duplicate refuses the pause (review S2)."""
+    silently authorize both: a duplicate refuses the pause (review S2).
+
+    HASHES ARE NEVER REPAIRED (contract §9c). Every proposal states its own
+    `content_sha256`, and here — at the pause, before a human ever sees it —
+    that digest must EQUAL the canonical hash of the object it arrived on,
+    and `target_sha256` must be 64 hex characters. A proposal carrying
+    `"content_sha256": "placeholder"` used to pass the pause and be
+    laundered into a valid digest at approval; now the pause is refused by
+    name (review 3, finding 1)."""
     changes = payload.get("changes") if isinstance(payload, dict) else None
     if not isinstance(changes, list) or any(
             not isinstance(c, dict) or not isinstance(c.get("change_id"), str)
@@ -786,7 +836,7 @@ def pending_changes(payload, sid):
             f"Op step {sid!r} has a human Gate, so its payload must carry a "
             f"`changes` list of objects with a change_id (a string): that is "
             f"what the human decides about.")
-    seen, duplicates, unhashed = set(), [], []
+    seen, duplicates, unhashed, misstated = set(), [], [], []
     for change in changes:
         cid = change["change_id"]
         if cid in seen and cid not in duplicates:
@@ -795,6 +845,19 @@ def pending_changes(payload, sid):
         value = change.get("content_sha256")
         if not isinstance(value, str) or not value:
             unhashed.append(cid)
+        elif not HEX64.fullmatch(value):
+            misstated.append((cid, "content_sha256", value,
+                              "which is not a sha256 (64 hex characters)"))
+        elif value != change_content_sha256(change):
+            misstated.append((cid, "content_sha256", value,
+                              f"but its content hashes to "
+                              f"{change_content_sha256(change)!r}"))
+        target = change.get("target_sha256")
+        if not isinstance(target, str) or not HEX64.fullmatch(target):
+            misstated.append((cid, "target_sha256", target,
+                              "which is not a sha256 (64 hex characters); a "
+                              "change states the content hash of the item it "
+                              "modifies"))
     if unhashed:
         # A proposal with no content hash is not repaired into one: the hash
         # is what the human's approval is ABOUT, so a Cog that states none
@@ -808,6 +871,15 @@ def pending_changes(payload, sid):
             f"Op step {sid!r} proposes change id(s) {duplicates} more than "
             f"once; a human decides about each change exactly once, so change "
             f"ids are unique.")
+    if misstated:
+        # Refused, never recomputed: the digest a proposal states is the
+        # thing the approval is ABOUT, so a wrong one is a wrong proposal
+        # (contract §9c).
+        raise op_spec.OpSpecError(
+            [f"Op step {sid!r} proposes change {cid!r} carrying {field} "
+             f"{value!r}, {why}; hashes are checked at the pause and never "
+             f"repaired."
+             for cid, field, value, why in misstated])
     return changes
 
 
@@ -854,11 +926,14 @@ def load_decision(path):
 
 
 def normalized_change(change):
-    """A change with its `content_sha256` RECOMPUTED from its own content.
+    """An EDITED change with its `content_sha256` recomputed from its own
+    content.
 
-    The hash a proposal arrived with is never trusted forward: what the
-    decision history records, and what a grant carries, is the hash of the
-    object as it stands (review S2)."""
+    Only an edit is re-hashed. An approval or a rejection carries the digest
+    the proposal stated — checked at the pause against the object it arrived
+    on, and checked again at issuance — because recomputing it here would
+    turn any digest, however wrong, into a valid-looking one (contract §9c,
+    review 3 finding 1)."""
     change = dict(change)
     change["content_sha256"] = change_content_sha256(change)
     return change
@@ -968,10 +1043,12 @@ def apply_decision(pending, decision):
                             f"verdicts are {list(VERDICTS)}.")
             continue
         if verdict == "approve":
-            change = normalized_change(proposed[cid])
+            # The SUPPLIED digest, preserved: it is what the pause checked
+            # and what the human approved (contract §9c).
+            change = dict(proposed[cid])
             approved.append(change)
         elif verdict == "reject":
-            change = normalized_change(proposed[cid])
+            change = dict(proposed[cid])
             rejected.append(cid)
         else:
             change = entry.get("change")
@@ -1401,7 +1478,12 @@ def run(package_root, request_path, dry_run=False, runs_dir=None,
     run_id = op_track.new_run_id()
     run_dir = (Path(runs_dir).resolve() if runs_dir
                else package_root / "runs") / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
+    # Through `ensure_dir`, not `mkdir(parents=True)`: the run directory's
+    # OWN entry is fsynced in its parent. Every control directory beneath it
+    # is created durably, and a Track, grant or journal whose containing
+    # directory did not survive a power loss is not durable either (contract
+    # §9c, review 3 finding 2).
+    op_track.ensure_dir(run_dir)
     input_request = run_dir / "input-request.json"
     op_track.write_json(input_request, request_doc, base=run_dir)
 

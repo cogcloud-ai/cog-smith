@@ -172,14 +172,21 @@ def authority_doc(read=(REPO,), write=(REPO,)):
 
 
 def change(change_id, repository=REPO, kind="label", summary="add a label",
-           target_sha256="1" * 64):
+           target_sha256="1" * 64, content_sha256=None):
     """A proposed change, with BOTH hashes (contract §9): `content_sha256`
-    is the change object's own hash (the runner normalizes it at approval)
-    and `target_sha256` is the target item's content hash as the Op read
-    it."""
-    return {"change_id": change_id, "kind": kind, "target": f"{repository}#1",
-            "repository": repository, "summary": summary,
-            "content_sha256": "0" * 64, "target_sha256": target_sha256}
+    is the change object's OWN hash — stated by the proposing Cog, checked
+    at the pause and never repaired (contract §9c) — and `target_sha256` is
+    the target item's content hash as the Op read it.
+
+    `content_sha256` is computed here, exactly as a proposing Cog computes
+    it; pass one explicitly to build a proposal that misstates its hash."""
+    body = {"change_id": change_id, "kind": kind,
+            "target": f"{repository}#1", "repository": repository,
+            "summary": summary}
+    return dict(body,
+                content_sha256=(content_sha256 if content_sha256 is not None
+                                else op_runner.change_content_sha256(body)),
+                target_sha256=target_sha256)
 
 
 def decision_doc(run_id, step, payload_sha256, verdicts):

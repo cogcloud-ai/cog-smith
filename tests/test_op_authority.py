@@ -388,16 +388,22 @@ class WriteGrantTests(AuthorityCase):
                          op_runner.change_content_sha256(fx.change("c-a")))
         self.assertEqual(granted["repository"], REPO)
 
-    def test_a_change_without_a_target_hash_is_refused_at_issuance(self):
+    def test_a_change_without_a_target_hash_refuses_the_pause(self):
+        # Review 3, finding 1: the hashes are checked where the human meets
+        # them — at the pause — not only at issuance.
         naked = fx.change("c-a")
         del naked["target_sha256"]
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [naked]}),
                            fx.envelope(payload={})]}
-        code, output, _ = self.start(answers=answers)
-        decision = self.decide(output, {"c-a": "approve"})
-        code, out, track = self.resume(output, decision)
-        record = self.step(track, "write-github")
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(answers=answers)
+        self.assertIn("never repaired", "\n".join(caught.exception.problems))
+
+    def test_a_recorded_change_without_a_target_hash_is_denied(self):
+        # The issuance check stands behind the pause check: a Track edited
+        # after the decision still releases no grant.
+        record = self.tampered_decision(lambda c: c.pop("target_sha256"))
         self.assertEqual(record["status"], "denied")
         self.assertIn("carries both hashes", record["gate"]["reasons"][0])
 
@@ -460,15 +466,47 @@ class WriteGrantTests(AuthorityCase):
         self.assertEqual(record["status"], "denied")
         self.assertIn("its content hashes to", record["gate"]["reasons"][0])
 
-    def test_a_change_whose_target_hash_is_not_a_sha256_is_denied(self):
+    def tampered_decision(self, tamper):
+        """Approve one change, then edit the RECORDED decision and re-run the
+        write step: what issuance does with a Track that no longer says what
+        the human decided."""
+        code, output, _ = self.start(answers=envelopes(("c-a",)))
+        decision = self.decide(output, {"c-a": "approve"})
+        code, out, track = self.resume(output, decision)
+        self.assertEqual(code, 0, out)
+        tamper(self.step(track, "compose")["decision"]["value"]["approved"][0])
+        self.step(track, "write-github")["status"] = "not-reached"
+        Path(out["track"]).write_text(json.dumps(track))
+        code, out2, track2 = self.resume(out)
+        return self.step(track2, "write-github")
+
+    def test_a_change_whose_target_hash_is_not_a_sha256_refuses_the_pause(self):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [
                                fx.change("c-a", target_sha256="yes")]}),
                            fx.envelope(payload={})]}
-        code, output, _ = self.start(answers=answers)
-        decision = self.decide(output, {"c-a": "approve"})
-        code, out, track = self.resume(output, decision)
-        record = self.step(track, "write-github")
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(answers=answers)
+        self.assertIn("not a sha256", "\n".join(caught.exception.problems))
+
+    def test_a_target_hash_with_a_trailing_newline_refuses_the_pause(self):
+        # Review 3, finding 1, reproduced: `re.match` with `$` accepted
+        # 64 hex characters followed by a newline. `fullmatch` does not.
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [fx.change(
+                               "c-a", target_sha256="1" * 64 + "\n")]}),
+                           fx.envelope(payload={})]}
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(answers=answers)
+        self.assertIn("not a sha256", "\n".join(caught.exception.problems))
+        self.assertIsNone(op_runner.hex64_problem("a" * 64, "content_sha256",
+                                                  "change 'c'"))
+        self.assertIn("not a sha256", op_runner.hex64_problem(
+            "a" * 64 + "\n", "content_sha256", "change 'c'"))
+
+    def test_a_recorded_change_whose_target_hash_is_not_a_sha256_is_denied(self):
+        record = self.tampered_decision(
+            lambda c: c.__setitem__("target_sha256", "yes"))
         self.assertEqual(record["status"], "denied")
         self.assertIn("not a sha256", record["gate"]["reasons"][0])
 
@@ -700,6 +738,79 @@ class PendingAndDecisionTests(AuthorityCase):
         with self.assertRaises(op_spec.OpSpecError) as caught:
             self.start(answers=answers)
         self.assertIn("no content_sha256",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_placeholder_content_hash_refuses_the_pause(self):
+        # Review 3, finding 1, reproduced: a proposal carrying
+        # `"content_sha256": "placeholder"` used to pass the pause and be
+        # LAUNDERED into a valid canonical digest at approval, which then
+        # passed issuance. The pause refuses it by name instead.
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [fx.change(
+                               "c-a", content_sha256="placeholder")]}),
+                           fx.envelope(payload={})]}
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(answers=answers)
+        problems = "\n".join(caught.exception.problems)
+        self.assertIn("never repaired", problems)
+        self.assertIn("not a sha256", problems)
+        self.assertFalse((self.package / "runs").exists()
+                         and any((self.package / "runs").rglob("pending")))
+
+    def test_a_content_hash_that_is_not_its_own_refuses_the_pause(self):
+        # The same refusal for a well-FORMED digest that is simply not this
+        # change's: a digest is checked against the object it arrived on.
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [fx.change(
+                               "c-a", content_sha256="b" * 64)]}),
+                           fx.envelope(payload={})]}
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(answers=answers)
+        self.assertIn("its content hashes to",
+                      "\n".join(caught.exception.problems))
+
+    def test_approval_preserves_the_supplied_digest_and_only_edits_rehash(self):
+        # Review 3, finding 1: an approval or a rejection carries the digest
+        # the proposal stated (the pause already checked it against the
+        # object); ONLY an edit is re-hashed. Recomputing at approval is
+        # what turned `"placeholder"` into a valid-looking hash.
+        stated = fx.change("c-a")
+        payload = {"changes": [stated, fx.change("c-b")]}
+        pending = {"run_id": "r", "step": "compose", "payload": payload,
+                   "payload_sha256": op_runner.canonical_sha256(payload)}
+        edited = dict(fx.change("c-b"), summary="a better summary")
+        decision = fx.decision_doc("r", "compose", pending["payload_sha256"],
+                                   {"c-a": "approve", "c-b": edited})
+        rehashed, real = [], op_runner.normalized_change
+
+        def watched(change):
+            rehashed.append(change["change_id"])
+            return real(change)
+
+        op_runner.normalized_change = watched
+        try:
+            applied = op_runner.apply_decision(pending, decision)
+        finally:
+            op_runner.normalized_change = real
+        self.assertEqual(rehashed, ["c-b"])          # the edit, and only it
+        by_id = {c["change_id"]: c for c in applied["approved"]}
+        self.assertEqual(by_id["c-a"]["content_sha256"],
+                         stated["content_sha256"])
+        self.assertEqual(by_id["c-b"]["content_sha256"],
+                         op_runner.change_content_sha256(edited))
+
+    def test_a_decision_about_a_misstated_proposal_is_refused_too(self):
+        # The pause refuses first, but `apply_decision` re-reads the pending
+        # payload and refuses the same way: a pending file edited by hand
+        # after the pause cannot launder a digest either.
+        payload = {"changes": [fx.change("c-a", content_sha256="c" * 64)]}
+        pending = {"run_id": "r", "step": "compose", "payload": payload,
+                   "payload_sha256": op_runner.canonical_sha256(payload)}
+        decision = fx.decision_doc("r", "compose", pending["payload_sha256"],
+                                   {"c-a": "approve"})
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.apply_decision(pending, decision)
+        self.assertIn("its content hashes to",
                       "\n".join(caught.exception.problems))
 
     def test_a_human_gated_step_keeps_passed_with_problems(self):
@@ -970,6 +1081,46 @@ class DocumentTests(unittest.TestCase):
             self.assertNotIn(secret, text)
 
 
+class RunDirectoryDurabilityTests(AuthorityCase):
+    """Review 3, finding 2: the run directory is created like every control
+    directory under it — through `ensure_dir`, so its OWN entry is fsynced
+    in `runs/`. A Track inside a directory whose entry never reached the
+    disk is not durable."""
+
+    def test_the_run_directory_is_created_through_ensure_dir(self):
+        created, synced = [], []
+        real_ensure, real_fsync = op_track.ensure_dir, op_track._fsync_dir
+
+        def watched(path):
+            created.append(Path(path))
+            return real_ensure(path)
+
+        op_track.ensure_dir = watched
+        op_track._fsync_dir = lambda path: (synced.append(Path(path)),
+                                            real_fsync(path))[1]
+        try:
+            code, output, _ = self.start()
+        finally:
+            op_track.ensure_dir, op_track._fsync_dir = real_ensure, real_fsync
+        run_dir = Path(output["run_dir"])
+        self.assertEqual(code, op_runner.PAUSED_EXIT, output)
+        self.assertIn(run_dir, created)              # not a bare mkdir
+        self.assertIn(run_dir.parent, synced)        # the run dir's OWN entry
+        self.assertIn(run_dir, synced)               # and what is under it
+
+    def test_a_missing_runs_ancestor_is_created_durably_too(self):
+        synced = []
+        real = op_track._fsync_dir
+        op_track._fsync_dir = lambda path: (synced.append(Path(path)),
+                                            real(path))[1]
+        try:
+            code, output, _ = self.start()
+        finally:
+            op_track._fsync_dir = real
+        runs = Path(output["run_dir"]).parent
+        self.assertIn(runs.parent, synced)           # runs/'s own entry
+
+
 class ControlFileTests(unittest.TestCase):
     """The runner's own records: contained, atomic, durable (S1, S9)."""
 
@@ -1119,6 +1270,67 @@ class RunLockTests(unittest.TestCase):
         op_runner.RunLock(self.run_dir).acquire().release()
         self.assertTrue((self.run_dir / "run.lock").exists())
         self.assertTrue(self.take().held)
+
+    def test_a_symlinked_lock_file_is_refused_not_followed(self):
+        # Review 3, finding 3, reproduced: `run.lock` pointing at
+        # `track.json` was opened and TRUNCATED — the resume destroyed the
+        # Track before reading it.
+        track = self.run_dir / "track.json"
+        track.write_text('{"schema": "openteams/op-track [0.1]"}')
+        (self.run_dir / "run.lock").symlink_to(track)
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.RunLock(self.run_dir).acquire()
+        self.assertIn("never opened through a link",
+                      "\n".join(caught.exception.problems))
+        self.assertEqual(track.read_text(),
+                         '{"schema": "openteams/op-track [0.1]"}')
+
+    def test_a_lock_file_linked_outside_the_run_is_refused(self):
+        outside = Path(self.tmp.name) / "victim"
+        outside.write_text("mine")
+        (self.run_dir / "run.lock").symlink_to(outside)
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.RunLock(self.run_dir).acquire()
+        self.assertIn("never opened through a link",
+                      "\n".join(caught.exception.problems))
+        self.assertEqual(outside.read_text(), "mine")
+
+    def test_the_lock_is_opened_no_follow(self):
+        # The containment check and the open are two moments; `O_NOFOLLOW`
+        # closes the window between them, so the open itself can never
+        # follow a link planted in between.
+        flags = []
+        real = op_runner.os.open
+
+        def watched(path, mode, *rest):
+            flags.append(mode)
+            return real(path, mode, *rest)
+
+        op_runner.os.open = watched
+        try:
+            self.take()
+        finally:
+            op_runner.os.open = real
+        self.assertTrue(any(mode & os.O_NOFOLLOW for mode in flags), flags)
+
+    def test_a_failure_while_writing_the_metadata_releases_the_lock(self):
+        # The metadata is written AFTER the lock is held; if that write
+        # fails, the descriptor is released before the exception leaves —
+        # an embedding process that catches it is not left holding a lock
+        # it does not know about (review 3, finding 3).
+        real = op_runner.os.write
+
+        def boom(fd, data):
+            raise OSError(28, "no space left on device")
+
+        op_runner.os.write = boom
+        try:
+            with self.assertRaises(OSError):
+                op_runner.RunLock(self.run_dir).acquire()
+        finally:
+            op_runner.os.write = real
+        self.assertIsNone(op_runner.LOCK_FD)
+        self.assertTrue(self.take().held)             # free again
 
     def test_the_lock_descriptor_is_passed_to_every_cog_subprocess(self):
         # The lock protects the EXECUTION, including an outstanding Cog: the

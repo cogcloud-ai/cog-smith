@@ -15,6 +15,8 @@ once — counted by the fake.
 import fcntl
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,7 +25,7 @@ import unittest
 from pathlib import Path
 
 import op_fixtures as fx
-from op_fixtures import op_runner
+from op_fixtures import op_runner, op_spec
 
 import test_code_cog as cc
 
@@ -241,6 +243,10 @@ log = os.environ.get("FAKE_PIXI_LOG")
 if log:
     with open(log, "a") as handle:
         handle.write(json.dumps(argv) + "\\n")
+pidfile = os.environ.get("FAKE_PIXI_PID")
+if pidfile:
+    with open(pidfile, "w") as handle:
+        handle.write(str(os.getpid()))
 if not argv or argv[0] != "run":
     sys.exit("fake pixi understands `run` only: " + " ".join(argv))
 index = argv.index("--manifest-path")
@@ -256,8 +262,29 @@ if task not in tasks:
 command = tasks[task].split()
 if command[0] == "python":
     command[0] = "{python}"
-sys.exit(subprocess.run(command + arguments,
+# `close_fds=False`: a real launcher hands the task the descriptors it was
+# started with, and the run lock is one of them. Closing them here would
+# make the fake a weaker launcher than pixi and hide the lifetime the tests
+# are about (contract §9c, review 3 finding 4).
+sys.exit(subprocess.run(command + arguments, close_fds=False,
                         cwd=os.path.dirname(manifest)).returncode)
+'''
+
+
+#: A created Cog that reports whether a descriptor reached it: the question
+#: finding 4 asks of the launcher, answered by the Cog itself.
+FD_PROBE_TASK_LOGIC = '''
+"""Reports whether the descriptor the caller passed arrived."""
+import os
+
+
+def run(bundle, grant, journal):
+    try:
+        os.fstat(int(bundle["fd"]))
+        arrived = True
+    except OSError:
+        arrived = False
+    return {"descriptor_arrived": arrived}, []
 '''
 
 
@@ -319,9 +346,142 @@ class ProductionSeamTests(unittest.TestCase):
             self.fail(f"driver printed no JSON: {completed.stdout}\n"
                       f"{completed.stderr}")
 
+    def launch(self, *args, env_extra=None):
+        """`drive`, but as a process this test can kill."""
+        env = dict(os.environ)
+        env["PATH"] = f"{self.bin}:{env['PATH']}"
+        env["FAKE_GITHUB_COUNTER"] = str(self.root / "calls.json")
+        env["FAKE_PIXI_LOG"] = str(self.log)
+        env.update(env_extra or {})
+        return subprocess.Popen(
+            [sys.executable, str(DRIVER), "-", str(self.package), *args],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=env, cwd=str(ROOT))
+
+    def wait_for(self, path, seconds=60):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if Path(path).exists():
+                return
+            time.sleep(0.02)
+        self.fail(f"{path} never appeared")             # pragma: no cover
+
+    def pause_and_decide(self):
+        code, paused = self.drive("--request", str(self.request),
+                                  "--authority", str(self.authority))
+        self.assertEqual(code, op_runner.PAUSED_EXIT, paused)
+        pending = json.loads(Path(paused["pending"]).read_text())
+        decision = self.root / "decision.json"
+        decision.write_text(json.dumps(fx.decision_doc(
+            pending["run_id"], pending["step"], pending["payload_sha256"],
+            {"c-1": "approve"})))
+        return paused, decision
+
     def commands(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()
                 if line.strip()]
+
+    def test_the_lock_outlives_the_runner_while_its_cog_is_still_running(self):
+        """Review 3, finding 4: the lifetime guarantee, demonstrated.
+
+        The runner passes the lock descriptor to the launcher; the launcher
+        (here a fake `pixi` that inherits descriptors the way a real one
+        does) passes it on to the Cog. The runner is then KILLED while the
+        Cog is still inside its write. The run must stay locked until the
+        Cog is gone — that is what protects an outstanding external effect
+        from a second runner — and must be free once it is."""
+        paused, decision = self.pause_and_decide()
+        run_dir = Path(paused["run_dir"])
+        hold = self.root / "hold"
+        pidfile = self.root / "pixi.pid"
+        runner = self.launch("--resume", str(run_dir), "--decision",
+                             str(decision),
+                             env_extra={"HOLD_FOR": str(hold),
+                                        "FAKE_PIXI_PID": str(pidfile)})
+        try:
+            self.wait_for(Path(str(hold) + ".started"))
+            runner.kill()                       # no `finally`, no release
+            runner.wait(timeout=60)
+            runner.stdout.close()
+            runner.stderr.close()
+            # and the LAUNCHER too: what is left holding the run is the Cog
+            # itself, still inside its write, with the descriptor it
+            # inherited through the launch chain.
+            os.kill(int(pidfile.read_text()), signal.SIGKILL)
+            self.assertIsNone(json.loads(
+                (run_dir / "track.json").read_text()).get("ended_at"))
+            # the Cog is alive and holds the inherited descriptor
+            code, output = self.drive("--resume", str(run_dir))
+            self.assertEqual(code, 2, output)
+            self.assertIn("one run, one process", " ".join(output["problems"]))
+            with self.assertRaises(op_spec.OpSpecError):
+                op_runner.RunLock(run_dir).acquire()
+        finally:
+            hold.write_text("go")
+        # and once the Cog is gone, the run is lockable again
+        deadline = time.monotonic() + 60
+        lock = None
+        while lock is None and time.monotonic() < deadline:
+            try:
+                lock = op_runner.RunLock(run_dir).acquire()
+            except op_spec.OpSpecError:
+                time.sleep(0.05)
+        self.assertIsNotNone(lock, "the lock was never released")
+        lock.release()
+        self.assertEqual(
+            json.loads((self.root / "calls.json").read_text()), ["c-1"])
+
+    def test_a_real_pixi_on_path_carries_the_descriptor(self):
+        """The same question asked of the REAL launcher, once.
+
+        `pass_fds` is a promise about the immediate child; everything after
+        it depends on pixi's own launch chain. This runs a created Cog
+        through the installed `pixi` with a locked descriptor passed in and
+        RECORDS what arrived. It never fails the suite on the answer: what
+        pixi does is a finding, not this machinery's behaviour."""
+        pixi = shutil.which("pixi")
+        if not pixi:
+            raise unittest.SkipTest(
+                "pixi is not on PATH: the descriptor's survival through the "
+                "real launcher was not measured in this run")
+        dest = cc.create_code_cog(self.root, name="cog-fd-probe")
+        (dest / "src" / "task_logic.py").write_text(FD_PROBE_TASK_LOGIC)
+        (dest / "context" / "input-schema.json").write_text(json.dumps(
+            {"type": "object", "required": ["fd"],
+             "properties": {"fd": {"type": "integer"}}}))
+        (dest / "context" / "output-schema.json").write_text(json.dumps(
+            {"type": "object", "required": ["descriptor_arrived"],
+             "properties": {"descriptor_arrived": {"type": "boolean"}}}))
+        lock_path = self.root / "probe.lock"
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            bundle = self.root / "fd-bundle.json"
+            bundle.write_text(json.dumps({"fd": fd}))
+            command = [pixi, "run", "--manifest-path", str(dest / "pixi.toml"),
+                       "run", "--", "--bundle", str(bundle)]
+            try:
+                completed = subprocess.run(
+                    command, capture_output=True, text=True, pass_fds=(fd,),
+                    timeout=900, cwd=str(dest))
+            except (OSError, subprocess.SubprocessError) as exc:
+                print(f"\n[real pixi] the probe did not run ({exc}); the "
+                      f"descriptor's survival was not measured.")
+                return
+        finally:
+            os.close(fd)
+        try:
+            envelope = json.loads(completed.stdout)
+            arrived = envelope["payload"]["descriptor_arrived"]
+        except (ValueError, KeyError, TypeError):
+            print(f"\n[real pixi] the probe produced no envelope "
+                  f"(exit {completed.returncode}); the descriptor's survival "
+                  f"was not measured.\n{completed.stdout[-400:]}"
+                  f"\n{completed.stderr[-400:]}")
+            return
+        print(f"\n[real pixi {pixi}] the run-lock descriptor "
+              f"{'ARRIVED in' if arrived else 'did NOT arrive in'} the Cog "
+              f"launched through `pixi run`.")
 
     def test_a_run_reaches_created_cogs_through_the_real_command_line(self):
         code, paused = self.drive("--request", str(self.request),
