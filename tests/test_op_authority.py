@@ -226,6 +226,31 @@ class AuthorityTests(AuthorityCase):
             self.assertIn("steps.<id>.decision.approved",
                           "\n".join(caught.exception.problems), path)
 
+    def test_two_write_requirements_from_different_gates_are_refused(self):
+        # Phase 3 issues ONE grant per step, with one provenance: a grant
+        # whose writes came from two human gates could only record one of
+        # them, so the spec is refused at load instead (review S6).
+        doc = spec_doc()
+        second = fx.cog_step("compose-more", depends_on=["read-github"],
+                             gate={"policy": "human", "guards": []})
+        doc["steps"].insert(2, second)
+        write = doc["steps"][3]
+        write["depends_on"] = ["compose", "compose-more"]
+        write["authority"]["requires"].append(
+            {"resource": "github", "action": "write",
+             "changes": {"$from": "steps.compose-more.decision.approved"}})
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.validate(doc)
+        self.assertIn("one grant per step, from ONE human gate",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_list_valued_repository_is_a_denial_not_a_crash(self):
+        code, output, track = self.start(request={"repositories": [["a"]]})
+        record = self.step(track, "read-github")
+        self.assertEqual(record["status"], "denied")
+        self.assertIn("not a list of repositories", record["gate"]["reasons"][0])
+        self.assertEqual(self.fake.calls, [])
+
     def test_retry_once_is_refused_on_a_step_that_carries_authority(self):
         doc = spec_doc()
         doc["steps"][0]["on_fail"] = "retry-once"
