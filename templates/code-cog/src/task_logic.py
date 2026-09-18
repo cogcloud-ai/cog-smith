@@ -25,11 +25,12 @@ is never applied twice, and record `applying` before an external effect and
 
 A sketch of the reaching shape, for when you replace this. All four of the
 numbered steps are REQUIRED, not decoration: they are what makes a resumed
-run apply an effect exactly once.
+run apply an effect exactly once. `authority_use` records CALLS: skipping a
+decided change or reconciling by reads reports no write.
 
     def run(bundle, grant, journal):
         import cog_core
-        problems, used = [], []
+        problems, used, unresolved = [], [], []
         done = journal.phases() if journal else {}
         for change in bundle["changes"]:
             cid = change["change_id"]
@@ -38,12 +39,11 @@ run apply an effect exactly once.
             if done.get(cid) == "applying":
                 # 2. UNCERTAIN: a crash between the call and the journal line.
                 #    Ask the target whether the effect is already there —
-                #    never re-apply on the strength of the journal alone.
+                #    never re-apply on the strength of the journal alone. The
+                #    query is a READ and is authorized and reported as one.
                 if already_there(change):    # your own reconcile query
                     journal.append({"change_id": cid, "phase": "applied",
                                     "reconciled": True})
-                    used.append(cog_core.use("write", "github", cid,
-                                             "authorized", "reconciled"))
                     continue
             # 3. Fetch the target's CURRENT content hash — freshly, from the
             #    target, never from the bundle — and check the grant with it.
@@ -65,6 +65,14 @@ run apply an effect exactly once.
             journal.append({"change_id": cid, "phase": "applied",
                             "evidence": {...}})
             used.append(cog_core.use("write", "github", cid, "authorized"))
+        # Anything still unsettled — a call that got no definitive answer —
+        # is an ERROR-severity problem with a name of its own, so the step's
+        # Gate fails, the run stops there and `op run --resume` invokes this
+        # Cog again to reconcile. A step that has not finished must not let
+        # a later step record a final state (contract §9e).
+        if unresolved:
+            problems.append(cog_core.problem(
+                "write-back-unresolved", "still uncertain: " + ", ".join(unresolved)))
         return {"authority_use": used, ...}, problems
 """
 

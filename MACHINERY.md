@@ -186,6 +186,13 @@ recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
 ### 0.5.5 — a failed run resumes at the step that stopped it (review 5)
 
+The starter's write sketch (`templates/code-cog/src/task_logic.py`, which is
+AUTHOR-owned and so not hash-enforced — this changes what a NEW Cog starts
+from, nothing already created) was updated in the same round: reconciling by
+reads reports no write in `authority_use`, and unfinished work is an
+error-severity `write-back-unresolved` problem so the Gate fails and a
+resume finishes it.
+
 Contract §9e, from
 `planning/current/phase3-codex-review-5-code-cogs-verification.md` (new
 finding 1). Regression test: `tests/test_op_process.py::UnresolvedResumeTests
