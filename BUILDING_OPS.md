@@ -1,13 +1,15 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.4.6
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.0
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
-It is a runner SUBSET on purpose: human steps and durable state are refused
-by name, with the phase that adds them. There is no `tool:` step kind and
-never will be: deterministic work in an Op is a model-free Cog of `kind: code`,
-invoked as an ordinary `cog:` step (decided 2026-09-17).
+It is a runner SUBSET on purpose: durable state is refused by name, with the
+phase that adds it. There is no `tool:` step kind and never will be:
+deterministic work in an Op is a model-free Cog of `kind: code`, invoked as
+an ordinary `cog:` step (decided 2026-09-17). There is no `human:` step kind
+either: a human Gate is a POLICY on the step that produces what the human
+decides about.
 
 Read [Building and Improving Cogs](BUILDING_COGS.md) first. This guide is the
 layer above it.
@@ -271,7 +273,98 @@ that element failed — because the elements that passed are still evidence. A C
 independent, system-side verifiers of the system's requirements — are not in
 this subset, and the Track records `guards: []` rather than pretending.
 
-## 5. Refused by name
+## 5. Authority: what a step may reach outside the run
+
+A Cog that reaches outside the run (a repository read, a label written)
+declares that in its manifest as `reaches`, and it runs only under a
+**grant**. Two sources of authority, and nothing else:
+
+- **Admission** — the owner's authority for the whole run, passed as
+  `op run --authority FILE` and validated against
+  `openteams/op-authority [0.1]`. It names repositories, never change ids.
+  With no `--authority`, a step that requires authority is refused before
+  anything is created: *"step write-github requires github write; the run
+  was admitted with none."*
+- **A human Gate decision** — the only thing that authorizes a WRITE, and it
+  authorizes exactly the changes the human approved.
+
+A step declares what it requires; it never grants itself anything:
+
+```yaml
+- id: read-github
+  cog: {id: openteams/cog-read-github, source: ../cog-read-github, task: run}
+  authority:
+    requires:
+      - {resource: github, action: read,
+         repositories: {$from: inputs.repo_config.repositories}}
+
+- id: write-github
+  depends_on: [compose-proposals]
+  cog: {id: openteams/cog-write-github, source: ../cog-write-github, task: run}
+  authority:
+    requires:
+      - {resource: github, action: write,
+         changes: {$from: steps.compose-proposals.decision.approved}}
+```
+
+The runner issues the grant immediately before the invocation and writes it
+to `runs/<run_id>/grants/<step>.json`, then invokes the Cog with `--grant`,
+`--run-id` and `--journal` **beside** the request. A read is issued only if
+its repositories are a subset of the admitted ones; a write only if every
+requested change was approved by the named human decision, whose record must
+still hash to what the Track recorded. The grant carries EXACTLY the approved
+list — asking for more than was approved is a **denial, not a trim**. A
+denied step is recorded `denied`, is never invoked, and its `on_fail` applies
+as for a failure.
+
+`authority.ttl_minutes` at the top level of `op.yaml` (default 60) is how
+long an issued grant stays valid. A grant carries no credentials, cannot be
+read or built by any mapping expression (`grants` is not a `$from` root), and
+is checked by the CODE COG that receives it. The local host runs trusted code
+with the owner's ambient credentials: the Op layer issues and records; it is
+not, and must never be described as, an enforced restricted environment.
+
+The Track keeps the scope and provenance: top-level `authority`
+(`{path, sha256}`), `grants` (one entry per grant: id, step, path, the
+operations with their counts, and who issued it), and `resumes`; per step
+`grant`, `journal`, and the `authority_use` list the Cog reported.
+
+## 6. The human Gate, pause, and resume
+
+`gate: {policy: human}` is a policy on a step. The step runs its Cog first
+and its envelope goes through `envelope-ok-no-error-problems` as usual: only
+a PASSING envelope reaches the human. Its payload must carry a `changes`
+list of objects with a `change_id` — that is what the human decides about.
+
+The runner then writes `runs/<run_id>/pending/<step>.json`
+(`openteams/op-pending-decision [0.1]`, with the payload and its
+`payload_sha256`) and a readable `pending/<step>.md`, one line per change;
+the Track status becomes `paused`, the step is `awaiting-decision`, and the
+process **exits 3** printing
+`{ok: false, status: "paused", run_dir, pending}`.
+
+A decision (`openteams/op-decision [0.1]`) gives every proposed change
+exactly one verdict — `approve`, `reject`, or `edit` with the edited change.
+Its `payload_sha256` must match the pending file's, or the run refuses it:
+the human decided about something else. An edited change is re-hashed from
+its edited content, and THAT hash is what the write grant carries. A decision
+can only select among the proposed changes; it can never add one.
+
+```bash
+pixi run op -- --request examples/request.json --authority admission.json
+# exits 3; read runs/<id>/pending/compose-proposals.md, write a decision
+pixi run op -- --resume runs/<id> --decision decision.json
+```
+
+Resume reloads the Track and the spec (op.yaml must still hash the same),
+applies the decision, exposes `steps.<id>.decision` =
+`{approved, rejected, edited}` to later mappings, and continues from the next
+step. Steps already passed are **never re-run**; a step a crash left
+`running` runs again (a Cog with a journal reconciles first). Resuming with
+no decision while one is pending exits 3 again, and every resume is appended
+to the Track's `resumes`.
+
+## 7. Refused by name
 
 These are refused when the spec LOADS, one sentence each, naming the
 construct and the phase that adds it — never discovered mid-run:
@@ -279,9 +372,15 @@ construct and the phase that adds it — never discovered mid-run:
 | Construct | Message says |
 |---|---|
 | `tool:` step | never — deterministic work is a Cog of `kind: code`, invoked as a `cog:` step |
-| `human:` step | phase 3 |
-| `gate.policy: human` | phase 3 |
+| `human:` step | never — a human Gate is a policy on a step, `gate: {policy: human}` |
 | `state:` | phase 4 |
+| `authority` on a `foreach` step | phase 3 issues no per-element grants |
+| `authority` on a step whose Cog is not `kind: code` | phase 3 supports authority on code Cogs only |
+| a requirement outside the Cog's declared `reaches` | the Cog does not declare it |
+| a step that names a reaching Cog and requires nothing | a reaching Cog runs only under a grant |
+| a write requirement that reads no human decision | a write is authorized by a human decision |
+| reading `steps.<id>.decision` of a step with no human Gate | only a human Gate produces a decision |
+| `grants` as a mapping root | a grant is never readable from a mapping expression |
 | non-empty `gate.guards` | not in the runner subset |
 | any unknown top-level or step key | the vocabulary is closed |
 | any unknown `$`-operator | the mapping vocabulary is closed |
@@ -290,9 +389,10 @@ construct and the phase that adds it — never discovered mid-run:
 | reading a step you do not depend on | add it to depends_on |
 
 Exit codes: `0` completed (or completed-with-problems, or a planned dry run),
-`1` failed, `2` an invalid spec or request. Stdout is one JSON object.
+`1` failed, `2` an invalid spec, request, admission or decision, `3` paused
+for a human. Stdout is one JSON object.
 
-## 6. Changing an Op
+## 8. Changing an Op
 
 Edit `op.yaml`, run `pixi run test`, and check the package. Never edit
 `src/` — a machinery fix belongs in cog-smith's `templates/op/`, version

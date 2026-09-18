@@ -7,6 +7,10 @@ the single source of the machinery every created Cog carries.
 ## Commands
 
 - Create: `pixi run new -- --dir ../cog-<name> [--yes ...flags] [--envelope]`
+- Create a CODE Cog: `pixi run new -- cog-<name> --kind code --yes` — the
+  Cog shape with no model in the loop (`templates/code-cog/`, BUILDING_COGS
+  §7b). No `resolve`, no binding record; a declared `reaches` and the grant
+  it is checked against; machinery masters are picked by KIND.
 - Create from a request: `pixi run new -- --from-request req.json` — the
   drafting-cog seam (builder-op note item 3): one JSON doc of builder
   answers + drafted context overlays, created atomically then checked;
@@ -38,8 +42,9 @@ the single source of the machinery every created Cog carries.
 1. **Machinery is sacred:** template `src/` masters change only here, with
    MACHINERY.md updated; created Cogs never edit them (task_logic.py is the
    sole author-owned src module). `smith check` enforces by hash. The same
-   rule covers `templates/op/src/` (Op machinery 0.4.0), where the
-   author-owned part is op.yaml and nothing else.
+   rule covers `templates/op/src/` (Op machinery 0.5.0), where the
+   author-owned part is op.yaml and nothing else, and
+   `templates/code-cog/src/` (code-cog machinery 0.1.0).
 2. **Envelope v1 is the emitted contract** (ENVELOPE.md): fixed `payload`
    key, structured problems, ok-may-carry-problems (gates decide), binding
    identity in every result. Changing it = versioning event, not an edit.

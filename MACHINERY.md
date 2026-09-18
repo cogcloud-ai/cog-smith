@@ -1,8 +1,10 @@
 # MACHINERY.md — provenance of the template machinery
 
 `templates/context-cog/src/` are the masters that `smith check` enforces by
-hash on every created Cog (everything except the author-owned
-`task_logic.py`). Lineage:
+hash on every created CONTEXT Cog (everything except the author-owned
+`task_logic.py`). A created **code** Cog carries the `templates/code-cog/src/`
+masters instead — `smith check` picks the lineage by the manifest's kind (see
+"Code-cog machinery" below). Lineage:
 
 | File | Provenance |
 |---|---|
@@ -48,7 +50,26 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
-## Op machinery (0.4.6, 2026-09-17): `templates/op/src/`
+## Code-cog machinery (0.1.0, 2026-09-17): `templates/code-cog/src/`
+
+A third lineage, on the same terms. `templates/code-cog/src/cog_core.py` and
+`cog_cli.py` are the masters a created **code Cog** (`kind: code`) carries
+verbatim, enforced by hash by `smith check`, which picks the masters by the
+manifest's KIND. `task_logic.py` is author-owned, as always.
+`cog_core.MACHINERY_VERSION` names the lineage and is reported in every
+envelope's `binding`.
+
+| File | Provenance |
+|---|---|
+| `cog_core.py` | NEW — the context-cog seam with the model half removed: manifest load (`[tool.cog]` or cog.yaml, same rules as `cog_binding`), declared input/output schema validation, `task_logic.run(bundle, grant, journal)`, envelope v1 with `binding = {kind: code, cog, task_logic_sha256, machinery}` (no `model` key), the grant checks (`no-grant`, `grant-invalid`, `grant-expired`, `grant-wrong-run`, `grant-wrong-recipient`) and the per-call `read_allowed`/`write_allowed`/`use` helpers, and the `Journal` (append-only JSONL, fsync per line, `read()`/`phases()`/`last()`) |
+| `cog_cli.py` | genericized from the context-cog CLI: `--bundle [--grant --run-id --journal] \| --check`; no `--raw`, no `--deep` |
+| `task_logic.py` | AUTHOR-OWNED — `run(bundle, grant, journal) -> (payload, problems)` plus optional `check_input` / `check_output`; ships with a working toy task that reaches nothing |
+
+Contract: `planning/current/phase3-contract.md` §1. The honesty rule is part
+of the machinery's doc comments and stays there: the grant is checked by the
+Cog's OWN code; the local host is not an enforced restricted environment.
+
+## Op machinery (0.5.0, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
 Op package carries verbatim, and `smith op check` enforces them by hash
@@ -66,6 +87,54 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.5.0 — authority, grants, the human Gate, resume
+
+Phase 3 (`planning/current/phase3-contract.md` §2, §3, §5). The runner
+ISSUES and RECORDS; the code Cog checks its own grant before it reaches
+outside the run. Nothing added here is an enforced restricted environment
+(phase 2 contract §0), and the docs say so in every place they could be
+misread.
+
+- **Spec vocabulary.** `authority.requires` on a step, `authority.ttl_minutes`
+  at the top level (default 60), `gate.policy: human` accepted, and a new
+  `$from` root `steps.<id>.decision` readable only for a human-gated step.
+  `grants` is refused BY NAME as a mapping root: a grant is trusted
+  invocation context and no expression can read or build one.
+- **`human:` steps are refused permanently.** The message now points at the
+  gate policy instead of "phase 3": a human Gate is a policy on the step that
+  produces what the human decides about, never a step of its own.
+- **Load-time refusals** (exit 2, never mid-run): authority on a `foreach`
+  step; a write requirement that does not read the decision of a human-gated
+  step it depends on; and, read from the target Cog's own manifest, authority
+  on a non-code Cog, a requirement outside that Cog's declared `reaches`, and
+  a step that names a reaching Cog while requiring nothing. With no
+  `--authority` at all, any step that requires authority is refused before
+  the run directory is created.
+- **Issuance.** Immediately before the invocation, and only for a step whose
+  dependencies passed. A read must be a subset of the admitted repositories;
+  a write must be covered by the named human decision — whose record must
+  still hash to what the Track recorded — and the grant carries EXACTLY the
+  approved list. Anything else is a `denied` step that is never invoked, with
+  `on_fail` applying as for a failure. Grants are written to
+  `runs/<run_id>/grants/<step>.json` and passed as `--grant`, beside
+  `--run-id` and `--journal`, never inside the request document.
+- **The human Gate.** A passing envelope pauses the run: `pending/<step>.json`
+  (`openteams/op-pending-decision [0.1]`) plus a rendered `.md`, Track status
+  `paused`, step `awaiting-decision`, exit **3**. A decision
+  (`openteams/op-decision [0.1]`) needs one verdict per proposed change and a
+  matching `payload_sha256`; an edited change is re-hashed from its edited
+  content and THAT hash is granted.
+- **Resume.** `--resume RUN_DIR [--decision FILE]` reloads the Track (op.yaml
+  and the admission must still hash the same), applies the decision, exposes
+  `steps.<id>.decision`, and continues. Passed steps are never re-run; a
+  `running` step is; every resume is appended to `resumes`.
+- **Track.** Top level gains `authority`, `grants`, `resumes` and the
+  `paused` status; a step record gains `grant`, `journal`, `authority_use`
+  and `decision`, and the statuses `denied`, `running`,
+  `awaiting-decision`.
+
+Rolled out to `op-video-transcription` by re-copying.
 
 ### 0.4.6 — `tool:` is refused permanently, pointing at `kind: code`
 

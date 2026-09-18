@@ -22,12 +22,21 @@ pixi run migrate -- ../cog-older-worker          # cog.yaml -> [tool.cog] in pix
                                                 # re-sync machinery (--dry-run to preview)
 pixi run new -- --from-request request.json --envelope  # create from a drafting
                                                 # cog's request (see examples/)
+pixi run new -- cog-read-github --kind code --yes  # a CODE Cog: the Cog shape
+                                                # with no model in the loop
 cd ../cog-my-worker
 pixi install && pixi run resolve && pixi run check -- --deep
 pixi run ask -- --bundle examples/sample-bundle.json
 ```
 
-A created Cog ships with: manifest (in-manifest input schema — no overlays),
+**Cog kinds.** `--kind context` (the default) creates a Cog whose work a
+model does. `--kind code` creates a **code Cog** (`kind: code`): the same
+seam — declared shapes, envelope v1, contract checks, machinery by hash —
+with no model, no `resolve`, and a declared `reaches` saying what it touches
+outside the run. A reaching code Cog runs only under a grant, which it checks
+itself (BUILDING_COGS §7b, BUILDING_OPS §5).
+
+A created context Cog ships with: manifest (in-manifest input schema — no overlays),
 envelope-v1 entry points (web API + CLI), the forge binding/resolve/eval
 machinery, a grounding contract check (verbatim quotes), an eval fixture, and
 a model-free test suite that passes at creation time. Edit `context/` and

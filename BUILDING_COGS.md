@@ -1,7 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-08-23 against cog-smith commit a167bf9  
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.0 /
+code-cog machinery 0.1.0  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
 not universal CogSpec requirements.
@@ -84,10 +85,10 @@ and no model. The kind is declared, never inferred; `smith check` refuses a
 code Cog that declares a model requirement. What a code Cog has are
 dependencies and function calls, not tools; "tools" is reserved for what a
 model-driven Cog is granted during a turn. cog-smith itself has this shape.
-A `code-cog` starter follows in phase 3; the first two are the triage Op's
-GitHub read and write-back.
+**Code Cogs have a starter** — see §7b.
 
-Cog Smith currently provides a supported starter for **context Cogs**. Its
+Cog Smith provides supported starters for **context Cogs** and **code
+Cogs** (`smith new --kind code NAME`). Its
 model-catalog command, **generate-descriptors**, also creates OpenTeams deployment
 descriptors:
 
@@ -536,6 +537,97 @@ existence, and grounding.
 
 Evaluation against a live model complements deterministic tests. It does not
 replace them.
+
+## 7b. Build a code Cog
+
+    pixi run smith -- new cog-read-github --kind code --yes
+
+A code Cog is the same seam with the model half removed. What you get:
+
+    cog-read-github/
+    ├── COG.md
+    ├── pixi.toml             # [tool.cog] manifest; tasks: run, check, test
+    ├── context/
+    │   ├── input-schema.json     # a code Cog's "context" is its declared
+    │   └── output-schema.json    # SHAPES — no instructions, no example
+    ├── examples/sample-bundle.json
+    ├── src/
+    │   ├── cog_core.py       # MACHINERY — envelope, grant checks, Journal
+    │   ├── cog_cli.py        # MACHINERY — the entry point
+    │   └── task_logic.py     # YOURS — the work
+    └── tests/test_cog.py
+
+There is no `resolve` task and no `model.json`: nothing to bind. `smith
+check` enforces `cog_core.py` and `cog_cli.py` by hash exactly as it does the
+context-cog machinery, and refuses a code Cog that declares `requires`.
+
+You write one function:
+
+```python
+def run(bundle, grant, journal) -> tuple[dict, list[dict]]:
+    """Return (payload, problems)."""
+```
+
+The machinery validates the bundle against the declared input schema, calls
+`run`, validates the payload against the output schema, runs your contract
+checks (`check_input` / `check_output`), and emits envelope v1. The
+`binding` a code Cog reports is `{kind: code, cog, task_logic_sha256,
+machinery}` — which CODE produced the result; there is no `model` key at all.
+
+### What it reaches, and the grant it runs under
+
+`reaches` in the manifest declares what the Cog touches OUTSIDE the run.
+Declared, never inferred:
+
+```toml
+[[tool.cog.reaches]]
+resource = "github"
+actions = ["read"]
+```
+
+A Cog whose `reaches` is non-empty refuses to run without a grant
+(`no-grant`), before `run` is ever called. The Op runner issues the grant
+(BUILDING_OPS §5) and invokes the Cog as
+
+    pixi run run -- --bundle req.json --grant g.json --run-id RUN --journal j.jsonl
+
+`cog_core` checks the grant for you — expiry, the run it is bound to, and
+that this Cog is its recipient (`grant-expired`, `grant-wrong-run`,
+`grant-wrong-recipient`) — and gives you the per-call checks:
+
+```python
+ok, detail = cog_core.read_allowed(grant, "openteams-ai/apollo-desktop")
+ok, detail = cog_core.write_allowed(grant, change_id, content_sha256)
+```
+
+Call one before EVERY external call, and report what you attempted in the
+payload's `authority_use` list (`cog_core.use(...)`). A denial is a
+`problems` entry, and the Gate — not your Cog — decides what it means.
+
+**The honesty rule.** This process runs as its owner, with the owner's
+ambient credentials. A grant is not a sandbox: it is a document your code
+checks before it acts. Describe it that way in COG.md and in review. Nothing
+in this path is an enforced restricted environment.
+
+### The journal
+
+For effects that must happen exactly once, the runner passes
+`--journal <file>`: append-only JSONL, one object per line, fsynced per
+line. Read it FIRST:
+
+```python
+done = journal.phases()                      # change_id -> last phase
+if done.get(cid) in ("applied", "failed"):
+    continue                                 # already decided
+journal.append({"change_id": cid, "phase": "applying"})
+...                                          # the one external call
+journal.append({"change_id": cid, "phase": "applied", "evidence": {...}})
+```
+
+A change left `applying` by a crash is UNCERTAIN: reconcile it against the
+target (does the label/comment already exist?) and record `applied` with
+`reconciled: true`, rather than applying it again. That is what makes a
+resume safe.
 
 ## 8. Validate before running a model
 
