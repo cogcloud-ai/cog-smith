@@ -1,0 +1,53 @@
+
+# ---------------------------------------------------------------------------
+# Profile manifest: openteams/cog-manifest [0.1], hosted in pixi.toml under
+# [tool.cog] (cog-execution ADR D9). `version` and `summary` are stated once,
+# in [workspace] above (version / description); readers fall back to them.
+# ---------------------------------------------------------------------------
+[tool.cog]
+schema = "openteams/cog-manifest [0.1]"
+id = {{COG_ID_TOML}}
+# A code Cog: the Cog shape with no model in the loop. The kind is DECLARED,
+# never inferred, and a code Cog never declares a model requirement.
+kind = "code"
+owner = {{OWNER_TOML}}
+license = {{LICENSE_TOML}}
+frames = []
+memory = "none"
+requires = []
+# What this Cog touches OUTSIDE the run — declared, never inferred, and the
+# thing a grant is checked against. Empty means it reaches nothing, and the
+# Op runner issues it no grant. A reaching entry looks like:
+#   [[tool.cog.reaches]]
+#   resource = "github"
+#   actions = ["read"]
+reaches = []
+# Evidence-tier boundary: prohibitions are structural today; they become
+# Guard-enforced when a hosting environment supplies verifiers.
+prohibits = {{PROHIBITS_TOML}}
+
+# A code Cog's "context" is its declared SHAPES: no instructions, no worked
+# example — there is no model to instruct.
+[tool.cog.context]
+input_schema = "context/input-schema.json"
+output_schema = "context/output-schema.json"
+
+# Entry points. `default = true` = the programmatic binding target. Tasks are
+# labeled by audience: usage ops face users and the Op layer; lifecycle ops
+# face the hosting environment.
+[[tool.cog.interfaces]]
+name = "cli"
+kind = "command"
+task = "run"
+audience = "usage"
+default = true
+
+[[tool.cog.interfaces]]
+name = "check"
+kind = "command"
+task = "check"
+audience = "lifecycle"
+
+[tool.cog.io]
+accepts = ["task_request"]
+produces = [{{PRODUCES_TOML}}]

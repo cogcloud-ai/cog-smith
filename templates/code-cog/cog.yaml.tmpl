@@ -1,0 +1,51 @@
+# Created by cog-smith. Built against openteams/cog-manifest [0.1]; emits the
+# envelope-v1 result contract (Collab profile — see cog-smith/ENVELOPE.md).
+
+schema: openteams/cog-manifest [0.1]
+id: {{COG_ID}}
+version: "0.1.0"
+summary: >
+  {{SUMMARY}}
+license: {{LICENSE}}
+
+# A code Cog: the Cog shape with no model in the loop. The kind is DECLARED,
+# never inferred, and a code Cog never declares a model requirement.
+kind: code
+
+owner: {{OWNER}}
+frames: []
+
+requires: []
+
+# What this Cog touches OUTSIDE the run — declared, never inferred, and the
+# thing a grant is checked against. Empty means it reaches nothing.
+#   reaches:
+#     - resource: github
+#       actions: [read]
+reaches: []
+
+# A code Cog's "context" is its declared SHAPES: no instructions, no worked
+# example — there is no model to instruct.
+context:
+  input_schema: context/input-schema.json
+  output_schema: context/output-schema.json
+
+interfaces:
+  - name: cli
+    kind: command
+    task: run
+    audience: usage
+    default: true
+  - name: check
+    kind: command
+    task: check
+    audience: lifecycle
+
+io:
+  accepts: [task_request]
+  produces: [{{PRODUCES}}]
+
+memory: none
+
+prohibits:
+{{PROHIBITS_YAML}}

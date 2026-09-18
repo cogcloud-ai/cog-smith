@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "{{TITLE}} output",
+  "description": "The payload carried under envelope v1's `payload` key. Normative: the machinery validates every result against it before the envelope leaves this Cog.",
+  "type": "object",
+  "required": ["item_count", "items", "authority_use"],
+  "properties": {
+    "item_count": { "type": "integer", "minimum": 0 },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "characters", "words"],
+        "properties": {
+          "id": { "type": "string" },
+          "characters": { "type": "integer", "minimum": 0 },
+          "words": { "type": "integer", "minimum": 0 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "authority_use": {
+      "type": "array",
+      "description": "Every operation this Cog attempted outside the run, with its outcome. Empty when the Cog reaches nothing.",
+      "items": {
+        "type": "object",
+        "required": ["operation", "resource", "target", "outcome"],
+        "properties": {
+          "operation": { "type": "string" },
+          "resource": { "type": "string" },
+          "target": { "type": ["string", "null"] },
+          "outcome": { "enum": ["authorized", "denied", "failed"] },
+          "detail": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

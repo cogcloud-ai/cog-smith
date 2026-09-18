@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "{{TITLE}} input",
+  "description": "Task bundle for {{COG_ID}} (kind: code). Declared from the manifest as context.input_schema; the x-cog-input/x-cog-param annotations drive generated forms in spec-aware clients.",
+  "type": "object",
+  "required": ["items"],
+  "properties": {
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The items this Cog works over.",
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "text": { "type": "string",
+                    "x-cog-input": { "source": "file", "encoding": "text" } }
+        },
+        "additionalProperties": false
+      },
+      "x-cog-input": { "builder": "file-items", "file_field": "text", "id_prefix": "item-" }
+    }
+  },
+  "additionalProperties": false
+}

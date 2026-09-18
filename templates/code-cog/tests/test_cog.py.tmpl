@@ -1,0 +1,147 @@
+"""Deterministic suite for {{COG_NAME}} (created by cog-smith, kind: code).
+
+Covers: manifest consistency, schema agreement, envelope mechanics, the
+grant checks, and the journal. Extend it as task_logic.py grows — a code Cog
+has no model-backed path, so this suite is the whole net.
+"""
+import json
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+import cog_core     # noqa: E402
+import task_logic   # noqa: E402
+
+
+def sample_bundle():
+    return json.loads((ROOT / "examples" / "sample-bundle.json").read_text())
+
+
+def grant(**overrides):
+    """A well-formed grant for THIS Cog, valid for an hour."""
+    doc = {
+        "schema": cog_core.GRANT_SCHEMA,
+        "grant_id": "run-1/step/0",
+        "run_id": "run-1",
+        "recipient": {"step": "step", "cog": dict(cog_core.SELF_ID)},
+        "issued_at": cog_core.utc_now(),
+        "issued_by": {"kind": "admission"},
+        "operations": [{"resource": "github", "action": "read",
+                        "repositories": ["openteams-ai/apollo-desktop"]}],
+        "valid": {"expires_at": (datetime.now(timezone.utc)
+                                 + timedelta(hours=1)).isoformat(),
+                  "run_id": "run-1"},
+    }
+    doc.update(overrides)
+    return doc
+
+
+class TestManifestConsistency(unittest.TestCase):
+    def test_identity_fields(self):
+        for field in ("schema", "id", "version", "kind", "summary", "owner",
+                      "license", "io", "interfaces"):
+            self.assertIn(field, cog_core.MANIFEST)
+        self.assertEqual(cog_core.MANIFEST["kind"], "code")
+
+    def test_a_code_cog_declares_no_model_requirement(self):
+        self.assertEqual(cog_core.MANIFEST.get("requires") or [], [])
+
+    def test_declared_shapes_exist(self):
+        self.assertIsNotNone(cog_core.INPUT_SCHEMA)
+        self.assertIsNotNone(cog_core.OUTPUT_SCHEMA)
+
+    def test_interface_tasks_exist_in_pixi(self):
+        pixi = (ROOT / "pixi.toml").read_text()
+        for interface in cog_core.MANIFEST.get("interfaces") or []:
+            self.assertIn(f"\n{interface['task']} = ", "\n" + pixi)
+
+    def test_exactly_one_default_interface(self):
+        defaults = [i for i in cog_core.MANIFEST["interfaces"]
+                    if i.get("default")]
+        self.assertEqual(len(defaults), 1)
+
+
+class TestInvoke(unittest.TestCase):
+    def test_sample_bundle_produces_a_valid_payload(self):
+        env = cog_core.invoke(sample_bundle())
+        self.assertTrue(env["ok"], env)
+        self.assertEqual(env["problems"], [])
+        self.assertEqual(env["payload"]["item_count"],
+                         len(sample_bundle()["items"]))
+
+    def test_binding_names_the_code_and_carries_no_model(self):
+        env = cog_core.invoke(sample_bundle())
+        self.assertEqual(env["binding"]["kind"], "code")
+        self.assertNotIn("model", env["binding"])
+        self.assertEqual(env["binding"]["task_logic_sha256"],
+                         cog_core.task_logic_sha256())
+
+    def test_invalid_input_is_reported(self):
+        env = cog_core.invoke({"items": []})
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "invalid-input")
+
+    def test_duplicate_ids_are_an_input_contract_check(self):
+        problems = task_logic.check_input(
+            {"items": [{"id": "a", "text": "x"}, {"id": "a", "text": "y"}]})
+        self.assertTrue(problems)
+
+
+class TestGrantChecks(unittest.TestCase):
+    def test_a_well_formed_grant_passes(self):
+        self.assertEqual(cog_core.check_grant(grant(), run_id="run-1"),
+                         (None, None))
+
+    def test_an_expired_grant_is_refused(self):
+        stale = grant(valid={"expires_at": (datetime.now(timezone.utc)
+                                            - timedelta(minutes=1)).isoformat(),
+                             "run_id": "run-1"})
+        code, _ = cog_core.check_grant(stale, run_id="run-1")
+        self.assertEqual(code, "grant-expired")
+
+    def test_a_grant_for_another_run_is_refused(self):
+        code, _ = cog_core.check_grant(grant(), run_id="run-2")
+        self.assertEqual(code, "grant-wrong-run")
+
+    def test_a_grant_for_another_cog_is_refused(self):
+        other = grant(recipient={"step": "s",
+                                 "cog": {"id": "openteams/cog-somebody-else"}})
+        code, _ = cog_core.check_grant(other, run_id="run-1")
+        self.assertEqual(code, "grant-wrong-recipient")
+
+    def test_reads_and_writes_are_checked_against_the_grant(self):
+        ok, _ = cog_core.read_allowed(grant(), "openteams-ai/apollo-desktop")
+        self.assertTrue(ok)
+        ok, detail = cog_core.read_allowed(grant(), "someone/else")
+        self.assertFalse(ok)
+        self.assertIn("not in this grant", detail)
+
+
+class TestJournal(unittest.TestCase):
+    def test_entries_round_trip_and_phases_are_the_last_word(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = cog_core.Journal(Path(tmp) / "journal.jsonl")
+            journal.append({"change_id": "c1", "phase": "applying"})
+            journal.append({"change_id": "c1", "phase": "applied"})
+            journal.append({"change_id": "c2", "phase": "applying"})
+            self.assertEqual(len(journal.read()), 3)
+            self.assertEqual(journal.phases(),
+                             {"c1": "applied", "c2": "applying"})
+
+    def test_a_torn_last_line_is_dropped_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "journal.jsonl"
+            journal = cog_core.Journal(path)
+            journal.append({"change_id": "c1", "phase": "applied"})
+            with open(path, "a") as handle:
+                handle.write('{"change_id": "c2", "ph')
+            self.assertEqual(journal.phases(), {"c1": "applied"})
+
+
+if __name__ == "__main__":
+    unittest.main()

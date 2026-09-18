@@ -187,12 +187,18 @@ def cmd_new(args):
         req = _load_cog_request(args.from_request)
         req_overrides, overlays = _request_overrides_overlays(req)
 
-    dir_arg = args.dir or req.get("dir")
+    kind = args.kind or smith_core.DEFAULT_KIND
+    template = smith_core.KIND_TEMPLATES[kind]
+    # `smith new --kind code NAME` — the positional NAME names the Cog and,
+    # when no --dir is given, is the destination directory (relative to the
+    # working directory).
+    dir_arg = args.dir or req.get("dir") or args.name_arg
     if not dir_arg:
         raise smith_core.CreateError(
-            "destination required: pass --dir or set \"dir\" in the request")
+            "destination required: pass NAME or --dir, or set \"dir\" in the "
+            "request")
     dest = Path(dir_arg)
-    name = args.name or req.get("name") or dest.name
+    name = args.name or args.name_arg or req.get("name") or dest.name
     flag_overrides = {
         "COG_ID": args.id, "SUMMARY": args.summary, "OWNER": args.owner,
         "LICENSE": args.license, "PUBLISHER": args.publisher,
@@ -224,7 +230,8 @@ def cmd_new(args):
             print(f"error: {detail}", file=sys.stderr)
         return 2
     if not scripted and sys.stdin.isatty():
-        print(f"Creating {tokens['COG_ID']} at {dest} — enter to accept defaults:")
+        print(f"Creating {tokens['COG_ID']} ({kind} Cog) at {dest} — enter to "
+              f"accept defaults:")
         tokens["COG_ID"] = _prompt(
             "cog id", tokens["COG_ID"],
             "unique package identity, org/name — lowercase letters, digits, "
@@ -239,21 +246,24 @@ def cmd_new(args):
         tokens["LICENSE"] = _prompt(
             "license", tokens["LICENSE"],
             "SPDX license id for the package, e.g. BSD-3-Clause")
-        tokens["PORT"] = _prompt(
-            "web-api port", tokens["PORT"],
-            "loopback port the HTTP entry point listens on (pixi run serve)")
+        if kind != "code":
+            tokens["PORT"] = _prompt(
+                "web-api port", tokens["PORT"],
+                "loopback port the HTTP entry point listens on (pixi run serve)")
         tokens["PRODUCES"] = _prompt(
             "io.produces value", tokens["PRODUCES"],
             "lowercase token naming what this Cog produces, e.g. highlights "
             "— shown in the card's io line")
-        tokens["MODEL_COG_ID"] = _prompt(
-            "default model cog", tokens["MODEL_COG_ID"],
-            "default satisfier for the model-endpoint requirement; a hosting "
-            "environment may substitute another (pixi run resolve)")
-        tokens["MODEL_COG_SOURCE"] = _prompt(
-            "its source path", tokens["MODEL_COG_SOURCE"],
-            "where resolve finds that default satisfier, relative to the "
-            "created Cog")
+        if kind != "code":
+            # A code Cog has no model dependency to satisfy.
+            tokens["MODEL_COG_ID"] = _prompt(
+                "default model cog", tokens["MODEL_COG_ID"],
+                "default satisfier for the model-endpoint requirement; a "
+                "hosting environment may substitute another (pixi run resolve)")
+            tokens["MODEL_COG_SOURCE"] = _prompt(
+                "its source path", tokens["MODEL_COG_SOURCE"],
+                "where resolve finds that default satisfier, relative to the "
+                "created Cog")
         raw = _prompt(
             "prohibits (comma-separated)",
             "send_external_message, modify_source_data",
@@ -263,7 +273,8 @@ def cmd_new(args):
             f"  - {p.strip()}" for p in raw.split(",") if p.strip())
         tokens["SUMMARY_ONELINE"] = " ".join(tokens["SUMMARY"].split())[:160]
 
-    result = smith_core.create(dest, tokens, overlays=overlays,
+    result = smith_core.create(dest, tokens, template=template,
+                               overlays=overlays,
                                manifest_format=manifest_format)
     findings = smith_check.check(result["dest"])
     if args.envelope:
@@ -271,6 +282,7 @@ def cmd_new(args):
         _emit(envelope("new", True, payload={
             "dest": result["dest"],
             "cog_id": tokens["COG_ID"],
+            "kind": kind,
             "files": len(result["files"]),
             "manifest": result["manifest"],
             "machinery": result["machinery"],
@@ -281,11 +293,16 @@ def cmd_new(args):
         }, problems=_problems(findings), started=started))
         return 1 if errors else 0
 
-    print(f"created {tokens['COG_ID']} -> {result['dest']}")
+    print(f"created {tokens['COG_ID']} ({kind} Cog) -> {result['dest']}")
     print(f"  {len(result['files'])} files; manifest: {result['manifest']}; "
           f"machinery: {', '.join(result['machinery'])}")
-    print("  next: edit context/system.md + src/task_logic.py, then:")
-    print("        pixi install && pixi run resolve && pixi run test")
+    if kind == "code":
+        print("  next: edit context/*.json + src/task_logic.py, then:")
+        print("        pixi install && pixi run test && pixi run run -- "
+              "--bundle examples/sample-bundle.json")
+    else:
+        print("  next: edit context/system.md + src/task_logic.py, then:")
+        print("        pixi install && pixi run resolve && pixi run test")
     return smith_check.report(findings)
 
 
@@ -448,6 +465,13 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("new", help="create a new Cog from the template")
+    p.add_argument("name_arg", nargs="?", metavar="NAME",
+                   help="the Cog's short name; also the destination "
+                        "directory when --dir is not given")
+    p.add_argument("--kind", choices=smith_core.COG_KINDS,
+                   help="context (default): a Cog whose work a model does; "
+                        "code: a model-free Cog whose work code does "
+                        "(kind: code)")
     p.add_argument("--dir", help="destination directory (or the request's "
                                  "\"dir\"; a given flag wins)")
     p.add_argument("--from-request", dest="from_request", metavar="REQ.json",

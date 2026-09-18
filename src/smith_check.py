@@ -145,10 +145,42 @@ def check(root, run_tests=False):
     # kind: code is a model-free Cog: the Cog shape with no model in the
     # loop. The kind is declared, never inferred, and a code Cog that
     # declares a model requirement is contradicting itself.
-    if m.get("kind") == "code" and (m.get("requires") or []):
+    is_code = m.get("kind") == "code"
+    if is_code and (m.get("requires") or []):
         err("profile", "declarations",
             "kind: code declares requires — a code Cog has no model in the "
             "loop; if it needs a model it is a context Cog")
+
+    # `reaches` — what a Cog touches OUTSIDE the run. Declared, never
+    # inferred; it is what a grant is checked against (phase 3 contract §1).
+    # In phase 3 only code Cogs carry it; context Cogs get it when
+    # tool-using Cogs arrive.
+    reaches = m.get("reaches")
+    if reaches is not None and not is_code:
+        err("profile", "declarations",
+            "reaches is declared on a Cog that is not kind: code — in phase "
+            "3 only code Cogs declare what they reach outside the run")
+    if reaches is not None and not isinstance(reaches, list):
+        err("profile", "declarations",
+            f"reaches must be a list of {{resource, actions}} entries, got "
+            f"{type(reaches).__name__}")
+    elif isinstance(reaches, list):
+        for index, entry in enumerate(reaches):
+            if not isinstance(entry, dict):
+                err("profile", "declarations",
+                    f"reaches[{index}] must be an object with resource and "
+                    f"actions")
+                continue
+            if not isinstance(entry.get("resource"), str):
+                err("profile", "declarations",
+                    f"reaches[{index}].resource must be a string, got "
+                    f"{entry.get('resource')!r}")
+            actions = entry.get("actions")
+            if not isinstance(actions, list) or not all(
+                    isinstance(a, str) for a in actions):
+                err("profile", "declarations",
+                    f"reaches[{index}].actions must be a list of strings, got "
+                    f"{actions!r}")
 
     # ---- model cogs without smith machinery ------------------------------
     # Classification is DECLARED, never inferred (the same F7 rule as
@@ -177,11 +209,18 @@ def check(root, run_tests=False):
 
     ctx = m.get("context") or {}
     schemas = {}
+    # A code Cog's "context" is its declared SHAPES: there is no model to
+    # instruct, so instructions and the worked example are not required.
+    declared_context = (("input_schema", "output_schema") if is_code else
+                        ("instructions", "input_schema", "output_schema",
+                         "output_example"))
     for key in ("instructions", "input_schema", "output_schema",
                 "output_example"):
         rel = ctx.get(key)
         if not rel:
-            (warn if key == "input_schema" else err)(
+            if key not in declared_context:
+                continue
+            (warn if (key == "input_schema" and not is_code) else err)(
                 "profile", "context", f"context.{key} not declared")
             continue
         p = root / rel
@@ -216,7 +255,11 @@ def check(root, run_tests=False):
     elif not example.exists():
         warn("runtime", "examples", "no examples/sample-bundle.json")
 
-    masters = smith_core.machinery_hashes()
+    # Machinery is per KIND: a code Cog carries the code-cog masters
+    # (cog_core + cog_cli, no model machinery); everything else carries the
+    # context-cog masters. Same copy-sync discipline, two lineages.
+    template = smith_core.KIND_TEMPLATES.get(m.get("kind"), "context-cog")
+    masters = smith_core.machinery_hashes(template)
     src = root / "src"
     for name, want in masters.items():
         p = src / name
@@ -252,7 +295,8 @@ def check(root, run_tests=False):
                 warn("runtime", "interfaces",
                      f"http-json endpoint {ep!r} is not a loopback address "
                      f"with an explicit port")
-    for t in ("resolve", "check", "test"):
+    # `resolve` binds a model dependency; a code Cog has none to bind.
+    for t in (("check", "test") if is_code else ("resolve", "check", "test")):
         if tasks and t not in tasks:
             err("runtime", "interfaces",
                 f"lifecycle task {t!r} missing from pixi.toml")

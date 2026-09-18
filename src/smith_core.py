@@ -41,6 +41,14 @@ LIFECYCLE_TASKS = {"resolve", "use", "check", "eval", "test", "bundle", "serve"}
 
 TOKEN_RE = re.compile(r"\{\{([A-Z_]+)\}\}")
 
+#: Cog kinds smith creates, and the template master for each. `context` is
+#: a Cog whose work a model does; `code` is a Cog whose work code does
+#: (kind: code, decided 2026-09-17) — the same seam with the model half
+#: removed.
+KIND_TEMPLATES = {"context": "context-cog", "code": "code-cog"}
+COG_KINDS = tuple(KIND_TEMPLATES)
+DEFAULT_KIND = "context"
+
 MANIFEST_FORMATS = ("pixi", "yaml")
 DEFAULT_MANIFEST_FORMAT = "pixi"
 MANIFEST_FILES = {"pixi": "pixi.toml", "yaml": "cog.yaml"}
@@ -84,10 +92,14 @@ def _one_line(s):
     return " ".join(str(s).split())
 
 
-def validate_request(tokens):
+def validate_request(tokens, template="context-cog"):
     """Validate the typed create request BEFORE creating anything (F2).
-    Raises CreateError with every problem, not just the first."""
+    Raises CreateError with every problem, not just the first.
+
+    A code Cog answers fewer questions: it has no model dependency to name
+    and no served endpoint, so MODEL_COG_* and PORT are not asked about."""
     problems = []
+    model_backed = template != "code-cog"
 
     name = str(tokens.get("COG_NAME", ""))
     if not COG_NAME_RE.match(name):
@@ -100,8 +112,10 @@ def validate_request(tokens):
     elif not cog_id.endswith("/" + name):
         problems.append(f"cog id {cog_id!r} does not end with the cog name {name!r}")
 
-    for key in ("SUMMARY", "OWNER", "LICENSE", "PUBLISHER", "TITLE",
-                "MODEL_COG_ID", "MODEL_COG_SOURCE"):
+    identity = ["SUMMARY", "OWNER", "LICENSE", "PUBLISHER", "TITLE"]
+    if model_backed:
+        identity += ["MODEL_COG_ID", "MODEL_COG_SOURCE"]
+    for key in identity:
         v = str(tokens.get(key, ""))
         if not v.strip():
             problems.append(f"{key} must be non-empty")
@@ -109,7 +123,7 @@ def validate_request(tokens):
             problems.append(f"{key} must be a single line")
 
     port = str(tokens.get("PORT", ""))
-    if not port.isdigit() or not (1024 <= int(port) <= 65535):
+    if model_backed and (not port.isdigit() or not (1024 <= int(port) <= 65535)):
         problems.append(f"PORT must be an integer in 1024..65535, got {port!r}")
 
     produces = str(tokens.get("PRODUCES", ""))
@@ -137,7 +151,7 @@ def _prohibits_list(tokens):
     return items
 
 
-def _serialization_tokens(tokens):
+def _serialization_tokens(tokens, template="context-cog"):
     """Derived tokens for structured-format insertion points (F2):
     values are produced by serializers, not raw substitution."""
     out = dict(tokens)
@@ -154,6 +168,9 @@ def _serialization_tokens(tokens):
             out[f"{key}_TOML"] = json.dumps(str(out[key]))
     # YAML double-quoted scalars for frontmatter lines:
     out["DESCRIPTION_YAML"] = json.dumps(
+        f"Code Cog. {summary} No model in the loop; what it reaches outside "
+        f"the run is declared in the manifest."
+        if template == "code-cog" else
         f"Context Cog. {summary} Depends on a Cog providing an "
         f"OpenAI-compatible model endpoint.")
     out["SUMMARY"] = summary          # single-line; safe inside block scalars
@@ -227,9 +244,9 @@ def create(dest, tokens, template="context-cog", validate=True, overlays=None,
     if not troot.is_dir():
         raise CreateError(f"unknown template {template!r}")
 
-    if validate and template == "context-cog":
-        validate_request(tokens)
-    tokens = _serialization_tokens(tokens)
+    if validate and template in KIND_TEMPLATES.values():
+        validate_request(tokens, template)
+    tokens = _serialization_tokens(tokens, template)
     tokens = _manifest_tokens(tokens, troot, manifest_format)
 
     staging = dest.parent / f".smith-{dest.name}.tmp"

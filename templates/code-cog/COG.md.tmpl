@@ -1,0 +1,70 @@
+---
+type: cog [0.1]
+name: {{COG_NAME}}
+description: {{DESCRIPTION_YAML}}
+version: "0.1.0"
+license: {{LICENSE}}
+publisher: {{PUBLISHER}}
+manifest: {{MANIFEST_FILE}}
+manifest_schema: openteams/cog-manifest [0.1]
+---
+
+# {{TITLE}}
+
+## Purpose
+
+{{SUMMARY}}
+
+*(Created by cog-smith as a **code Cog**: the Cog shape — manifest, entry
+points, envelope v1, contract checks, machinery by hash — with no model in
+the loop. Replace this section with the real purpose: what work the code
+does, why it exists, what "done" looks like.)*
+
+## Supported work
+
+*(Describe the one task this Cog performs and the contract checks that make
+its output trustworthy. "Deterministic" here means no model judgment in the
+loop — a code Cog's result may still depend on external state at the moment
+it runs.)*
+
+## What it reaches
+
+`reaches` in the manifest declares what this Cog touches OUTSIDE the run —
+declared, never inferred. It is empty in the starter.
+
+When it is not empty, the Op runner issues a grant
+(`openteams/op-grant [0.1]`) for the invocation and passes `--grant` beside
+`--run-id`; this Cog **checks that grant itself** before every external call
+and refuses without one (`no-grant`). The local host runs trusted code with
+the owner's ambient credentials: the grant is checked by this code, and this
+is not an enforced restricted environment.
+
+Effects are recorded as they happen in the `--journal` the runner supplies
+(append-only JSONL, fsynced per line), which this Cog reads FIRST on every
+invocation so an effect already applied is never applied twice.
+
+## Unsupported work
+
+*(Name the adjacent work this Cog deliberately does NOT do — and which
+prohibitions in the manifest make that structural.)*
+
+## Using it
+
+```bash
+pixi install
+pixi run check                                   # identity + what it reaches
+pixi run run -- --bundle examples/sample-bundle.json
+pixi run test                                    # deterministic suite
+```
+
+Results are **envelope v1** (see cog-smith/ENVELOPE.md): fixed `payload`
+key, structured `problems`, and a `binding` that names the code that ran —
+`{kind: code, cog, task_logic_sha256, machinery}`, with no `model` key at
+all. `ok: true` may carry problems — a Gate decides, not this Cog.
+
+## Where the machinery came from
+
+`src/cog_core.py` and `src/cog_cli.py` are shared cog-smith code-cog
+machinery — do not edit them here; `smith check` verifies the copies. This
+Cog's identity lives in its manifest (`{{MANIFEST_FILE}}`), `context/`, and
+`src/task_logic.py`.
