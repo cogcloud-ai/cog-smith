@@ -435,16 +435,26 @@ def cmd_op_run(args):
     runs with the package as its working directory, so a relative package,
     request, or runs directory would otherwise change meaning."""
     package = Path(args.path).resolve()
+    if bool(args.resume) == bool(args.request):
+        return _cli_error(args, "pass --request to start a run or --resume to "
+                                "continue one, not both")
     runner = package / "src" / "op_runner.py"
     if not runner.exists():
         return _cli_error(args, f"{args.path} carries no src/op_runner.py — "
                                 f"run `smith op check` on it first")
-    command = [sys.executable, str(runner),
-               "--request", str(Path(args.request).resolve())]
+    command = [sys.executable, str(runner)]
+    if args.resume:
+        command += ["--resume", str(Path(args.resume).resolve())]
+    else:
+        command += ["--request", str(Path(args.request).resolve())]
     if args.dry_run:
         command.append("--dry-run")
     if args.runs_dir:
         command += ["--runs-dir", str(Path(args.runs_dir).resolve())]
+    if args.authority:
+        command += ["--authority", str(Path(args.authority).resolve())]
+    if args.decision:
+        command += ["--decision", str(Path(args.decision).resolve())]
     return subprocess.run(command, cwd=str(package)).returncode
 
 
@@ -562,9 +572,18 @@ def main():
 
     q = op_sub.add_parser("run", help="run an Op package's own runner")
     q.add_argument("path")
-    q.add_argument("--request", required=True)
+    q.add_argument("--request",
+                   help="the Op request document (start a run)")
     q.add_argument("--dry-run", action="store_true")
     q.add_argument("--runs-dir")
+    q.add_argument("--authority",
+                   help="the run's admission (openteams/op-authority [0.1]): "
+                        "the owner's authority for this run")
+    q.add_argument("--resume", metavar="RUN_DIR",
+                   help="continue a paused or interrupted run")
+    q.add_argument("--decision",
+                   help="with --resume: the human decision "
+                        "(openteams/op-decision [0.1]) for the waiting step")
     q.set_defaults(fn=cmd_op_run, cmd="op run", envelope=False)
 
     p = sub.add_parser("card", help="render a Cog's catalog card")

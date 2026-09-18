@@ -29,26 +29,46 @@ except ImportError:                                    # pragma: no cover
 
 SCHEMA_STRING = "openteams/op-manifest [0.1]"
 GATE_POLICY = "envelope-ok-no-error-problems"
+#: A human Gate is a POLICY on a step, never a step of its own: the step
+#: runs its Cog, the envelope goes through the ordinary policy, and only a
+#: passing envelope reaches the human (phase 3 contract §3).
+HUMAN_GATE_POLICY = "human"
+GATE_POLICIES = (GATE_POLICY, HUMAN_GATE_POLICY)
 STEP_ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 #: A `foreach` loop variable is a name: it becomes a mapping-path root.
 LOOP_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ON_FAIL = ("stop", "skip", "retry-once")
 
 TOP_KEYS = {"schema", "id", "version", "name", "description", "inputs",
-            "steps", "outputs", "track"}
+            "steps", "outputs", "track", "authority"}
 STEP_KEYS = {"id", "name", "depends_on", "cog", "foreach", "input",
-             "expected_outcome", "gate", "on_fail"}
+             "expected_outcome", "gate", "on_fail", "authority"}
 COG_KEYS = {"id", "version", "source", "task"}
 INPUT_KEYS = {"name", "description", "required", "default", "schema"}
 FOREACH_KEYS = {"items", "as"}
 GATE_KEYS = {"policy", "guards"}
 TRACK_KEYS = {"records"}
+#: Authority vocabulary (phase 3 contract §2). Top level: how long a grant
+#: this Op issues stays valid. Per step: what the step REQUIRES — a step
+#: never grants itself anything.
+AUTHORITY_TOP_KEYS = {"ttl_minutes"}
+STEP_AUTHORITY_KEYS = {"requires"}
+REQUIREMENT_KEYS = {"resource", "action", "repositories", "changes"}
+DEFAULT_TTL_MINUTES = 60
 
 # Refused by name, with the phase that adds the construct. A value of None
 # means the construct is never added: there is no tool: step kind —
-# deterministic work is a Cog of kind: code, invoked as a cog: step.
+# deterministic work is a Cog of kind: code, invoked as a cog: step — and no
+# human: step kind either: a human Gate is `gate: {policy: human}` on a step.
 REFUSED_TOP = {"state": "phase 4"}
-REFUSED_STEP = {"tool": None, "human": "phase 3"}
+REFUSED_STEP = {"tool": None, "human": None}
+REFUSED_STEP_REASON = {
+    "tool": ("there is no tool: step kind — deterministic work is a Cog of "
+             "kind: code, invoked as a cog: step"),
+    "human": ("there is no human: step kind — a human Gate is a policy on "
+              "the step that produces what the human decides about, "
+              "gate: {policy: human}"),
+}
 
 # Mapping-expression operators: an object whose key set is EXACTLY one of
 # these is an operator; every other object is walked; scalars are literals.
@@ -67,6 +87,16 @@ OPERATOR_NAMES = "$from, $from/$default, $path, $run_dir, $stem, $literal"
 KNOWN_DOLLAR_KEYS = frozenset({"$from", "$default", "$path", "$run_dir",
                                "$stem", "$literal"})
 PATH_ROOTS = ("inputs", "steps", "run", "request")
+#: What a step's result exposes to later mappings. `decision` is the human
+#: Gate's answer, present only on a step whose gate policy is `human`.
+STEP_PATHS = ("payload", "envelope", "decision")
+#: Roots refused BY NAME. A grant is trusted invocation context: it never
+#: travels inside a request document and no mapping expression can read or
+#: build one (phase 3 contract §2).
+REFUSED_PATH_ROOTS = {
+    "grants": ("a grant is never readable from a mapping expression: "
+               "authority travels beside the request, never inside it"),
+}
 
 # A Cog's conventional lifecycle tasks, for steps whose interface declares no
 # audience. Kept here (not imported from cog-smith) because this module is
@@ -231,7 +261,7 @@ def reads_steps(expr):
 # ------------------------------------------------------------ validation --
 
 def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
-                   problems):
+                   problems, human_steps=()):
     if isinstance(expr, dict):
         keys = frozenset(expr)
         if keys in OPERATORS:
@@ -239,10 +269,11 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                 return
             if "$from" in keys:
                 _path_problems(expr["$from"], where, input_names, step_ids,
-                               dep_ids, loop_vars, problems)
+                               dep_ids, loop_vars, problems, human_steps)
                 if "$default" in keys:
                     _expr_problems(expr["$default"], where, input_names,
-                                   step_ids, dep_ids, loop_vars, problems)
+                                   step_ids, dep_ids, loop_vars, problems,
+                                   human_steps)
                 return
             if "$run_dir" in keys and isinstance(expr["$run_dir"], str):
                 subpath = expr["$run_dir"]
@@ -256,7 +287,7 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
             for key in ("$path", "$run_dir", "$stem"):
                 if key in keys:
                     _expr_problems(expr[key], where, input_names, step_ids,
-                                   dep_ids, loop_vars, problems)
+                                   dep_ids, loop_vars, problems, human_steps)
             return
         unknown = unknown_dollar_keys(expr)
         if unknown:
@@ -271,15 +302,15 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                                 f"strings.")
                 continue
             _expr_problems(value, f"{where}.{key}", input_names, step_ids,
-                           dep_ids, loop_vars, problems)
+                           dep_ids, loop_vars, problems, human_steps)
     elif isinstance(expr, list):
         for index, item in enumerate(expr):
             _expr_problems(item, f"{where}[{index}]", input_names, step_ids,
-                           dep_ids, loop_vars, problems)
+                           dep_ids, loop_vars, problems, human_steps)
 
 
 def _path_problems(path, where, input_names, step_ids, dep_ids, loop_vars,
-                   problems):
+                   problems, human_steps=()):
     if not isinstance(path, str) or not path:
         problems.append(f"{where}: $from takes a dotted path string, got "
                         f"{path!r}.")
@@ -291,9 +322,10 @@ def _path_problems(path, where, input_names, step_ids, dep_ids, loop_vars,
             problems.append(f"{where} reads input {'.'.join(segments[1:2]) or '?'!r}, "
                             f"which the Op spec does not declare.")
     elif root == "steps":
-        if len(segments) < 3 or segments[2] not in ("payload", "envelope"):
+        if len(segments) < 3 or segments[2] not in STEP_PATHS:
             problems.append(f"{where} reads {path!r}; a step path is "
-                            f"steps.<id>.payload or steps.<id>.envelope.")
+                            f"steps.<id>.payload, steps.<id>.envelope or "
+                            f"steps.<id>.decision.")
             return
         target = segments[1]
         if target not in step_ids:
@@ -302,6 +334,10 @@ def _path_problems(path, where, input_names, step_ids, dep_ids, loop_vars,
         elif target not in dep_ids:
             problems.append(f"{where} reads {path!r} without depending on "
                             f"{target!r}; add it to that step's depends_on.")
+        elif segments[2] == "decision" and target not in human_steps:
+            problems.append(f"{where} reads {path!r}, but step {target!r} "
+                            f"has no human Gate; only a step with "
+                            f"gate.policy: human produces a decision.")
     elif root == "run":
         if len(segments) < 2 or segments[1] not in ("dir", "id"):
             problems.append(f"{where} reads {path!r}; the run paths are "
@@ -310,10 +346,126 @@ def _path_problems(path, where, input_names, step_ids, dep_ids, loop_vars,
         if len(segments) < 2 or segments[1] != "dir":
             problems.append(f"{where} reads {path!r}; the only request path "
                             f"is request.dir.")
+    elif root in REFUSED_PATH_ROOTS:
+        problems.append(f"{where} reads {path!r}: "
+                        f"{REFUSED_PATH_ROOTS[root]}.")
     elif root not in loop_vars:
         problems.append(f"{where} reads {path!r}, whose root is neither a "
                         f"declared input, a step, run/request, nor this "
                         f"step's foreach variable.")
+
+
+def gate_policy(step):
+    """The step's Gate policy (the envelope policy when it declares none)."""
+    gate = step.get("gate")
+    if not isinstance(gate, dict):
+        return GATE_POLICY
+    return gate.get("policy", GATE_POLICY)
+
+
+def human_gate_steps(steps):
+    """The ids of the steps whose Gate is a human one."""
+    return {s["id"] for s in steps
+            if _has_id(s) and gate_policy(s) == HUMAN_GATE_POLICY}
+
+
+def requirements(step):
+    """What a step DECLARES it requires. A step never grants itself
+    anything: the runner issues the grant, or the step is denied."""
+    authority = step.get("authority")
+    if not isinstance(authority, dict):
+        return []
+    declared = authority.get("requires")
+    return list(declared) if isinstance(declared, list) else []
+
+
+def ttl_minutes(doc):
+    """How long a grant this Op issues stays valid, in minutes."""
+    authority = doc.get("authority")
+    if isinstance(authority, dict) and authority.get("ttl_minutes") is not None:
+        return authority["ttl_minutes"]
+    return DEFAULT_TTL_MINUTES
+
+
+def decision_step(requirement):
+    """The step whose human decision a write requirement's `changes` reads,
+    or None when the expression is not a `$from` over a decision."""
+    changes = (requirement or {}).get("changes")
+    if not isinstance(changes, dict) or "$from" not in changes:
+        return None
+    segments = str(changes["$from"]).split(".")
+    if len(segments) >= 3 and segments[0] == "steps" and segments[2] == "decision":
+        return segments[1]
+    return None
+
+
+def _authority_problems(step, sid, step_ids, human_steps, problems):
+    """Every problem with one step's `authority:` block (phase 3 §2)."""
+    authority = step.get("authority")
+    if authority is None:
+        return
+    if not isinstance(authority, dict):
+        problems.append(f"Op step {sid!r}'s authority must be an object with "
+                        f"a requires list.")
+        return
+    for key in sorted(str(k) for k in set(authority) - STEP_AUTHORITY_KEYS):
+        problems.append(f"unknown key {key!r} under Op step {sid!r}'s "
+                        f"authority:; the authority vocabulary is closed.")
+    if step.get("foreach") is not None:
+        # Phase 3 issues one grant per step, not one per element.
+        problems.append(f"Op step {sid!r} declares authority on a foreach "
+                        f"step; phase 3 issues no per-element grants.")
+    declared = authority.get("requires")
+    if not isinstance(declared, list) or not declared:
+        problems.append(f"Op step {sid!r} declares authority with no requires "
+                        f"list; a step states what it requires, and the "
+                        f"runner issues the grant.")
+        return
+    direct = set(_deps(step))
+    for index, requirement in enumerate(declared):
+        where = f"Op step {sid!r} authority.requires[{index}]"
+        if not isinstance(requirement, dict):
+            problems.append(f"{where} must be an object with resource and "
+                            f"action.")
+            continue
+        for key in sorted(str(k) for k in set(requirement) - REQUIREMENT_KEYS):
+            problems.append(f"unknown key {key!r} on {where}; the "
+                            f"requirement vocabulary is closed.")
+        for field in ("resource", "action"):
+            if not isinstance(requirement.get(field), str) or \
+                    not requirement[field]:
+                problems.append(f"{where} declares {field} "
+                                f"{requirement.get(field)!r}; a requirement's "
+                                f"{field} is a string.")
+        if requirement.get("action") == "write":
+            target = decision_step(requirement)
+            if target is None:
+                problems.append(
+                    f"{where} requires a write without reading a human "
+                    f"decision; a write requirement's changes reads "
+                    f"steps.<id>.decision of a step whose gate policy is "
+                    f"human.")
+                continue
+            if target not in step_ids:
+                problems.append(f"{where} reads the decision of step "
+                                f"{target!r}, which the Op spec does not "
+                                f"declare.")
+                continue
+            if target not in human_steps:
+                problems.append(f"{where} reads the decision of step "
+                                f"{target!r}, which has no human Gate; a "
+                                f"write is authorized by a human decision.")
+            if target not in direct:
+                problems.append(f"{where} reads the decision of step "
+                                f"{target!r} without depending on it; add it "
+                                f"to this step's depends_on.")
+        elif "changes" in requirement:
+            problems.append(f"{where} declares changes on a "
+                            f"{requirement.get('action')!r} requirement; "
+                            f"changes belong to a write.")
+        elif requirement.get("repositories") is None:
+            problems.append(f"{where} declares no repositories; a read "
+                            f"requirement names what it reads.")
 
 
 def _has_id(step):
@@ -433,6 +585,25 @@ def validate(doc):
             problems.extend(schema_problems(declared["schema"],
                                             declared["name"]))
 
+    authority = doc.get("authority")
+    if authority is not None:
+        if not isinstance(authority, dict):
+            problems.append("the Op spec's authority must be an object with "
+                            "ttl_minutes.")
+        else:
+            for key in sorted(str(k) for k in set(authority)
+                              - AUTHORITY_TOP_KEYS):
+                problems.append(f"unknown key {key!r} under the Op spec's "
+                                f"authority:; the authority vocabulary is "
+                                f"closed.")
+            ttl = authority.get("ttl_minutes")
+            if ttl is not None and (isinstance(ttl, bool)
+                                    or not isinstance(ttl, (int, float))
+                                    or ttl <= 0):
+                problems.append(f"the Op spec declares authority.ttl_minutes "
+                                f"{ttl!r}; a grant's life is a positive "
+                                f"number of minutes.")
+
     track = doc.get("track")
     if track is not None:
         if not isinstance(track, dict):
@@ -471,10 +642,8 @@ def validate(doc):
             if key not in step:
                 continue
             if phase is None:
-                problems.append(f"Op step {sid!r} declares a {key}: step; there "
-                                f"is no {key}: step kind — deterministic work "
-                                f"is a Cog of kind: code, invoked as a cog: "
-                                f"step.")
+                problems.append(f"Op step {sid!r} declares a {key}: step; "
+                                f"{REFUSED_STEP_REASON[key]}.")
             else:
                 problems.append(f"Op step {sid!r} declares a {key}: step, "
                                 f"which the runner subset does not carry — "
@@ -533,19 +702,18 @@ def validate(doc):
                                     f"{sid!r}'s gate:; the Gate vocabulary is "
                                     f"closed.")
                 policy = gate.get("policy", GATE_POLICY)
-                if policy == "human":
-                    problems.append(f"Op step {sid!r} declares gate.policy: "
-                                    f"human, which the runner subset does not "
-                                    f"carry — phase 3 adds it.")
-                elif policy != GATE_POLICY:
+                if policy not in GATE_POLICIES:
                     problems.append(f"Op step {sid!r} declares gate.policy "
-                                    f"{policy!r}; {GATE_POLICY!r} is the only "
-                                    f"policy in the runner subset.")
+                                    f"{policy!r}; the Gate policies are "
+                                    f"{list(GATE_POLICIES)}.")
                 if gate.get("guards"):
                     problems.append(f"Op step {sid!r} declares gate.guards, "
                                     f"which are not in the runner subset; "
                                     f"Guards are system-side verifiers a "
                                     f"hosting environment supplies.")
+
+        _authority_problems(step, sid, step_ids, human_gate_steps(steps),
+                            problems)
 
         on_fail = step.get("on_fail", "stop")
         if on_fail not in ON_FAIL:
@@ -595,6 +763,7 @@ def validate(doc):
     if problems:
         raise OpSpecError(problems)
     deps = _transitive(steps)
+    human_steps = human_gate_steps(steps)
 
     for step in steps:
         sid = step["id"]
@@ -603,9 +772,20 @@ def validate(doc):
         if step.get("foreach") is not None:
             _expr_problems((step["foreach"] or {}).get("items"),
                            f"Op step {sid!r} foreach.items", input_names,
-                           step_ids, dep_ids, set(), problems)
+                           step_ids, dep_ids, set(), problems, human_steps)
         _expr_problems(step.get("input") or {}, f"Op step {sid!r} input",
-                       input_names, step_ids, dep_ids, loop_vars, problems)
+                       input_names, step_ids, dep_ids, loop_vars, problems,
+                       human_steps)
+        for index, requirement in enumerate(requirements(step)):
+            if not isinstance(requirement, dict):
+                continue
+            for field in ("repositories", "changes"):
+                if field in requirement:
+                    _expr_problems(
+                        requirement[field],
+                        f"Op step {sid!r} authority.requires[{index}].{field}",
+                        input_names, step_ids, dep_ids, loop_vars, problems,
+                        human_steps)
 
     outputs = doc.get("outputs") or {}
     if not isinstance(outputs, dict):
@@ -613,7 +793,7 @@ def validate(doc):
                         "expressions.")
     else:
         _expr_problems(outputs, "the Op spec's outputs", input_names, step_ids,
-                       step_ids, set(), problems)
+                       step_ids, set(), problems, human_steps)
 
     if problems:
         raise OpSpecError(problems)
@@ -635,6 +815,8 @@ class OpSpec:
         self.steps = doc["steps"]
         self.outputs = doc.get("outputs") or {}
         self.track = doc.get("track") or {}
+        self.authority = doc.get("authority") or {}
+        self.ttl_minutes = ttl_minutes(doc)
 
     def step(self, sid):
         for step in self.steps:
@@ -771,6 +953,46 @@ def read_cog_manifest(source):
                   "[tool.cog] table nor cog.yaml")
 
 
+def _authority_findings(step, sid, cog, manifest):
+    """[(level, detail)] for a step's authority against the Cog it names —
+    the checks that need the Cog's MANIFEST: authority is for code Cogs, a
+    requirement must be covered by the Cog's declared `reaches`, and a step
+    that invokes a reaching Cog must declare what it requires.
+
+    A DECLARATION check. Nothing here enforces anything at run time: the
+    code Cog checks its own grant before every external call (§0)."""
+    findings = []
+    declared = requirements(step)
+    reaches = manifest.get("reaches") or []
+    if declared and manifest.get("kind") != "code":
+        findings.append(("error", f"Op step {sid!r} declares authority on "
+                                  f"{manifest.get('id')!r}, which is kind "
+                                  f"{manifest.get('kind')!r} — phase 3 "
+                                  f"supports authority on code Cogs only."))
+        return findings
+    covered = {(entry.get("resource"), action)
+               for entry in reaches if isinstance(entry, dict)
+               for action in entry.get("actions") or []}
+    for requirement in declared:
+        if not isinstance(requirement, dict):
+            continue
+        pair = (requirement.get("resource"), requirement.get("action"))
+        if pair not in covered:
+            findings.append(("error", f"Op step {sid!r} requires "
+                                      f"{pair[0]} {pair[1]}, which "
+                                      f"{manifest.get('id')!r} does not "
+                                      f"declare in its reaches."))
+    if not declared and reaches:
+        resources = sorted({str(e.get("resource")) for e in reaches
+                            if isinstance(e, dict)})
+        findings.append(("error", f"Op step {sid!r} names "
+                                  f"{manifest.get('id')!r}, which reaches "
+                                  f"{resources} outside the run, and declares "
+                                  f"no authority.requires — a reaching Cog "
+                                  f"runs only under a grant."))
+    return findings
+
+
 def cog_step_findings(step, source_dir):
     """[(level, detail)] for one Cog step's declaration, checked against the
     Cog at SOURCE_DIR: it must be that Cog, and the task must be one of its
@@ -798,6 +1020,7 @@ def cog_step_findings(step, source_dir):
                                  f"{cog['version']!r} but "
                                  f"{cog.get('source')!r} is at "
                                  f"{manifest.get('version')!r}."))
+    findings.extend(_authority_findings(step, sid, cog, manifest))
     interfaces = [i for i in manifest.get("interfaces") or []
                   if isinstance(i, dict) and i.get("task") == cog.get("task")]
     if not interfaces:

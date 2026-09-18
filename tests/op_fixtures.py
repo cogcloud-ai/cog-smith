@@ -91,11 +91,12 @@ class FakeCog:
         self.calls = []
         self.watcher = watcher
 
-    def __call__(self, cog_dir, task, request_path):
+    def __call__(self, cog_dir, task, request_path, **seam):
         request = json.loads(Path(request_path).read_text())
         self.calls.append({"cog_dir": str(cog_dir), "task": task,
                            "request": request,
-                           "request_path": str(request_path)})
+                           "request_path": str(request_path),
+                           "seam": seam})
         if self.watcher:
             self.watcher(self, request_path)
         answer = self.answers[task]
@@ -105,3 +106,89 @@ class FakeCog:
             index = sum(1 for c in self.calls if c["task"] == task) - 1
             return answer[min(index, len(answer) - 1)]
         return answer
+
+
+# --------------------------------------------------- authority fixtures --
+#
+# Phase 3: a step declares what it requires, the runner issues the grant.
+# These build the three documents and the minimal Cog packages a
+# declaration/authority check reads.
+
+AUTHORITY_SCHEMA = "openteams/op-authority [0.1]"
+DECISION_SCHEMA = "openteams/op-decision [0.1]"
+REPO = "openteams-ai/apollo-desktop"
+
+COG_MANIFEST = """[workspace]
+name = "cog-{name}"
+version = "0.1.0"
+description = "A fixture Cog."
+
+[tasks]
+{task} = "python src/cog_cli.py"
+check = "python src/cog_cli.py --check"
+test = "python -m unittest discover -s tests"
+
+[tool.cog]
+schema = "openteams/cog-manifest [0.1]"
+id = "openteams/cog-{name}"
+kind = "{kind}"
+owner = "trent@openteams.com"
+license = "BSD-3-Clause"
+requires = []
+reaches = {reaches}
+
+[[tool.cog.interfaces]]
+name = "cli"
+kind = "command"
+task = "{task}"
+audience = "usage"
+default = true
+"""
+
+
+def write_cog(parent, name, kind="code", reaches=(), task="ask"):
+    """A minimal Cog package: enough manifest for the declaration and
+    authority checks (identity, kind, reaches, one usage interface)."""
+    root = Path(parent) / f"cog-{name}"
+    root.mkdir(parents=True, exist_ok=True)
+    rendered = "[" + ", ".join(
+        '{ resource = "%s", actions = [%s] }'
+        % (entry["resource"], ", ".join(f'"{a}"' for a in entry["actions"]))
+        for entry in reaches) + "]"
+    (root / "pixi.toml").write_text(COG_MANIFEST.format(
+        name=name, kind=kind, reaches=rendered, task=task))
+    return root
+
+
+def authority_doc(read=(REPO,), write=(REPO,)):
+    operations = []
+    if read is not None:
+        operations.append({"resource": "github", "action": "read",
+                           "repositories": list(read)})
+    if write is not None:
+        operations.append({"resource": "github", "action": "write",
+                           "repositories": list(write)})
+    return {"schema": AUTHORITY_SCHEMA, "operations": operations}
+
+
+def change(change_id, repository=REPO, kind="label", summary="add a label"):
+    return {"change_id": change_id, "kind": kind, "target": f"{repository}#1",
+            "repository": repository, "summary": summary,
+            "content_sha256": "0" * 64}
+
+
+def decision_doc(run_id, step, payload_sha256, verdicts):
+    """verdicts: {change_id: "approve" | "reject" | edited-change-dict}."""
+    decisions = []
+    for cid, verdict in verdicts.items():
+        if isinstance(verdict, dict):
+            decisions.append({"change_id": cid, "verdict": "edit",
+                              "change": verdict})
+        elif verdict == "reject":
+            decisions.append({"change_id": cid, "verdict": "reject",
+                              "reason": "not this week"})
+        else:
+            decisions.append({"change_id": cid, "verdict": "approve"})
+    return {"schema": DECISION_SCHEMA, "run_id": run_id, "step": step,
+            "payload_sha256": payload_sha256, "decided_by": "trent",
+            "decided_at": op_track.utc_now(), "decisions": decisions}

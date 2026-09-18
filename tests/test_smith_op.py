@@ -192,7 +192,7 @@ class CheckTests(SmithOpCase):
         doc["steps"][0]["human"] = {"prompt": "ok?"}
         (self.dest / "op.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
         findings = smith_op.check(self.dest)
-        self.assertIn("phase 3", self.details(findings))
+        self.assertIn("there is no human: step kind", self.details(findings))
 
     def test_edited_machinery_is_an_error(self):
         path = self.dest / "src" / "op_spec.py"

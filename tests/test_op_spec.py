@@ -36,19 +36,20 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("kind: code", text)
         self.assertNotIn("phase", text)
 
-    def test_human_step_is_refused_by_name_with_its_phase(self):
+    def test_human_step_is_refused_pointing_at_the_gate_policy(self):
+        # There is no human: step kind: a human Gate is a POLICY on the step
+        # that produces what the human decides about (phase 3 §3).
         step = fx.cog_step("first")
         step["human"] = {"prompt": "approve?"}
         text = one(fx.spec_doc([step]))
         self.assertIn("human:", text)
-        self.assertIn("phase 3", text)
+        self.assertIn("gate: {policy: human}", text)
+        self.assertNotIn("phase", text)
 
-    def test_human_gate_policy_is_refused_with_its_phase(self):
+    def test_human_gate_policy_is_accepted(self):
         step = fx.cog_step("first")
-        step["gate"] = {"policy": "human"}
-        text = one(fx.spec_doc([step]))
-        self.assertIn("gate.policy: human", text)
-        self.assertIn("phase 3", text)
+        step["gate"] = {"policy": "human", "guards": []}
+        op_spec.validate(fx.spec_doc([step]))
 
     def test_state_is_refused_with_its_phase(self):
         text = one(fx.spec_doc(state={"store": "sqlite"}))
@@ -85,7 +86,7 @@ class RefusalTests(unittest.TestCase):
     def test_unknown_gate_policy_is_refused(self):
         step = fx.cog_step("first")
         step["gate"] = {"policy": "first-past-the-post"}
-        self.assertIn("only policy", one(fx.spec_doc([step])))
+        self.assertIn("the Gate policies are", one(fx.spec_doc([step])))
 
     def test_unknown_on_fail_is_refused(self):
         step = fx.cog_step("first", on_fail="carry-on")

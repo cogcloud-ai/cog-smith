@@ -65,15 +65,29 @@ def new_track(spec, run_id, input_request, status="running"):
         "input_request": str(Path(input_request).resolve()),
         "spec_sha256": spec.sha256(),
         "records": (spec.track or {}).get("records") or DEFAULT_RECORDS,
+        # Authority (phase 3 §5): the admission this run was started with,
+        # every grant it issued (scope and provenance, never a credential),
+        # and every time a human resumed it.
+        "authority": None,
+        "grants": [],
+        "resumes": [],
         "steps": [],
     }
 
 
 #: Step statuses a Track carries. `not-reached` is a step the run never got
 #: to because an earlier `on_fail: stop` ended it — recorded so a Track
-#: always lists every step of the spec.
+#: always lists every step of the spec. `denied` is a step whose grant was
+#: refused, so it was never invoked; `awaiting-decision` is a human-gated
+#: step whose proposals are waiting for a person; `running` is a step a
+#: crash interrupted, which a resume runs again.
 STEP_STATUSES = ("passed", "passed-with-problems", "failed", "skipped",
-                 "blocked", "planned", "not-reached")
+                 "blocked", "planned", "not-reached", "denied", "running",
+                 "awaiting-decision")
+
+#: Run statuses. `paused` is a run waiting on a human Gate.
+RUN_STATUSES = ("planned", "running", "paused", "completed",
+                "completed-with-problems", "failed")
 
 
 def step_record(step, status, **fields):
@@ -94,6 +108,13 @@ def step_record(step, status, **fields):
         "elapsed_s": None,
         "attempts": [],
         "elements": None,
+        # Authority (phase 3 §5): the grant this step was issued, the
+        # journal it recorded its external effects in, what it reported
+        # attempting, and — for a human Gate — the decision it carries.
+        "grant": None,
+        "journal": None,
+        "authority_use": None,
+        "decision": None,
     }
     record.update(fields)
     return record
