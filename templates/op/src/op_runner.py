@@ -29,9 +29,20 @@ the ordinary envelope Gate: the proposed changes are written to
 the process exits 3. `--resume RUN_DIR --decision FILE` applies the human's
 answer and carries on; steps that already passed are never re-run.
 
+One run, one process: `runs/<run_id>/run.lock` is taken exclusively at the
+start and on every resume and removed on exit, so two resumes of the same
+paused run cannot both accept the decision and both write. A lock whose
+process is still alive refuses the resume (exit 2); one left by a process
+that died is taken over, and the takeover is recorded in `resumes`.
+
+Durability order, so the Track on disk always says what was attempted before
+anything external could happen: accept the decision → record the decision and
+the resume, save → issue the grant, create the journal, record the step
+`running`, save → invoke.
+
 Exit codes: 0 completed (or completed-with-problems, or a planned dry run),
-1 failed, 2 an invalid spec, request or authority document, 3 paused for a
-human. Stdout is one JSON object.
+1 failed, 2 an invalid spec, request or authority document (and a run another
+process holds), 3 paused for a human. Stdout is one JSON object.
 
 A run validates every step's Cog declaration before it creates anything (so
 a refused declaration leaves no run directory and no half-open Track), and a
@@ -41,8 +52,10 @@ Track always lists every step of the spec.
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -344,6 +357,89 @@ class Denied(Exception):
     never invoked; `on_fail` then applies as it does for a failure."""
 
 
+#: One run, one process (contract §9). Two resumes of the same paused run
+#: would each accept the decision, issue the same grant, read the same empty
+#: journal, and apply the same change twice: atomically replacing the Track
+#: orders the WRITES, not the executions. The lock does.
+LOCK_NAME = "run.lock"
+
+
+def _alive(pid):
+    """True when PID names a live process. A pid we may not signal is
+    somebody else's live process, so it counts as alive."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError as exc:
+        return exc.errno == errno.EPERM
+    return True
+
+
+class RunLock:
+    """An exclusive lock on one run directory, held across the whole
+    execution — taken BEFORE the Track is read, so two processes cannot even
+    reach the same decision.
+
+    A lock whose pid is still alive refuses the run by name (exit 2). A lock
+    left behind by a process that died is taken over, and the takeover is
+    recorded, so a crash never leaves a run permanently unresumable."""
+
+    def __init__(self, run_dir):
+        self.path = Path(run_dir) / LOCK_NAME
+        self.held = False
+        self.took_over = None
+
+    def acquire(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in (1, 2):
+            try:
+                fd = os.open(str(self.path),
+                             os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                holder = self._holder()
+                pid = holder.get("pid")
+                if _alive(pid) and pid != os.getpid():
+                    raise op_spec.OpSpecError(
+                        f"run {self.path.parent.name} is already running as "
+                        f"pid {pid} (since {holder.get('at')}); one run, one "
+                        f"process — wait for it or remove {self.path} if that "
+                        f"process is gone.")
+                if attempt == 2:                       # pragma: no cover
+                    raise op_spec.OpSpecError(
+                        f"could not take over the stale lock {self.path}.")
+                self.took_over = holder
+                self.path.unlink(missing_ok=True)
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"pid": os.getpid(), "at": op_track.utc_now()},
+                          handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self.held = True
+            return self
+        return self                                    # pragma: no cover
+
+    def _holder(self):
+        try:
+            value = json.loads(self.path.read_text())
+            return value if isinstance(value, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def release(self):
+        if self.held:
+            self.path.unlink(missing_ok=True)
+            self.held = False
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc):
+        self.release()
+        return False
+
+
 def sha256_file(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -356,12 +452,21 @@ def canonical_sha256(value):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: A change carries TWO hashes, and they answer different questions
+#: (contract §9). `content_sha256` is the hash of the change OBJECT — what
+#: the human approved, recomputed on an edit, checked by the runner at
+#: issuance. `target_sha256` is the content hash of the TARGET ITEM as the Op
+#: read it — the staleness precondition the write Cog checks against a fresh
+#: fetch, and which an edit never changes. Neither may be null.
+CHANGE_HASHES = ("content_sha256", "target_sha256")
+
+
 def change_content_sha256(change):
     """The content hash of a proposed change: everything about it EXCEPT the
-    hash field itself. An edited change is re-hashed with this, and that is
-    what the write grant carries."""
+    two hash fields. An edited change is re-hashed with this, and that is
+    what the write grant carries as `content_sha256`."""
     return canonical_sha256({k: v for k, v in change.items()
-                             if k != "content_sha256"})
+                             if k not in CHANGE_HASHES})
 
 
 def _document(path, schema, what):
@@ -448,13 +553,13 @@ def admission_problems(spec, authority):
 # ------------------------------------------------------------- the grant --
 
 def grant_document(step, run_id, operations, provenance, ttl_minutes,
-                   cog_version=None, index=None):
+                   cog_version=None, index=0):
     expires = (datetime.now(timezone.utc)
                + timedelta(minutes=float(ttl_minutes)))
     sid = step["id"]
     return {
         "schema": GRANT_SCHEMA,
-        "grant_id": f"{run_id}/{sid}/{0 if index is None else index}",
+        "grant_id": f"{run_id}/{sid}/{index}",
         "run_id": run_id,
         "recipient": {"step": sid,
                       "cog": {"id": (step.get("cog") or {}).get("id"),
@@ -467,7 +572,52 @@ def grant_document(step, run_id, operations, provenance, ttl_minutes,
     }
 
 
-def issue_grant(step, context, authority, spec, run_id, run_dir, decisions):
+def _change_id(value):
+    """The change id of a requested entry, as a STRING, or None. A list- or
+    object-valued id is not an id: it is refused by name rather than raising
+    an unhashable-value error inside a set lookup (review S7)."""
+    cid = value.get("change_id") if isinstance(value, dict) else value
+    return cid if isinstance(cid, str) and cid else None
+
+
+def granted_change(change):
+    """What a grant carries about one approved change: its id, the
+    repository it touches, and BOTH hashes. Every field is required and none
+    may be null — a grant that fails open on a hash authorizes anything."""
+    entry = {"change_id": change.get("change_id"),
+             "repository": change.get("repository")}
+    for field in CHANGE_HASHES:
+        entry[field] = change.get(field)
+    return entry
+
+
+def _next_grant_index(run_dir, sid):
+    """The next issuance number for this step. Every issuance gets its OWN
+    id and file: a reissue after an interruption never overwrites the grant
+    an earlier Track entry points at (review S6)."""
+    directory = Path(run_dir) / "grants" / sid
+    index = 0
+    while (directory / f"{index}.json").exists():
+        index += 1
+    return index
+
+
+def cog_version(step, package_root):
+    """The recipient's version: the spec's when it states one, otherwise the
+    version the Cog's own manifest declares — a grant names the recipient it
+    has, never a null it could have read (review S6)."""
+    declared = (step.get("cog") or {}).get("version")
+    if declared:
+        return declared
+    source = (step.get("cog") or {}).get("source")
+    if not package_root or not isinstance(source, str):
+        return None
+    manifest, _ = op_spec.read_cog_manifest(Path(package_root) / source)
+    return (manifest or {}).get("version")
+
+
+def issue_grant(step, context, authority, spec, run_id, run_dir, decisions,
+                package_root=None):
     """The grant for a step that requires authority, written into the run.
 
     Raises `Denied` with the reason when the run's admission does not cover
@@ -496,32 +646,43 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions):
                 raise Denied(f"the decision record {Path(path).name} changed "
                              f"since the Track recorded it; no write grant "
                              f"can be issued")
-            approved = {c.get("change_id"): c
-                        for c in record["value"].get("approved") or []}
+            approved = {c["change_id"]: c
+                        for c in record["value"].get("approved") or []
+                        if isinstance(c, dict) and _change_id(c)}
             requested = op_spec.evaluate(requirement.get("changes"), context)
+            if requested is not None and not isinstance(requested, list):
+                raise Denied(f"step {sid!r} requires a write of {requested!r}, "
+                             f"which is not a list of changes")
             for change in requested or []:
-                cid = (change.get("change_id") if isinstance(change, dict)
-                       else change)
+                cid = _change_id(change)
+                if cid is None:
+                    raise Denied(f"step {sid!r} requires a write for "
+                                 f"{change!r}, which names no change id")
                 if cid not in approved:
                     raise Denied(f"step {sid!r} requires a write for change "
                                  f"{cid!r}, which the human did not approve")
                 if isinstance(change, dict) and change.get("content_sha256") \
-                        not in (None, approved[cid].get("content_sha256")):
+                        != approved[cid].get("content_sha256"):
                     raise Denied(f"change {cid!r} was approved against other "
                                  f"content than the one requested")
             admitted = admitted_repositories(authority, resource, "write")
             for cid, change in approved.items():
                 repository = change.get("repository")
-                if repository not in admitted:
+                if not isinstance(repository, str) or repository not in admitted:
                     raise Denied(f"change {cid!r} targets repository "
                                  f"{repository!r}, which this run was not "
                                  f"admitted to write")
+                for field in CHANGE_HASHES:
+                    if not isinstance(change.get(field), str) \
+                            or not change[field]:
+                        raise Denied(f"change {cid!r} carries {field} "
+                                     f"{change.get(field)!r}; a granted change "
+                                     f"carries both hashes, and neither may "
+                                     f"be null")
             # EXACTLY the approved list, never the requested one.
             operations.append({
                 "resource": resource, "action": "write",
-                "changes": [{"change_id": c.get("change_id"),
-                             "content_sha256": c.get("content_sha256"),
-                             "repository": c.get("repository")}
+                "changes": [granted_change(c)
                             for c in record["value"].get("approved") or []],
             })
             provenance = {"kind": "gate", "step": target,
@@ -530,7 +691,8 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions):
         else:
             requested = op_spec.evaluate(requirement.get("repositories"),
                                          context) or []
-            if not isinstance(requested, list):
+            if not isinstance(requested, list) or any(
+                    not isinstance(r, str) for r in requested):
                 raise Denied(f"step {sid!r} requires {resource} {action} of "
                              f"{requested!r}, which is not a list of "
                              f"repositories")
@@ -542,10 +704,13 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions):
                              f"cover")
             operations.append({"resource": resource, "action": action,
                                "repositories": list(requested)})
+    index = _next_grant_index(run_dir, sid)
     grant = grant_document(step, run_id, operations, provenance,
-                           spec.ttl_minutes)
-    path = Path(run_dir) / "grants" / f"{step['id']}.json"
-    op_track.write_json(path, grant)
+                           spec.ttl_minutes,
+                           cog_version=cog_version(step, package_root),
+                           index=index)
+    path = Path(run_dir) / "grants" / sid / f"{index}.json"
+    op_track.write_json(path, grant, base=run_dir)
     return grant, path
 
 
@@ -568,14 +733,30 @@ def grant_record(grant, path):
 # -------------------------------------------------------- the human gate --
 
 def pending_changes(payload, sid):
-    """The proposed changes in a human-gated step's payload."""
+    """The proposed changes in a human-gated step's payload.
+
+    Change ids are unique STRINGS. Two proposals sharing an id would collapse
+    into one entry the moment they were indexed, so one approval would
+    silently authorize both: a duplicate refuses the pause (review S2)."""
     changes = payload.get("changes") if isinstance(payload, dict) else None
     if not isinstance(changes, list) or any(
-            not isinstance(c, dict) or not c.get("change_id") for c in changes):
+            not isinstance(c, dict) or not isinstance(c.get("change_id"), str)
+            or not c["change_id"] for c in changes):
         raise op_spec.OpSpecError(
             f"Op step {sid!r} has a human Gate, so its payload must carry a "
-            f"`changes` list of objects with a change_id: that is what the "
-            f"human decides about.")
+            f"`changes` list of objects with a change_id (a string): that is "
+            f"what the human decides about.")
+    seen, duplicates = set(), []
+    for change in changes:
+        cid = change["change_id"]
+        if cid in seen and cid not in duplicates:
+            duplicates.append(cid)
+        seen.add(cid)
+    if duplicates:
+        raise op_spec.OpSpecError(
+            f"Op step {sid!r} proposes change id(s) {duplicates} more than "
+            f"once; a human decides about each change exactly once, so change "
+            f"ids are unique.")
     return changes
 
 
@@ -609,8 +790,10 @@ def write_pending(run_dir, run_id, sid, payload):
     }
     json_path = Path(run_dir) / "pending" / f"{sid}.json"
     md_path = Path(run_dir) / "pending" / f"{sid}.md"
-    op_track.write_json(json_path, doc)
-    md_path.write_text(render_pending(doc))
+    op_track.write_json(json_path, doc, base=run_dir)
+    # The human's copy is written the same way as the JSON: a half-written
+    # decision sheet is a half-read decision (review S9).
+    op_track.write_atomic(md_path, render_pending(doc), base=run_dir)
     del changes
     return doc, json_path, md_path
 
@@ -619,15 +802,63 @@ def load_decision(path):
     return _document(path, DECISION_SCHEMA, "human decision")
 
 
+def normalized_change(change):
+    """A change with its `content_sha256` RECOMPUTED from its own content.
+
+    The hash a proposal arrived with is never trusted forward: what the
+    decision history records, and what a grant carries, is the hash of the
+    object as it stands (review S2)."""
+    change = dict(change)
+    change["content_sha256"] = change_content_sha256(change)
+    return change
+
+
+def edited_change_problems(edit, proposed, where):
+    """Why an edited change is not the SAME KIND of change as the one it
+    replaces. An edit may change content; it may not change what the change
+    IS, the item it targets, or the state it was approved against (review
+    S2, contract §9)."""
+    problems = []
+    unknown = sorted(str(k) for k in set(edit) - set(proposed))
+    if unknown:
+        problems.append(f"{where} adds key(s) {unknown} the proposed change "
+                        f"does not carry; an edit edits the proposal.")
+    for key, value in proposed.items():
+        if key not in edit:
+            problems.append(f"{where} drops {key!r}; an edited change carries "
+                            f"the same fields as the one it replaces.")
+        elif key != "content_sha256" and type(edit[key]) is not type(value):
+            problems.append(f"{where} declares {key} {edit[key]!r}, which is "
+                            f"not the type the proposed change declares.")
+    if "target_sha256" in proposed and \
+            edit.get("target_sha256") != proposed.get("target_sha256"):
+        problems.append(f"{where} changes target_sha256; an edit changes what "
+                        f"is written, never the target state it was approved "
+                        f"against.")
+    if "repository" in proposed and \
+            edit.get("repository") != proposed.get("repository"):
+        problems.append(f"{where} retargets the change to repository "
+                        f"{edit.get('repository')!r}; an edit stays on the "
+                        f"item that was proposed.")
+    return problems
+
+
 def apply_decision(pending, decision):
     """The decision, checked against what was actually proposed, as
-    {approved, rejected, edited}.
+    {approved, rejected, edited, history}.
+
+    The pending PAYLOAD is re-hashed here and the decision is checked against
+    that hash, never against the hash string the pending file carries beside
+    it: otherwise editing the proposals and leaving the old hash in place
+    would pass an old approval off as a decision about the new ones (review
+    B5).
 
     Every proposed change gets exactly one decision; a decision about
     anything else is refused; an edited change is re-hashed from its edited
     content, and THAT hash is what a write grant will carry. A decision can
     only select among the proposed changes: it can never add one."""
     problems = []
+    actual_sha256 = canonical_sha256(pending.get("payload"))
     if decision.get("run_id") != pending["run_id"]:
         problems.append(f"the decision is for run {decision.get('run_id')!r}, "
                         f"not for {pending['run_id']!r}.")
@@ -635,10 +866,15 @@ def apply_decision(pending, decision):
         problems.append(f"the decision is about step "
                         f"{decision.get('step')!r}, not about "
                         f"{pending['step']!r}.")
-    if decision.get("payload_sha256") != pending["payload_sha256"]:
+    if decision.get("payload_sha256") != actual_sha256:
         problems.append("the decision's payload_sha256 does not match the "
                         "pending payload; the human decided about something "
                         "else.")
+    for field in ("decided_by", "decided_at"):
+        if not isinstance(decision.get(field), str) or not decision[field]:
+            problems.append(f"the decision declares {field} "
+                            f"{decision.get(field)!r}; a decision record says "
+                            f"who decided and when.")
     if problems:
         raise op_spec.OpSpecError(problems)
 
@@ -648,7 +884,7 @@ def apply_decision(pending, decision):
     if not isinstance(decisions, list):
         raise op_spec.OpSpecError("the decision document declares no "
                                   "decisions list.")
-    seen, approved, rejected, edited = set(), [], [], []
+    seen, approved, rejected, edited, history = set(), [], [], [], []
     for index, entry in enumerate(decisions):
         where = f"decisions[{index}]"
         if not isinstance(entry, dict):
@@ -656,7 +892,7 @@ def apply_decision(pending, decision):
                             f"a verdict.")
             continue
         cid = entry.get("change_id")
-        if cid not in proposed:
+        if not isinstance(cid, str) or cid not in proposed:
             problems.append(f"{where} decides about change {cid!r}, which "
                             f"step {pending['step']!r} never proposed.")
             continue
@@ -671,10 +907,10 @@ def apply_decision(pending, decision):
                             f"verdicts are {list(VERDICTS)}.")
             continue
         if verdict == "approve":
-            change = dict(proposed[cid])
-            change.setdefault("content_sha256", change_content_sha256(change))
+            change = normalized_change(proposed[cid])
             approved.append(change)
         elif verdict == "reject":
+            change = normalized_change(proposed[cid])
             rejected.append(cid)
         else:
             change = entry.get("change")
@@ -682,17 +918,28 @@ def apply_decision(pending, decision):
                 problems.append(f"{where} is an edit without the edited "
                                 f"change (the same change_id).")
                 continue
-            change = dict(change)
-            change["content_sha256"] = change_content_sha256(change)
+            edit_problems = edited_change_problems(change, proposed[cid],
+                                                   f"{where}'s edited change")
+            if edit_problems:
+                problems.extend(edit_problems)
+                continue
+            change = normalized_change(change)
             approved.append(change)
             edited.append(cid)
+        # The durable decision history: every proposal with its verdict and
+        # the hashes that were current when it was decided.
+        history.append({"change_id": cid, "verdict": verdict,
+                        "content_sha256": change["content_sha256"],
+                        "target_sha256": change.get("target_sha256"),
+                        "reason": entry.get("reason")})
     missing = sorted(set(proposed) - seen)
     if missing:
         problems.append(f"the decision leaves {missing} undecided; every "
                         f"proposed change needs exactly one decision.")
     if problems:
         raise op_spec.OpSpecError(problems)
-    return {"approved": approved, "rejected": rejected, "edited": edited}
+    return {"approved": approved, "rejected": rejected, "edited": edited,
+            "history": history}
 
 
 # ------------------------------------------------------------- the run ---
@@ -819,32 +1066,48 @@ def _run_single(step, cog_dir, run_dir, context, seam=None):
     return fields, envelope
 
 
-def _payload_of(record):
-    """The payload a finished step contributes to later mappings, read back
-    from the envelope(s) the Track points at."""
-    if record["status"] in ("blocked", "denied", "not-reached", "planned"):
-        return None
-    if record.get("elements"):
-        payloads = []
-        for element in record["elements"]:
-            if (element.get("gate") or {}).get("status") == "fail":
-                payloads.append(None)
-                continue
-            envelope = json.loads(Path(element["envelope"]).read_text())
-            payloads.append(envelope.get("payload"))
-        return payloads
+def _element_envelopes(record):
+    """The envelopes of a foreach step, in element order. An EMPTY aggregate
+    is a real result: `elements: []` restores as `[]`, never as an attempt to
+    read the step's envelope DIRECTORY as a file (review S4)."""
+    envelopes = []
+    for element in record["elements"]:
+        if (element.get("gate") or {}).get("status") == "fail":
+            envelopes.append(None)
+            continue
+        envelopes.append(json.loads(Path(element["envelope"]).read_text()))
+    return envelopes
+
+
+def _results_of(record):
+    """(payload, envelope) a finished step contributes to later mappings,
+    read back from the envelope(s) the Track points at. Both are restored:
+    a resumed run exposes `steps.X.envelope` exactly as the first run did."""
+    if record["status"] in ("blocked", "denied", "not-reached", "planned",
+                            "running", "failed"):
+        return None, None
+    if record.get("elements") is not None:
+        envelopes = _element_envelopes(record)
+        payloads = [None if e is None else e.get("payload") for e in envelopes]
+        return payloads, envelopes
     if record["status"] == "skipped" or not record.get("envelope"):
-        return None
+        return None, None
     envelope = json.loads(Path(record["envelope"]).read_text())
-    return envelope.get("payload")
+    return envelope.get("payload"), envelope
+
+
+def _payload_of(record):
+    """The payload a finished step contributes to later mappings."""
+    return _results_of(record)[0]
 
 
 def _restore_context(track, context):
-    """Rebuild the run context from a Track: every finished step's payload,
-    and the human decision a gated step carries."""
+    """Rebuild the run context from a Track: every finished step's payload
+    AND envelope, and the human decision a gated step carries."""
     decisions = {}
     for record in track.get("steps") or []:
-        entry = {"payload": _payload_of(record), "envelope": None}
+        payload, envelope = _results_of(record)
+        entry = {"payload": payload, "envelope": envelope}
         if record.get("decision"):
             entry["decision"] = record["decision"]["value"]
             decisions[record["id"]] = record["decision"]
@@ -906,7 +1169,8 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         if op_spec.requirements(step):
             try:
                 grant, grant_path = issue_grant(step, context, authority, spec,
-                                                run_id, run_dir, decisions)
+                                                run_id, run_dir, decisions,
+                                                package_root=package_root)
             except Denied as exc:
                 denial = str(exc)
         if denial is not None:
@@ -938,10 +1202,22 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
                 grant_record(grant, grant_path))
             journal_path = Path(run_dir) / "journal" / f"{sid}.jsonl"
             journal_path.parent.mkdir(parents=True, exist_ok=True)
+            op_track.contained(journal_path, run_dir)
             journal_path.touch(exist_ok=True)
             seam = {"grant_path": str(Path(grant_path).resolve()),
                     "run_id": run_id,
                     "journal_path": str(journal_path.resolve())}
+
+        # ---- durability: the Track says the step is RUNNING, with the grant
+        # and journal it was given, BEFORE the Cog is launched. Nothing
+        # external can happen that the run directory does not already
+        # describe (contract §9, review B1).
+        position_in_track = len(track["steps"])
+        track["steps"].append(op_track.step_record(
+            step, "running",
+            grant=str(Path(grant_path).resolve()) if grant_path else None,
+            journal=str(journal_path) if journal_path else None))
+        op_track.save(track, run_dir)
 
         cog_dir = (package_root / step["cog"]["source"]).resolve()
         if step.get("foreach") is not None:
@@ -970,9 +1246,14 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             fields["gate"] = {"policy": op_spec.HUMAN_GATE_POLICY,
                               "status": "pending",
                               "asked_at": pending["asked_at"],
+                              # The hash the TRACK remembers: a resume
+                              # re-hashes the pending payload and compares it
+                              # with this, not with the hash the pending file
+                              # carries beside it (review B5).
+                              "payload_sha256": pending["payload_sha256"],
                               "reasons": gate["reasons"],
                               "decided_at": None, "guards": []}
-            track["steps"].append(
+            track["steps"][position_in_track] = (
                 op_track.step_record(step, "awaiting-decision", **fields))
             for later in spec.ordered[position + 1:]:
                 track["steps"].append(op_track.step_record(later, "not-reached"))
@@ -984,7 +1265,8 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             status = "skipped"
         else:
             status = STEP_STATUS[gate["status"]]
-        track["steps"].append(op_track.step_record(step, status, **fields))
+        track["steps"][position_in_track] = op_track.step_record(
+            step, status, **fields)
         op_track.save(track, run_dir)
 
         if status == "failed":
@@ -1052,24 +1334,29 @@ def run(package_root, request_path, dry_run=False, runs_dir=None,
                else package_root / "runs") / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     input_request = run_dir / "input-request.json"
-    op_track.write_json(input_request, request_doc)
+    op_track.write_json(input_request, request_doc, base=run_dir)
 
     track = op_track.new_track(spec, run_id, input_request,
                                status="planned" if dry_run else "running")
     track["authority"] = ({"path": str(Path(authority_path).resolve()),
                            "sha256": sha256_file(authority_path)}
                           if authority_path else None)
+    track["request_dir"] = str(request_path.parent)
     context = {
         "inputs": values,
         "steps": {},
         "run": {"dir": str(run_dir), "id": run_id},
         "request": {"dir": str(request_path.parent)},
     }
-    op_track.save(track, run_dir)
-    if dry_run:
-        return _plan(spec, track, run_dir, context)
-    return _execute(spec, track, context, run_dir, package_root, authority,
-                    run_id)
+    lock = RunLock(run_dir).acquire()
+    try:
+        op_track.save(track, run_dir)
+        if dry_run:
+            return _plan(spec, track, run_dir, context)
+        return _execute(spec, track, context, run_dir, package_root, authority,
+                        run_id)
+    finally:
+        lock.release()
 
 
 def resume(package_root, run_dir, decision_path=None, authority_path=None):
@@ -1084,12 +1371,29 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
     if not track_path.exists():
         raise op_spec.OpSpecError(f"{run_dir} carries no track.json; there is "
                                   f"no run to resume there.")
+    # The lock is taken BEFORE the Track is read: two resumes that both read
+    # `awaiting-decision` would both accept the decision and both write
+    # (review B3).
+    lock = RunLock(run_dir).acquire()
+    try:
+        return _resume(package_root, run_dir, track_path, decision_path,
+                       authority_path, lock)
+    finally:
+        lock.release()
+
+
+def _resume(package_root, run_dir, track_path, decision_path, authority_path,
+            lock):
     track = json.loads(track_path.read_text())
     spec = op_spec.load(package_root / "op.yaml")
     if spec.sha256() != track.get("spec_sha256"):
         raise op_spec.OpSpecError(
             "op.yaml has changed since this run started; a resume continues "
             "the run it was planned as, so it cannot adopt a new spec.")
+    if track.get("status") == "planned":
+        raise op_spec.OpSpecError(
+            "this run is a dry run: it resolved a plan and invoked nothing, "
+            "so there is nothing to resume — start a run with --request.")
 
     recorded = track.get("authority") or None
     if authority_path is None and recorded:
@@ -1101,13 +1405,26 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
             "the admission file has changed since this run started; a resume "
             "runs under the authority the run was admitted with.")
 
+    # A resume is a RUN: the same load-time refusals apply. A Cog's manifest
+    # may have changed while the run was paused, and a run that was never
+    # admitted for what its remaining steps require must not reach them
+    # (review S3).
+    problems = (op_spec.declaration_problems(spec, package_root)
+                + admission_problems(spec, authority))
+    if problems:
+        raise op_spec.OpSpecError(problems)
+
     request_doc = json.loads(Path(track["input_request"]).read_text())
     values = spec.build_inputs(request_doc)
     context = {
         "inputs": values,
         "steps": {},
         "run": {"dir": str(run_dir), "id": track["run_id"]},
-        "request": {"dir": str(Path(track["input_request"]).parent)},
+        # Relative `$path` operands resolved against the ORIGINAL request
+        # directory on the first run, and resolve against it again here
+        # (review S4); older Tracks fall back to where the copy lives.
+        "request": {"dir": track.get("request_dir")
+                    or str(Path(track["input_request"]).parent)},
     }
     decisions = _restore_context(track, context)
 
@@ -1125,13 +1442,21 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
                 f"step {sid!r} is not waiting for a decision in this run.")
         pending = json.loads(
             (run_dir / "pending" / f"{sid}.json").read_text())
+        remembered = (record.get("gate") or {}).get("payload_sha256")
+        if remembered and canonical_sha256(pending.get("payload")) != remembered:
+            raise op_spec.OpSpecError(
+                f"the pending payload for step {sid!r} is not the one this "
+                f"run paused on; the proposals changed on disk since the "
+                f"Track recorded them, so no decision about them can be "
+                f"applied.")
         value = apply_decision(pending, decision)
         decision_copy = run_dir / "decisions" / f"{sid}.json"
-        op_track.write_json(decision_copy, decision)
+        op_track.write_json(decision_copy, decision, base=run_dir)
         digest = sha256_file(decision_copy)
         record["status"] = "passed"
         record["gate"] = {"policy": op_spec.HUMAN_GATE_POLICY, "status": "pass",
                           "asked_at": (record.get("gate") or {}).get("asked_at"),
+                          "payload_sha256": remembered,
                           "decided_at": op_track.utc_now(),
                           "decision": str(decision_copy.resolve()),
                           "decision_sha256": digest,
@@ -1140,14 +1465,22 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
         record["decision"] = {"decision": str(decision_copy.resolve()),
                               "decision_sha256": digest, "value": value}
         decisions[sid] = record["decision"]
-        context["steps"][sid] = {"payload": _payload_of(record),
-                                 "envelope": None, "decision": value}
+        payload, envelope = _results_of(record)
+        context["steps"][sid] = {"payload": payload, "envelope": envelope,
+                                 "decision": value}
 
-    track.setdefault("resumes", []).append(
-        {"at": op_track.utc_now(),
-         "decision": str(decision_copy.resolve()) if decision_copy else None})
+    entry = {"at": op_track.utc_now(),
+             "decision": str(decision_copy.resolve()) if decision_copy else None}
+    if lock is not None and lock.took_over:
+        # A lock left by a process that died: whose, and when, so the Track
+        # says why this resume was allowed to take the run over.
+        entry["took_over_lock"] = lock.took_over
+    track.setdefault("resumes", []).append(entry)
     track["status"] = "running"
     track["ended_at"] = None
+    # Durability order (contract §9): the accepted decision and the resume are
+    # on disk BEFORE any grant is issued or any Cog is invoked.
+    op_track.save(track, run_dir)
     return _execute(spec, track, context, run_dir, package_root, authority,
                     track["run_id"], done=done, decisions=decisions)
 

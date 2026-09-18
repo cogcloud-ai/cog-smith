@@ -97,6 +97,12 @@ REFUSED_PATH_ROOTS = {
     "grants": ("a grant is never readable from a mapping expression: "
                "authority travels beside the request, never inside it"),
 }
+#: The run directory's CONTROL entries: the runner owns them, and no mapping
+#: expression may name one. `$run_dir` makes a place for a Cog's OUTPUT; a
+#: Cog handed `runs/<id>/grants` as an output directory could overwrite the
+#: very documents that authorize it (contract §9, review S1).
+RESERVED_RUN_SUBPATHS = ("grants", "pending", "decisions", "journal",
+                         "run.lock", "track.json")
 
 # A Cog's conventional lifecycle tasks, for steps whose interface declares no
 # audience. Kept here (not imported from cog-smith) because this module is
@@ -172,16 +178,30 @@ def operator_keys(expr):
     return None
 
 
+def reserved_run_subpath(subpath):
+    """The control entry SUBPATH names or lives under, or None."""
+    parts = [p for p in Path(str(subpath or "")).parts if p not in (".", "/")]
+    if parts and parts[0] in RESERVED_RUN_SUBPATHS:
+        return parts[0]
+    return None
+
+
 def run_dir_path(subpath, run_dir):
     """`<run dir>/<subpath>`, created — refusing anything that would land
-    outside the run. `$run_dir` makes a directory INSIDE this run, so an
-    absolute operand, a `..` escape, and a symlink out of the run are all
-    refused BEFORE anything is created."""
+    outside the run, or on one of the runner's own control entries.
+    `$run_dir` makes a directory INSIDE this run, so an absolute operand, a
+    `..` escape, and a symlink out of the run are all refused BEFORE
+    anything is created."""
     if subpath is None:
         subpath = ""
     if not isinstance(subpath, str):
         raise OpSpecError(f"$run_dir takes a relative subpath string, got "
                           f"{subpath!r}.")
+    reserved = reserved_run_subpath(subpath)
+    if reserved:
+        raise OpSpecError(f"$run_dir subpath {subpath!r} names the run's "
+                          f"{reserved!r}, which the runner owns; "
+                          f"{list(RESERVED_RUN_SUBPATHS)} are reserved.")
     candidate = Path(subpath)
     base = Path(run_dir).resolve()
     if candidate.is_absolute():
@@ -283,6 +303,14 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                         f"{where} asks $run_dir for {subpath!r}; $run_dir "
                         f"names a directory inside this run, so the subpath "
                         f"is relative and never leaves the run directory.")
+                    return
+                reserved = reserved_run_subpath(subpath)
+                if reserved:
+                    problems.append(
+                        f"{where} asks $run_dir for {subpath!r}, which names "
+                        f"the run's {reserved!r}; "
+                        f"{list(RESERVED_RUN_SUBPATHS)} are the runner's own "
+                        f"control entries and no step writes into them.")
                     return
             for key in ("$path", "$run_dir", "$stem"):
                 if key in keys:
@@ -387,14 +415,23 @@ def ttl_minutes(doc):
     return DEFAULT_TTL_MINUTES
 
 
+#: What a write requirement's `changes` must read, exactly (contract §9).
+#: Only the APPROVED list can produce a grant, so only the approved list may
+#: be asked for: any other expression is refused at LOAD, by name, rather
+#: than becoming a denial at issuance time.
+APPROVED_PATH = "steps.{step}.decision.approved"
+
+
 def decision_step(requirement):
     """The step whose human decision a write requirement's `changes` reads,
-    or None when the expression is not a `$from` over a decision."""
+    or None when the expression is not `{$from: steps.<id>.decision.approved}`.
+    """
     changes = (requirement or {}).get("changes")
-    if not isinstance(changes, dict) or "$from" not in changes:
+    if not isinstance(changes, dict) or frozenset(changes) != frozenset({"$from"}):
         return None
     segments = str(changes["$from"]).split(".")
-    if len(segments) >= 3 and segments[0] == "steps" and segments[2] == "decision":
+    if (len(segments) == 4 and segments[0] == "steps"
+            and segments[2] == "decision" and segments[3] == "approved"):
         return segments[1]
     return None
 
@@ -421,7 +458,16 @@ def _authority_problems(step, sid, step_ids, human_steps, problems):
                         f"list; a step states what it requires, and the "
                         f"runner issues the grant.")
         return
+    if step.get("on_fail") == "retry-once":
+        # Phase 2 §0: an effectful step recovers by RESUME plus journal
+        # reconciliation, never by re-invoking a Cog that may already have
+        # acted. Refused at load, not discovered after a double write.
+        problems.append(
+            f"Op step {sid!r} declares authority and on_fail: retry-once; a "
+            f"step that reaches outside the run is never re-invoked on a "
+            f"failure — it recovers by resume and journal reconciliation.")
     direct = set(_deps(step))
+    gates = set()
     for index, requirement in enumerate(declared):
         where = f"Op step {sid!r} authority.requires[{index}]"
         if not isinstance(requirement, dict):
@@ -441,11 +487,18 @@ def _authority_problems(step, sid, step_ids, human_steps, problems):
             target = decision_step(requirement)
             if target is None:
                 problems.append(
-                    f"{where} requires a write without reading a human "
-                    f"decision; a write requirement's changes reads "
-                    f"steps.<id>.decision of a step whose gate policy is "
-                    f"human.")
+                    f"{where} requires a write whose changes is not "
+                    f"{{$from: {APPROVED_PATH.format(step='<id>')}}}; only "
+                    f"the approved list of a human-gated step can produce a "
+                    f"write grant, so only it may be asked for.")
                 continue
+            gates.add(target)
+            if len(gates) > 1:
+                problems.append(
+                    f"{where} reads the decision of step {target!r} while "
+                    f"another requirement on this step reads "
+                    f"{sorted(gates - {target})[0]!r}; phase 3 issues one "
+                    f"grant per step, from ONE human gate.")
             if target not in step_ids:
                 problems.append(f"{where} reads the decision of step "
                                 f"{target!r}, which the Op spec does not "
@@ -964,6 +1017,16 @@ def _authority_findings(step, sid, cog, manifest):
     findings = []
     declared = requirements(step)
     reaches = manifest.get("reaches") or []
+    if reaches and step.get("on_fail") == "retry-once":
+        # The same rule as the authority check in `_authority_problems`, from
+        # the other side: the Cog's OWN declaration says it reaches outside
+        # the run, so re-invoking it after a failure could repeat an effect.
+        findings.append(("error", f"Op step {sid!r} names "
+                                  f"{manifest.get('id')!r}, which reaches "
+                                  f"outside the run, and declares on_fail: "
+                                  f"retry-once; a reaching Cog is never "
+                                  f"re-invoked on a failure — it recovers by "
+                                  f"resume and journal reconciliation."))
     if declared and manifest.get("kind") != "code":
         findings.append(("error", f"Op step {sid!r} declares authority on "
                                   f"{manifest.get('id')!r}, which is kind "

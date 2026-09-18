@@ -171,10 +171,15 @@ def authority_doc(read=(REPO,), write=(REPO,)):
     return {"schema": AUTHORITY_SCHEMA, "operations": operations}
 
 
-def change(change_id, repository=REPO, kind="label", summary="add a label"):
+def change(change_id, repository=REPO, kind="label", summary="add a label",
+           target_sha256="1" * 64):
+    """A proposed change, with BOTH hashes (contract §9): `content_sha256`
+    is the change object's own hash (the runner normalizes it at approval)
+    and `target_sha256` is the target item's content hash as the Op read
+    it."""
     return {"change_id": change_id, "kind": kind, "target": f"{repository}#1",
             "repository": repository, "summary": summary,
-            "content_sha256": "0" * 64}
+            "content_sha256": "0" * 64, "target_sha256": target_sha256}
 
 
 def decision_doc(run_id, step, payload_sha256, verdicts):

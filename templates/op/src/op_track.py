@@ -34,14 +34,54 @@ def new_run_id():
             + "-" + uuid.uuid4().hex[:8])
 
 
-def write_json(path, value):
-    """Write one JSON document, atomically: a temporary sibling is written
-    and flushed, then replaces the destination in one step. Rewriting the
-    Track can therefore never destroy the previous readable one — an
-    interrupted write leaves the earlier file exactly as it was."""
+def contained(path, base):
+    """PATH, checked to resolve INSIDE base. The runner's own control files
+    (the Track, grants, pending, decisions, journals) go through this: a
+    symlinked parent, or a destination that is itself a symlink out of the
+    run, is refused rather than followed (contract §9, review S1).
+
+    This is application-level integrity, not host sandboxing: it keeps the
+    runner from writing its own records somewhere else by accident or by a
+    planted link — it does not confine the Cogs it invokes."""
+    path, base = Path(path), Path(base).resolve()
+    if path.is_symlink():
+        raise ValueError(f"{path} is a symlink; the runner writes its own "
+                         f"records, never through a link")
+    resolved = path.parent.resolve()
+    if resolved != base and base not in resolved.parents:
+        raise ValueError(f"{path} resolves outside the run directory {base}; "
+                         f"the runner's records stay inside the run")
+    return path
+
+
+def _fsync_dir(path):
+    """Persist a directory ENTRY. `os.replace` is atomic, but the rename
+    itself is only durable once the containing directory is synced — without
+    this, a power loss can lose a file the process was told it had written."""
+    try:
+        fd = os.open(str(path), getattr(os, "O_DIRECTORY", os.O_RDONLY))
+    except OSError:                                    # pragma: no cover
+        return
+    try:
+        os.fsync(fd)
+    except OSError:                                    # pragma: no cover
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_atomic(path, text, base=None):
+    """Write TEXT to PATH atomically and durably: a temporary sibling is
+    written, flushed and fsynced, then replaces the destination in one step,
+    and the containing directory is fsynced so the rename survives a power
+    loss. An interrupted write leaves the earlier file exactly as it was.
+
+    `base`, when given, is the run directory the destination must resolve
+    inside."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
+    if base is not None:
+        contained(path, base)
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -49,9 +89,17 @@ def write_json(path, value):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
+        _fsync_dir(path.parent)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    return path
+
+
+def write_json(path, value, base=None):
+    """Write one JSON document the same way `write_atomic` writes text."""
+    return write_atomic(path, json.dumps(value, indent=2, ensure_ascii=False)
+                        + "\n", base=base)
 
 
 def new_track(spec, run_id, input_request, status="running"):
@@ -63,6 +111,10 @@ def new_track(spec, run_id, input_request, status="running"):
         "started_at": utc_now(),
         "ended_at": None,
         "input_request": str(Path(input_request).resolve()),
+        # Where the request was READ from: relative `$path` operands resolve
+        # against it, so a resume must resolve them the same way the first
+        # run did (review S4).
+        "request_dir": None,
         "spec_sha256": spec.sha256(),
         "records": (spec.track or {}).get("records") or DEFAULT_RECORDS,
         # Authority (phase 3 §5): the admission this run was started with,
@@ -123,5 +175,5 @@ def step_record(step, status, **fields):
 def save(track, run_dir):
     """Rewrite track.json; returns its absolute path."""
     path = Path(run_dir) / "track.json"
-    write_json(path, track)
+    write_json(path, track, base=run_dir)
     return str(path.resolve())

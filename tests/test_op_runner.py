@@ -161,7 +161,13 @@ class LinearRunTests(RunnerCase):
         answers = {"ask": fx.envelope(payload={"text": "a"}),
                    "summarize": fx.envelope(payload={"text": "b"})}
         self.go(self.doc(), answers=answers, watcher=watcher)
-        self.assertEqual([s["id"] for s in seen[2]["steps"]], ["first"])
+        # The Track on disk already carries the finished first step AND the
+        # step that is being invoked, recorded `running` before the launch
+        # (machinery 0.5.1, review B1).
+        self.assertEqual([s["id"] for s in seen[2]["steps"]],
+                         ["first", "second"])
+        self.assertEqual([s["status"] for s in seen[2]["steps"]],
+                         ["passed", "running"])
         self.assertEqual(seen[2]["status"], "running")
 
     def test_fan_in_reads_both_dependencies(self):

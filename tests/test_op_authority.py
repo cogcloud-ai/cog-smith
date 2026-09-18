@@ -208,8 +208,60 @@ class AuthorityTests(AuthorityCase):
             "$from": "steps.compose.payload.changes"}
         with self.assertRaises(op_spec.OpSpecError) as caught:
             op_spec.validate(doc)
-        self.assertIn("without reading a human decision",
+        self.assertIn("steps.<id>.decision.approved",
                       "\n".join(caught.exception.problems))
+
+    def test_a_write_requirement_reads_exactly_the_approved_list(self):
+        # Contract §9: only the approved list can produce a grant, so only
+        # the approved list may be ASKED for — any other sub-path of the
+        # decision is refused at LOAD, by name, not denied later.
+        for path in ("steps.compose.decision.rejected",
+                     "steps.compose.decision",
+                     "steps.compose.decision.approved.0"):
+            doc = spec_doc()
+            doc["steps"][2]["authority"]["requires"][0]["changes"] = {
+                "$from": path}
+            with self.assertRaises(op_spec.OpSpecError) as caught:
+                op_spec.validate(doc)
+            self.assertIn("steps.<id>.decision.approved",
+                          "\n".join(caught.exception.problems), path)
+
+    def test_retry_once_is_refused_on_a_step_that_carries_authority(self):
+        doc = spec_doc()
+        doc["steps"][0]["on_fail"] = "retry-once"
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.validate(doc)
+        text = "\n".join(caught.exception.problems)
+        self.assertIn("retry-once", text)
+        self.assertIn("resume and journal reconciliation", text)
+
+    def test_retry_once_is_refused_on_a_step_whose_cog_reaches(self):
+        # The same rule from the Cog's side: no `authority:` on the step at
+        # all, but the Cog's manifest declares `reaches`.
+        doc = spec_doc()
+        doc["steps"][1]["on_fail"] = "retry-once"
+        fx.write_cog(self.root, "compose",
+                     reaches=[{"resource": "github", "actions": ["read"]}])
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(doc=doc)
+        self.assertIn("never re-invoked on a failure",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_run_dir_expression_cannot_reach_a_control_directory(self):
+        for subpath in ("grants", "pending/compose.json", "decisions",
+                        "journal", "track.json", "run.lock"):
+            doc = spec_doc()
+            doc["steps"][1]["input"] = {"out": {"$run_dir": subpath}}
+            with self.assertRaises(op_spec.OpSpecError) as caught:
+                op_spec.validate(doc)
+            self.assertIn("control entries",
+                          "\n".join(caught.exception.problems), subpath)
+
+    def test_run_dir_refuses_a_control_directory_at_evaluation_too(self):
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.run_dir_path("grants", str(self.root))
+        self.assertIn("reserved", "\n".join(caught.exception.problems))
+        self.assertFalse((self.root / "grants").exists())
 
     def test_grants_is_not_a_mapping_root(self):
         doc = spec_doc()
@@ -274,22 +326,79 @@ class WriteGrantTests(AuthorityCase):
         self.assertEqual(grant["issued_by"]["decision_sha256"],
                          op_runner.sha256_file(grant["issued_by"]["decision"]))
 
-    def test_a_step_requiring_an_unapproved_change_is_denied(self):
-        # The step asks to write the changes the human REJECTED. The
-        # requirement reads the decision, as every write requirement must —
-        # and asking for anything outside the approved list is a denial,
-        # never a trim.
+    def test_the_grant_lists_only_the_approved_changes(self):
+        # §7's "a step requiring B is denied" is two tests after contract §9.
+        # This is the runner's half: whatever the step's own input says, the
+        # GRANT is exactly the approved list. (The Cog's half — a change id
+        # or a target hash that is not in the grant is denied — is
+        # tests/test_code_cog.py.)
         doc = spec_doc()
-        doc["steps"][2]["authority"]["requires"][0]["changes"] = {
-            "$from": "steps.compose.decision.rejected"}
+        doc["steps"][2]["input"] = {
+            "changes": {"$from": "steps.compose.payload.changes"}}  # asks for both
         code, output, _ = self.start(doc=doc, answers=envelopes(("c-a", "c-b")))
         decision = self.decide(output, {"c-a": "approve", "c-b": "reject"})
         code, out, track = self.resume(output, decision)
+        self.assertEqual(code, 0, out)
+        grant = json.loads(
+            Path(self.step(track, "write-github")["grant"]).read_text())
+        self.assertEqual(
+            [c["change_id"] for c in grant["operations"][0]["changes"]],
+            ["c-a"])
+        # the request the Cog got asked for both; only one is authorized
+        self.assertEqual(
+            [c["change_id"] for c in self.fake.calls[-1]["request"]["changes"]],
+            ["c-a", "c-b"])
+
+    def test_a_granted_change_carries_both_hashes(self):
+        code, output, track = self.approve_and_continue({"c-a": "approve"},
+                                                        changes=("c-a",))
+        self.assertEqual(code, 0, output)
+        grant = json.loads(
+            Path(self.step(track, "write-github")["grant"]).read_text())
+        granted = grant["operations"][0]["changes"][0]
+        self.assertEqual(granted["target_sha256"], "1" * 64)
+        self.assertEqual(granted["content_sha256"],
+                         op_runner.change_content_sha256(fx.change("c-a")))
+        self.assertEqual(granted["repository"], REPO)
+
+    def test_a_change_without_a_target_hash_is_refused_at_issuance(self):
+        naked = fx.change("c-a")
+        del naked["target_sha256"]
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [naked]}),
+                           fx.envelope(payload={})]}
+        code, output, _ = self.start(answers=answers)
+        decision = self.decide(output, {"c-a": "approve"})
+        code, out, track = self.resume(output, decision)
         record = self.step(track, "write-github")
         self.assertEqual(record["status"], "denied")
-        self.assertIn("c-b", record["gate"]["reasons"][0])
-        self.assertIn("did not approve", record["gate"]["reasons"][0])
-        self.assertEqual(code, 1)
+        self.assertIn("carries both hashes", record["gate"]["reasons"][0])
+
+    def test_each_issuance_gets_its_own_grant_id_and_file(self):
+        code, output, track = self.approve_and_continue({"c-a": "approve"},
+                                                        changes=("c-a",))
+        first = Path(self.step(track, "write-github")["grant"])
+        self.assertEqual(first.name, "0.json")
+        # plant an interruption: the write step is re-run by a second resume
+        record = self.step(track, "write-github")
+        record["status"] = "running"
+        Path(output["track"]).write_text(json.dumps(track))
+        code, out2, track2 = self.resume(output)
+        second = Path(self.step(track2, "write-github")["grant"])
+        self.assertNotEqual(second, first)
+        self.assertTrue(first.exists())            # never overwritten
+        self.assertEqual(json.loads(first.read_text())["grant_id"],
+                         f"{track['run_id']}/write-github/0")
+        self.assertEqual(json.loads(second.read_text())["grant_id"],
+                         f"{track['run_id']}/write-github/1")
+
+    def test_the_grant_names_the_recipient_version_from_the_manifest(self):
+        doc = spec_doc()
+        del doc["steps"][0]["cog"]["version"]
+        code, output, track = self.start(doc=doc)
+        grant = json.loads(
+            Path(self.step(track, "read-github")["grant"]).read_text())
+        self.assertEqual(grant["recipient"]["cog"]["version"], "0.1.0")
 
     def test_an_edited_change_is_re_hashed_and_that_hash_is_granted(self):
         edited = dict(fx.change("c-a"), summary="a better summary")
@@ -492,6 +601,138 @@ class HumanGateTests(AuthorityCase):
         self.assertEqual(self.fake.calls[-1]["task"], "ask")
 
 
+class PendingAndDecisionTests(AuthorityCase):
+    """What the human decided about, and that it is still what was proposed
+    when the decision is applied (review B5, S2)."""
+
+    def test_tampering_with_the_pending_payload_refuses_the_decision(self):
+        code, output, _ = self.start()
+        decision = self.decide(output, {"c-a": "approve"})
+        # rewrite the proposal, keeping the hash the pending file carries:
+        # the old approval must not be accepted against the new proposal.
+        path = Path(output["pending"])
+        pending = json.loads(path.read_text())
+        pending["payload"]["changes"][0]["repository"] = OTHER_REPO
+        path.write_text(json.dumps(pending))
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.resume(output, decision)
+        self.assertIn("not the one this run paused on",
+                      "\n".join(caught.exception.problems))
+
+    def test_the_decisions_hash_is_checked_against_the_payload_itself(self):
+        # Even with no Track to compare against, `apply_decision` re-hashes
+        # the payload rather than trusting the hash beside it.
+        pending = {"run_id": "r", "step": "compose",
+                   "payload": {"changes": [fx.change("c-a")]},
+                   "payload_sha256": "0" * 64}
+        decision = fx.decision_doc("r", "compose", "0" * 64,
+                                   {"c-a": "approve"})
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.apply_decision(pending, decision)
+        self.assertIn("decided about something else",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_duplicate_change_id_refuses_the_pause(self):
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [
+                               fx.change("c-a"),
+                               fx.change("c-a", summary="something else")]}),
+                           fx.envelope(payload={})]}
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(answers=answers)
+        self.assertIn("more than once", "\n".join(caught.exception.problems))
+
+    def test_a_decision_without_who_and_when_is_refused(self):
+        for field in ("decided_by", "decided_at"):
+            code, output, _ = self.start()
+            decision = self.decide(output, {"c-a": "approve"}, **{field: None})
+            with self.assertRaises(op_spec.OpSpecError) as caught:
+                self.resume(output, decision)
+            self.assertIn(field, "\n".join(caught.exception.problems))
+
+    def test_an_edit_may_not_retarget_or_restate_the_target_hash(self):
+        for key, value in (("repository", OTHER_REPO),
+                           ("target_sha256", "9" * 64)):
+            code, output, _ = self.start()
+            edited = dict(fx.change("c-a"), **{key: value})
+            decision = self.decide(output, {"c-a": edited})
+            with self.assertRaises(op_spec.OpSpecError) as caught:
+                self.resume(output, decision)
+            self.assertIn(key, "\n".join(caught.exception.problems))
+
+    def test_an_edit_may_not_add_or_drop_fields(self):
+        code, output, _ = self.start()
+        edited = dict(fx.change("c-a"), extra="smuggled")
+        decision = self.decide(output, {"c-a": edited})
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.resume(output, decision)
+        self.assertIn("'extra'", "\n".join(caught.exception.problems))
+
+    def test_the_decision_history_carries_normalized_hashes(self):
+        code, output, _ = self.start(answers=envelopes(("c-a", "c-b")))
+        decision = self.decide(output, {"c-a": "approve", "c-b": "reject"})
+        code, out, track = self.resume(output, decision)
+        history = {h["change_id"]: h for h in
+                   self.step(track, "compose")["decision"]["value"]["history"]}
+        self.assertEqual({k: v["verdict"] for k, v in history.items()},
+                         {"c-a": "approve", "c-b": "reject"})
+        for entry in history.values():
+            # never the "0"*64 the proposal arrived with
+            self.assertEqual(entry["content_sha256"],
+                             op_runner.change_content_sha256(
+                                 fx.change(entry["change_id"])))
+            self.assertEqual(entry["target_sha256"], "1" * 64)
+
+
+class ResumeValidationTests(AuthorityCase):
+    """A resume is a run: the same load-time refusals apply (review S3, S4)."""
+
+    def test_resuming_a_dry_run_is_refused_by_name(self):
+        fx.write_package(self.package, spec_doc())
+        request = fx.write_request(self.root / "request.json",
+                                   {"repositories": [REPO]})
+        code, output = op_runner.run(self.package, request, dry_run=True)
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.resume(self.package, output["run_dir"])
+        self.assertIn("nothing to resume",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_cog_manifest_changed_while_paused_refuses_the_resume(self):
+        code, output, _ = self.start()
+        decision = self.decide(output, {"c-a": "approve"})
+        # the write Cog stops declaring that it reaches github
+        fx.write_cog(self.root, "write-github")
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.resume(output, decision)
+        self.assertIn("does not declare in its reaches",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_resume_resolves_relative_paths_as_the_first_run_did(self):
+        doc = spec_doc()
+        doc["steps"][2]["input"] = {"here": {"$path": "beside-the-request.txt"},
+                                    "changes": {"$from":
+                                                "steps.compose.decision.approved"}}
+        (self.root / "beside-the-request.txt").write_text("x")
+        code, output, _ = self.start(doc=doc)
+        decision = self.decide(output, {"c-a": "approve"})
+        code, out, track = self.resume(output, decision)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.fake.calls[-1]["request"]["here"],
+                         str((self.root / "beside-the-request.txt").resolve()))
+
+    def test_a_resume_restores_an_earlier_steps_envelope(self):
+        doc = spec_doc()
+        doc["steps"][2]["input"] = {
+            "ok": {"$from": "steps.read-github.envelope.ok"},
+            "changes": {"$from": "steps.compose.decision.approved"}}
+        doc["steps"][2]["depends_on"] = ["compose", "read-github"]
+        code, output, _ = self.start(doc=doc)
+        decision = self.decide(output, {"c-a": "approve"})
+        code, out, track = self.resume(output, decision)
+        self.assertEqual(code, 0, out)
+        self.assertIs(self.fake.calls[-1]["request"]["ok"], True)
+
+
 class CliTests(AuthorityCase):
     """The process boundary: exit 3 with the paused stdout shape, and the
     same pause/resume through the runner's own CLI."""
@@ -625,6 +866,47 @@ class DocumentTests(unittest.TestCase):
         text = json.dumps(grant).lower()
         for secret in ("token", "password", "secret", "api_key"):
             self.assertNotIn(secret, text)
+
+
+class ControlFileTests(unittest.TestCase):
+    """The runner's own records: contained, atomic, durable (S1, S9)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.run_dir = Path(self.tmp.name) / "run"
+        self.run_dir.mkdir()
+
+    def test_a_control_file_is_never_written_through_a_symlinked_parent(self):
+        outside = Path(self.tmp.name) / "elsewhere"
+        outside.mkdir()
+        (self.run_dir / "grants").symlink_to(outside)
+        with self.assertRaises(ValueError) as caught:
+            op_track.write_json(self.run_dir / "grants" / "x.json", {},
+                                base=self.run_dir)
+        self.assertIn("outside the run directory", str(caught.exception))
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_a_control_file_is_never_written_through_a_symlinked_file(self):
+        target = Path(self.tmp.name) / "victim.json"
+        target.write_text("{}")
+        (self.run_dir / "track.json").symlink_to(target)
+        with self.assertRaises(ValueError) as caught:
+            op_track.save({"schema": "x"}, self.run_dir)
+        self.assertIn("symlink", str(caught.exception))
+        self.assertEqual(target.read_text(), "{}")
+
+    def test_an_atomic_write_leaves_no_temporary_file_behind(self):
+        path = op_track.write_atomic(self.run_dir / "pending" / "s.md",
+                                     "# decide\n", base=self.run_dir)
+        self.assertEqual(path.read_text(), "# decide\n")
+        self.assertEqual([p.name for p in path.parent.iterdir()], ["s.md"])
+
+    def test_an_empty_foreach_aggregate_restores_as_an_empty_list(self):
+        record = op_track.step_record({"id": "each", "cog": {}}, "passed",
+                                      elements=[],
+                                      envelope=str(self.run_dir / "envelopes"))
+        self.assertEqual(op_runner._results_of(record), ([], []))
 
 
 class TtlTests(AuthorityCase):
