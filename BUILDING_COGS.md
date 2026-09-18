@@ -1,8 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.1 /
-code-cog machinery 0.1.1  
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.2 /
+code-cog machinery 0.1.2  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
 not universal CogSpec requirements.
@@ -598,9 +598,10 @@ that this Cog is its recipient (`grant-invalid`, `grant-expired`,
 
 ```python
 ok, detail = cog_core.read_allowed(grant, "openteams-ai/apollo-desktop")
-ok, detail = cog_core.write_allowed(grant, change_id,
-                                    target_sha256,             # fetched NOW
-                                    content_sha256=...)        # optional
+ok, detail = cog_core.write_allowed(
+    grant, change_id,
+    fetch_target_sha256(change),                      # fetched NOW
+    content_sha256=cog_core.change_content_sha256(change))   # computed
 ```
 
 Call one before EVERY external call — they re-check expiry and run binding
@@ -610,11 +611,21 @@ expired — and report what you attempted in the payload's `authority_use` list
 your Cog — decides what it means.
 
 A granted change carries TWO hashes, and neither may be null:
-`content_sha256` is what the human approved (pass your bundle's copy as
-`content_sha256=` and a swapped-out change is denied), and `target_sha256` is
-the target's content as the Op read it. `write_allowed` REQUIRES the target
-hash you just fetched fresh from the target: staleness is that fetch
-disagreeing, and nothing here fails open on a missing hash.
+`content_sha256` is what the human approved, and `target_sha256` is the
+target's content as the Op read it. `write_allowed` REQUIRES the target hash
+you just fetched fresh from the target: staleness is that fetch disagreeing,
+and nothing here fails open on a missing hash.
+
+COMPUTE the content hash — `cog_core.change_content_sha256(change)`, canonical
+JSON over everything except the two hash fields, the same way the runner
+computes it — from the change you are ABOUT TO APPLY. Never forward the
+`content_sha256` your bundle states beside the change: forwarding it only
+checks that the bundle agrees with itself, so content edited under an
+approved id would pass.
+
+A grant is read strictly: `repositories` is a LIST of strings (a bare string
+is refused by name, never membership-tested into authorizing a substring of
+itself), and a malformed `changes` authorizes nothing.
 
 **The honesty rule.** This process runs as its owner, with the owner's
 ambient credentials. A grant is not a sandbox: it is a document your code
@@ -644,8 +655,11 @@ makes a resume safe.
 
 The journal repairs itself in one direction only: an unterminated LAST line
 is a torn write, so `read()` ignores it and `append()` cuts it and records
-`{"phase": "torn"}` before writing, which keeps the next entry readable. A
-malformed COMPLETE line is corruption: the invocation is refused with
+`{"phase": "torn"}` before writing, which keeps the next entry readable. The
+tail is cut as BYTES at the last newline before anything is decoded, so a
+crash halfway through a multibyte character is an ordinary torn tail and not
+a decoding failure over the whole file. A malformed COMPLETE line — bad JSON,
+or bytes that are not UTF-8 — is corruption: the invocation is refused with
 `journal-corrupt` rather than silently skipping a line that might record an
 effect.
 

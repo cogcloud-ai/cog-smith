@@ -69,6 +69,32 @@ Contract: `planning/current/phase3-contract.md` §1. The honesty rule is part
 of the machinery's doc comments and stays there: the grant is checked by the
 Cog's OWN code; the local host is not an enforced restricted environment.
 
+### Code-cog 0.1.2 (2026-09-17) — the Codex verification fixes (review 2)
+
+One bullet per finding of
+`planning/current/phase3-codex-review-2-cog-smith-verification.md` that lives
+in this lineage, resolved as contract §9b decides. Each behavioural fix has a
+regression test that failed before it (`tests/test_code_cog.py`).
+
+- **B4 / New 2 — the Cog hashes the change it is about to apply.** New
+  helpers `canonical_sha256` and `change_content_sha256(change)` (the same
+  canonical JSON, excluding both hash fields, that the runner uses). The
+  starter's write sketch computes `content_sha256` from the change object
+  and no longer forwards the digest the bundle states beside it — forwarding
+  it only checked that the bundle agreed with itself, so content edited
+  under an approved id passed.
+- **B6 / New 4 — journal recovery always returns a structured error.**
+  `Journal.read()` cuts the torn tail as BYTES at the last newline before
+  anything is decoded, then decodes each complete line strictly: a crash
+  halfway through a multibyte character used to raise `UnicodeDecodeError`
+  over the whole file — losing every record before it and producing no
+  envelope at all — and now repairs exactly as an ASCII fragment does. A
+  complete line that is not UTF-8 is `journal-corrupt` by name.
+- **S7 / New 4 — nested grant fields are type-checked.** `repositories` must
+  be a LIST of strings: a number denies with a reason instead of raising
+  `TypeError`, and a bare string denies instead of authorizing every
+  substring of it. A `changes` that is not a list authorizes nothing.
+
 ### Code-cog 0.1.1 (2026-09-17) — the Codex review-1 fixes
 
 One bullet per finding of `planning/current/phase3-codex-review-1-cog-smith.md`
@@ -125,6 +151,59 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.5.2 — the Codex verification fixes (review 2)
+
+One bullet per finding of
+`planning/current/phase3-codex-review-2-cog-smith-verification.md` that lives
+in this lineage — the Partial verdicts and the seven New findings — resolved
+as contract §9b decides. Each behavioural fix has a regression test that
+failed before it (`tests/test_op_authority.py`, `tests/test_op_process.py`).
+
+- **B3 / New 1 — the run lock is an OS advisory lock, not a pid file.**
+  `run.lock` is opened once and locked with `fcntl.flock(LOCK_EX |
+  LOCK_NB)`; the descriptor is held for the process lifetime and passed to
+  every Cog subprocess (`pass_fds`), so a runner killed mid-invocation keeps
+  the run locked until its Cog is gone too. A failed `flock` refuses the run
+  or resume by name (exit 2). No pid parsing, no takeover, no unlink on
+  release — the file's JSON is informational only, so an EMPTY lock file, a
+  lock file that is not JSON, and one naming a pid `os.kill` could never
+  take are all just locked-or-not. This replaces §9's `O_EXCL` + dead-pid
+  rule, and with it the `took_over_lock` entry in `resumes`.
+- **B4 / New 2 — issuance validates the hashes it carries.** At issuance the
+  runner RECOMPUTES each approved change's `content_sha256` from the change
+  object and denies a mismatch; both hashes must be hex-64. A proposal that
+  arrives with a null or missing `content_sha256` refuses the PAUSE by name
+  — the runner never repairs one into a valid-looking approved change.
+- **S1 / New 3 — containment is by resolved path, and no link at all.**
+  `$run_dir` operands are normalised (`.`/`..` collapsed) before the
+  reserved-name check, so a dynamic `outputs/../grants` names `grants`;
+  `$run_dir` also refuses a symlinked component. `op_track.contained`
+  realpaths the destination and refuses ANY symlinked component at or below
+  the run directory — an alias inside the run (`outputs` -> `grants`) used
+  to resolve inside and pass — and refuses a path that reaches the run only
+  by following a link.
+- **S2 — decision metadata says something.** `decided_by` may not be
+  whitespace, and `decided_at` must parse as a timestamp.
+- **S7 / New 4 — the lock is never parsed for meaning.** `os.kill` is gone,
+  so a lock file carrying an enormous integer pid raises no `OverflowError`;
+  a lock file that is not JSON is read as nothing.
+- **S8 / New 7 — one process test keeps production `invoke_cog`.** Only the
+  EXECUTABLE boundary is substituted (a fake `pixi` on PATH that runs the
+  created Cog's declared task), so command construction, `--grant`,
+  `--run-id`, `--journal` and the `--request` -> `--bundle` fallback are
+  exercised end to end; plus a genuinely overlapping resume — the first
+  resume held inside the write Cog while a second arrives and is refused.
+- **S9 / New 5 — directory entries are durable too.** Every directory the
+  runner creates for control files is created one level at a time and
+  fsynced in its PARENT (`op_track.ensure_dir`), and a journal is created
+  with `touch_durable`, which fsyncs its directory entry. Containment is now
+  checked BEFORE anything is created, so a refused destination leaves no
+  directories behind.
+- **New 6 — a human-gated step keeps `passed-with-problems`.** The envelope
+  Gate's verdict is recorded at pause time (`gate.envelope_status`) and is
+  what the step's status becomes when the decision is applied: approving the
+  proposals does not erase the problems the Cog reported making them.
 
 ### 0.5.1 — the Codex review-1 fixes
 

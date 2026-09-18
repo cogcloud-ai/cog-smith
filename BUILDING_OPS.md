@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.1
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.2
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: durable state is refused by name, with the
@@ -332,12 +332,17 @@ list — asking for more than was approved is a **denial, not a trim**. A
 denied step is recorded `denied`, is never invoked, and its `on_fail` applies
 as for a failure.
 
-Each granted change carries TWO hashes, and neither may be null: 
-`content_sha256` is the hash of the change object the human approved
-(recomputed on an edit, checked by the runner at issuance), and
-`target_sha256` is the content hash of the target item as the Op READ it —
+Each granted change carries TWO hashes, both 64 hex characters and neither
+null: `content_sha256` is the hash of the change object the human approved —
+canonical JSON over everything except the two hash fields — and
+`target_sha256` is the content hash of the target item as the Op READ it,
 the staleness precondition the write Cog checks against a fresh fetch before
-applying. A change missing either is denied at issuance.
+applying. At issuance the runner RECOMPUTES `content_sha256` from the change
+object it is about to authorize and denies a mismatch; a change missing
+either hash, carrying a null one, or carrying something that is not a
+sha256, is denied there too. A write Cog computes the content hash from the
+change it is about to apply — never forwards the digest its bundle states —
+so content cannot be swapped under an approved id.
 
 `authority.ttl_minutes` at the top level of `op.yaml` (default 60) is how
 long an issued grant stays valid. A grant carries no credentials, cannot be
@@ -365,9 +370,18 @@ the Track status becomes `paused`, the step is `awaiting-decision`, and the
 process **exits 3** printing
 `{ok: false, status: "paused", run_dir, pending}`.
 
+A proposed change must state its own `content_sha256`: a proposal with a
+null or missing one refuses the PAUSE by name, because that hash is what the
+approval is about and the runner never invents one. A human-gated step also
+keeps the verdict its ENVELOPE Gate reached: a step that passed with
+problems is recorded `passed-with-problems` once the decision is applied —
+approving the proposals does not erase the problems the Cog reported making
+them.
+
 A decision (`openteams/op-decision [0.1]`) gives every proposed change
 exactly one verdict — `approve`, `reject`, or `edit` with the edited change —
-and says who decided and when (`decided_by`, `decided_at`, both required).
+and says who decided and when (`decided_by`, non-blank, and `decided_at`, a
+timestamp — both required).
 Its `payload_sha256` must match the hash of the pending PAYLOAD, recomputed
 when the decision is applied, or the run refuses it: the human decided about
 something else. An edited change is re-hashed from its edited content, and
@@ -393,11 +407,15 @@ re-run**; a step a crash left `running` runs again (a Cog with a journal
 reconciles first). Resuming with no decision while one is pending exits 3
 again, and every resume is appended to the Track's `resumes`.
 
-**One run, one process.** `runs/<run_id>/run.lock` is taken exclusively at
-the start of a run and of every resume — before the Track is read — and
-removed on exit. A resume of a run another live process holds is refused by
-name (exit 2); a lock left by a process that died is taken over, and the
-takeover is recorded in `resumes`.
+**One run, one process.** `runs/<run_id>/run.lock` is locked with `flock` at
+the start of a run and of every resume — before the Track is read. The lock
+is the open DESCRIPTOR, not the file's content: it is held for the process
+lifetime and inherited by every Cog the runner launches, so a runner killed
+while a Cog is still writing keeps the run locked until that Cog is gone too.
+A run another process holds is refused by name (exit 2). The kernel releases
+the lock when the last holder exits, so there is no pid to parse, nothing to
+take over, and no stale lock to remove — the file stays where it is, and its
+JSON (pid, time) is informational only.
 
 **Durability order.** Nothing external happens that the run directory does
 not already describe: accept the decision → record the decision and the
@@ -407,7 +425,12 @@ resume, save → issue the grant, create the journal, record the step
 The run's own control entries — `grants/`, `pending/`, `decisions/`,
 `journal/`, `run.lock` and `track.json` — are RESERVED: `$run_dir` refuses
 them (and anything under them) at load, so no step can be handed the
-directory that holds its own authority as an output path.
+directory that holds its own authority as an output path. The subpath is
+NORMALISED before that check, so `outputs/../grants` is refused however it
+is spelled, and no component of it may be a symlink: an alias inside the run
+is how a step would otherwise be handed the control entries under another
+name. The runner's own writes hold to the same rule — every control file
+must resolve inside the run directory, reached through no link at all.
 
 ## 7. Refused by name
 
