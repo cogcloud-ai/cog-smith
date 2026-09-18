@@ -584,7 +584,7 @@ def changes_bundle(*change_ids, body="original"):
     return {"changes": [bundle_change(c, body) for c in change_ids]}
 
 
-def run_write_back(dest, tmp, bundle, env_extra=None):
+def run_write_back(dest, tmp, bundle, env_extra=None, journal=None):
     (Path(tmp) / "bundle.json").write_text(json.dumps(bundle))
     env = dict(os.environ)
     env["FAKE_GITHUB_COUNTER"] = str(Path(tmp) / "calls.json")
@@ -594,7 +594,7 @@ def run_write_back(dest, tmp, bundle, env_extra=None):
          "--bundle", str(Path(tmp) / "bundle.json"),
          "--grant", str(Path(tmp) / "grant.json"),
          "--run-id", "run-1",
-         "--journal", str(Path(tmp) / "journal.jsonl")],
+         "--journal", str(journal or Path(tmp) / "journal.jsonl")],
         cwd=str(dest), capture_output=True, text=True, env=env)
     try:
         envelope = json.loads(completed.stdout)
@@ -819,6 +819,54 @@ class TestJournalAndWriteBack(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertEqual(env["error"]["code"], "journal-corrupt")
             self.assertIn("not valid UTF-8", env["error"]["detail"])
+            self.assertEqual(self.calls(tmp), [])
+
+    def test_an_unreadable_journal_is_a_structured_envelope(self):
+        # Review 3, finding 5, reproduced: a journal this process cannot
+        # READ raised PermissionError out of the preflight — a traceback
+        # where an ok:false envelope belongs. `journal-corrupt` is about
+        # CONTENT; this is `journal-unreadable`.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            journal = Path(tmp) / "journal.jsonl"
+            journal.write_text('{"change_id": "c-1", "phase": "applied"}\n')
+            journal.chmod(0o000)
+            try:
+                if os.access(journal, os.R_OK):      # pragma: no cover
+                    self.skipTest("this process reads a mode-000 file (root?)")
+                completed, env = run_write_back(dest, tmp,
+                                                changes_bundle("c-1"))
+            finally:
+                journal.chmod(0o600)
+            self.assertEqual(completed.returncode, 1)
+            self.assertNotIn("Traceback", completed.stderr)
+            self.assertFalse(env["ok"])
+            self.assertEqual(env["error"]["code"], "journal-unreadable")
+            self.assertIn("PermissionError", env["error"]["detail"])
+            self.assertEqual(env["problems"][0]["check"],
+                             "journal-unreadable")
+            self.assertEqual(self.calls(tmp), [])    # nothing was attempted
+
+    def test_a_journal_that_cannot_be_created_is_a_structured_envelope(self):
+        # The other half of finding 5: creating the journal's directory is
+        # the first thing that can fail with an OSError.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            closed = Path(tmp) / "closed"
+            closed.mkdir(mode=0o500)
+            try:
+                if os.access(closed, os.W_OK):       # pragma: no cover
+                    self.skipTest("this process writes a mode-500 directory")
+                completed, env = run_write_back(
+                    dest, tmp, changes_bundle("c-1"),
+                    journal=closed / "sub" / "journal.jsonl")
+            finally:
+                closed.chmod(0o700)
+            self.assertEqual(completed.returncode, 1)
+            self.assertNotIn("Traceback", completed.stderr)
+            self.assertEqual(env["error"]["code"], "journal-unreadable")
             self.assertEqual(self.calls(tmp), [])
 
     def test_a_corrupt_complete_line_refuses_the_invocation(self):

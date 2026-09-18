@@ -39,7 +39,7 @@ except ImportError:                                    # pragma: no cover
 
 #: The code-cog machinery lineage (cog-smith MACHINERY.md). Reported in
 #: every envelope's `binding`, so a saved result names the code that made it.
-MACHINERY_VERSION = "0.1.2"
+MACHINERY_VERSION = "0.1.3"
 
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
 
@@ -608,11 +608,23 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
 
     # The journal is read BEFORE any work: a journal this Cog cannot read in
     # full cannot prove what was already done outside the run.
+    #
+    # Two different failures, two names. `journal-corrupt` is a journal whose
+    # CONTENT cannot be trusted; `journal-unreadable` is one this process
+    # cannot read or create at all — a permission, a directory where a file
+    # belongs, a vanished mount. Both are structured ok:false envelopes:
+    # neither is a traceback (contract §9c, review 3 finding 5).
     if journal is not None:
         try:
             journal.read()
         except JournalCorrupt as exc:
             return _fail(task, "journal-corrupt", str(exc))
+        except OSError as exc:
+            return _fail(task, "journal-unreadable",
+                         f"{journal.path} cannot be read "
+                         f"({type(exc).__name__}: {exc}); a Cog that cannot "
+                         f"read its journal cannot know what it already did "
+                         f"outside the run, and does nothing")
 
     try:
         result = task_logic.run(bundle, grant, journal)

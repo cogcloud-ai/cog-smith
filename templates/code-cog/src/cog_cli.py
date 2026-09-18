@@ -54,7 +54,22 @@ def main(argv=None):
             print(json.dumps(cog_core._fail(
                 cog_core.DEFAULT_TASK, "grant-invalid", str(exc)), indent=2))
             return 1
-    journal = cog_core.Journal(args.journal) if args.journal else None
+    journal = None
+    if args.journal:
+        # Creating the journal is the first thing that can fail with an
+        # OSError, and it fails with a NAME: a Cog that cannot open the
+        # record of its external effects prints a structured envelope, not a
+        # traceback (contract §9c).
+        try:
+            journal = cog_core.Journal(args.journal)
+        except OSError as exc:
+            print(json.dumps(cog_core._fail(
+                cog_core.DEFAULT_TASK, "journal-unreadable",
+                f"{args.journal} cannot be created "
+                f"({type(exc).__name__}: {exc}); a Cog that cannot open its "
+                f"journal cannot record what it does outside the run, and "
+                f"does nothing"), indent=2))
+            return 1
 
     result = cog_core.invoke(bundle, grant=grant, journal=journal,
                              run_id=args.run_id)
