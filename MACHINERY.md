@@ -69,6 +69,22 @@ Contract: `planning/current/phase3-contract.md` §1. The honesty rule is part
 of the machinery's doc comments and stays there: the grant is checked by the
 Cog's OWN code; the local host is not an enforced restricted environment.
 
+### Code-cog 0.1.3 (2026-09-17) — the Codex confirmation fixes (review 3)
+
+One bullet per finding of
+`planning/current/phase3-codex-review-3-cog-smith-confirmation.md` that lives
+in this lineage, resolved as contract §9c decides. Each fix has a regression
+test that failed before it (`tests/test_code_cog.py`).
+
+- **New 5 — journal I/O failure is a structured envelope.** An `OSError`
+  reading the journal (`PermissionError`, `IsADirectoryError`, a vanished
+  mount) used to escape `invoke`'s preflight, which caught only
+  `JournalCorrupt`, and printed a traceback where an envelope belongs. Any
+  `OSError` reading the journal is now `journal-unreadable`, an `ok: false`
+  envelope; so is an `OSError` CREATING it, caught in `cog_cli` where the
+  `Journal` is built. `journal-corrupt` keeps its meaning: content that
+  cannot be trusted, as against a journal that cannot be reached at all.
+
 ### Code-cog 0.1.2 (2026-09-17) — the Codex verification fixes (review 2)
 
 One bullet per finding of
@@ -151,6 +167,49 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.5.3 — the Codex confirmation fixes (review 3)
+
+One bullet per finding of
+`planning/current/phase3-codex-review-3-cog-smith-confirmation.md` that lives
+in this lineage, resolved as contract §9c decides. Each fix has a regression
+test that failed before it (`tests/test_op_authority.py`,
+`tests/test_op_process.py`).
+
+- **New 1 — hashes are never repaired.** At the PAUSE, every proposed
+  change's `content_sha256` must equal the canonical hash of the object it
+  arrived on and its `target_sha256` must be 64 hex characters, else the
+  pause is refused by name: a proposal carrying
+  `"content_sha256": "placeholder"` used to pass the pause and be laundered
+  into a valid digest by `normalized_change` at approval, and then pass
+  issuance. Approval and rejection now PRESERVE the supplied digest; only an
+  EDIT is re-hashed. Every digest check is `fullmatch`, so 64 hex characters
+  followed by a newline — which `re.match` with `$` accepted — is not a
+  content hash.
+- **New 2 — the run directory's own entry is fsynced.** `runs/<run_id>` is
+  created through `op_track.ensure_dir` rather than `mkdir(parents=True)`,
+  so its entry is persisted in `runs/` the way every control directory
+  beneath it already was. Syncing the Track, the grants and the journal
+  inside a directory whose own entry never reached the disk is not
+  durability.
+- **New 3 — the lock file is a control file.** `run.lock` is contained in
+  the run directory (no link out, no alias inside) and opened `O_NOFOLLOW`,
+  so a `run.lock` symlinked to `track.json` is refused by name instead of
+  being followed and truncated — which destroyed the Track before the
+  resume read it. The lock metadata is written only AFTER the lock is held,
+  and a failure while writing it releases the descriptor before re-raising,
+  so an embedding process that catches the exception is not left holding a
+  lock it does not know about.
+- **New 4 — lock retention is demonstrated, not assumed.** The process
+  test's fake `pixi` inherits descriptors the way a real launcher does
+  (`close_fds=False`); the test kills the runner AND the launcher while the
+  Cog is still inside its write, and what is left holding the run is the Cog
+  with the descriptor it inherited: a second resume is refused by name while
+  it lives, and the run is lockable once it exits. A companion test runs a
+  created Cog through the REAL `pixi` on PATH with a locked descriptor
+  passed in and records in the test output whether it arrived (a skip with a
+  message when pixi is absent). Measured 2026-09-17 with pixi 0.69.0: it
+  arrived.
 
 ### 0.5.2 — the Codex verification fixes (review 2)
 

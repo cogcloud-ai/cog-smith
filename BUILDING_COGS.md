@@ -1,8 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.2 /
-code-cog machinery 0.1.2  
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.3 /
+code-cog machinery 0.1.3  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
 not universal CogSpec requirements.
@@ -661,7 +661,10 @@ crash halfway through a multibyte character is an ordinary torn tail and not
 a decoding failure over the whole file. A malformed COMPLETE line — bad JSON,
 or bytes that are not UTF-8 — is corruption: the invocation is refused with
 `journal-corrupt` rather than silently skipping a line that might record an
-effect.
+effect. A journal this Cog cannot READ or CREATE at all — a permission, a
+directory where a file belongs — is the other failure and has its own name:
+`journal-unreadable`, an `ok: false` envelope like every other refusal, never
+a traceback.
 
 ## 8. Validate before running a model
 

@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.2
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.3
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: durable state is refused by name, with the
@@ -370,9 +370,14 @@ the Track status becomes `paused`, the step is `awaiting-decision`, and the
 process **exits 3** printing
 `{ok: false, status: "paused", run_dir, pending}`.
 
-A proposed change must state its own `content_sha256`: a proposal with a
-null or missing one refuses the PAUSE by name, because that hash is what the
-approval is about and the runner never invents one. A human-gated step also
+A proposed change must state its own `content_sha256`, and state it
+correctly: at the pause the runner recomputes the hash of the change object
+and refuses BY NAME when the stated digest is null, missing, not 64 hex
+characters, or simply not this change's — and refuses the same way when
+`target_sha256` is not 64 hex characters. **Hashes are never repaired.** The
+approval then carries the digest the proposal stated; only an EDIT is
+re-hashed, from the edited content. (A digest is matched with `fullmatch`:
+64 hex characters with a newline glued on is not a content hash.) A human-gated step also
 keeps the verdict its ENVELOPE Gate reached: a step that passed with
 problems is recorded `passed-with-problems` once the decision is applied —
 approving the proposals does not erase the problems the Cog reported making
@@ -415,12 +420,21 @@ while a Cog is still writing keeps the run locked until that Cog is gone too.
 A run another process holds is refused by name (exit 2). The kernel releases
 the lock when the last holder exits, so there is no pid to parse, nothing to
 take over, and no stale lock to remove — the file stays where it is, and its
-JSON (pid, time) is informational only.
+JSON (pid, time) is informational only, written only AFTER the lock is held.
+`run.lock` is a control file like the Track: contained in the run directory
+and opened `O_NOFOLLOW`, so a `run.lock` that is a link to `track.json` is
+refused rather than followed and truncated. The lock is COOPERATIVE: it
+holds because trusted code takes it and keeps its descriptor, not because
+the host enforces it.
 
 **Durability order.** Nothing external happens that the run directory does
 not already describe: accept the decision → record the decision and the
 resume, save → issue the grant, create the journal, record the step
 `running`, save → invoke. A Track on disk always says what was attempted.
+Every directory the runner creates — `runs/<run_id>` itself first of all —
+is created one level at a time with each new entry fsynced in its parent, so
+a durable Track never sits in a directory whose own entry a power loss could
+lose.
 
 The run's own control entries — `grants/`, `pending/`, `decisions/`,
 `journal/`, `run.lock` and `track.json` — are RESERVED: `$run_dir` refuses
