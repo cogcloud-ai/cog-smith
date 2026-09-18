@@ -154,7 +154,8 @@ class GuideTests(unittest.TestCase):
             else:                      # a step fragment, not a whole spec
                 steps = block if isinstance(block, list) else [block]
                 doc = fx.spec_doc(steps, inputs=[{"name": "github_items"},
-                                                 {"name": "priority_rubric"}])
+                                                 {"name": "priority_rubric"},
+                                                 {"name": "repo_config"}])
                 self.assertEqual(problems(doc), [])
 
 

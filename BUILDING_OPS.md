@@ -298,6 +298,12 @@ A step declares what it requires; it never grants itself anything:
       - {resource: github, action: read,
          repositories: {$from: inputs.repo_config.repositories}}
 
+- id: compose-proposals
+  depends_on: [read-github]
+  cog: {id: openteams/cog-compose-proposals,
+        source: ../cog-compose-proposals, task: run}
+  gate: {policy: human}
+
 - id: write-github
   depends_on: [compose-proposals]
   cog: {id: openteams/cog-write-github, source: ../cog-write-github, task: run}
