@@ -1,8 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.3 /
-code-cog machinery 0.1.3  
+**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.4 /
+code-cog machinery 0.1.4  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
 not universal CogSpec requirements.
@@ -570,7 +570,11 @@ def run(bundle, grant, journal) -> tuple[dict, list[dict]]:
 
 The machinery validates the bundle against the declared input schema, calls
 `run`, validates the payload against the output schema, runs your contract
-checks (`check_input` / `check_output`), and emits envelope v1. The
+checks (`check_input` / `check_output`), and emits envelope v1. Your
+`check_output` runs inside the SAME exception boundary as `run`, so a
+checker that trips over a payload it did not expect is an `ok: false`
+envelope with the code `output-check-failed`, never a traceback (code-cog
+machinery 0.1.4). The
 `binding` a code Cog reports is `{kind: code, cog, task_logic_sha256,
 machinery}` — which CODE produced the result; there is no `model` key at all.
 

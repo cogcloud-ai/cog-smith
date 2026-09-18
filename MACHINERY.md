@@ -69,6 +69,22 @@ Contract: `planning/current/phase3-contract.md` §1. The honesty rule is part
 of the machinery's doc comments and stays there: the grant is checked by the
 Cog's OWN code; the local host is not an enforced restricted environment.
 
+### Code-cog 0.1.4 (2026-09-18) — the package checker joins the boundary (review 4)
+
+Contract §9d, from `planning/current/phase3-codex-review-4-code-cogs-and-op.md`.
+Regression test: `tests/test_code_cog.py::test_a_crashing_output_checker_is_a_named_envelope`.
+
+- **S6 — the package's output checker runs inside the same exception
+  boundary as `run`.** `validate_output` (the declared output schema, then
+  the package's `check_output`) used to run AFTER the `try` that wraps
+  `task_logic.run`, so a checker that tripped over a payload it did not
+  expect — review 4 found `cog-record-run` constructing a set from a list
+  `change_id` — raised a traceback out of the CLI, after the task had
+  already had its external effects. It is now an `ok: false` envelope with
+  its own code, `output-check-failed`: "the task is broken" and "the task's
+  self-check is broken" are different repairs, so they are different names.
+  A `JournalCorrupt` raised from a checker keeps its own name.
+
 ### Code-cog 0.1.3 (2026-09-17) — the Codex confirmation fixes (review 3)
 
 One bullet per finding of
@@ -167,6 +183,25 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.5.4 — the decision says who, when, and what was edited (review 4)
+
+Contract §9d, from `planning/current/phase3-codex-review-4-code-cogs-and-op.md`.
+Regression tests: `tests/test_op_authority.py::
+test_the_exposed_decision_carries_decided_by_and_decided_at` and
+`::test_the_exposed_approved_list_carries_the_edited_change_object`.
+
+- **S3 — `steps.<id>.decision` gains `decided_by` and `decided_at`.** The
+  value exposed to downstream mappings and recorded in the Track carried
+  `approved`, `rejected`, `edited` and `history` — enough to write back, not
+  enough to RECORD a decision. A step that writes the run record had no way
+  to say who decided or when without reading the decision file behind the
+  runner's back. Both fields are stripped of surrounding whitespace and are
+  already refused when they name nobody (0.5.2).
+- **S3 — `approved` carries the edited objects, confirmed.** An `edit`
+  verdict already appended the normalized EDITED change (never the original
+  proposal) to `approved`; review 4 read the record-run join, not the
+  runner. The test above pins it so the guarantee cannot quietly regress.
 
 ### 0.5.3 — the Codex confirmation fixes (review 3)
 

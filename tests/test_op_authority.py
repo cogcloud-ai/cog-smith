@@ -896,6 +896,38 @@ class PendingAndDecisionTests(AuthorityCase):
                                  fx.change(entry["change_id"])))
             self.assertEqual(entry["target_sha256"], "1" * 64)
 
+    def test_the_exposed_decision_carries_decided_by_and_decided_at(self):
+        # Review 4, S3: the run record could not say WHO decided or WHEN,
+        # because the exposed decision value carried neither (contract §9d,
+        # Op machinery 0.5.4).
+        code, output, _ = self.start(answers=envelopes(("c-a",)))
+        decision_path = self.decide(output, {"c-a": "approve"},
+                                    decided_by="trent",
+                                    decided_at="2026-09-18T10:00:00+00:00")
+        code, out, track = self.resume(output, decision_path)
+        self.assertEqual(code, 0, out)
+        value = self.step(track, "compose")["decision"]["value"]
+        self.assertEqual(value["decided_by"], "trent")
+        self.assertEqual(value["decided_at"], "2026-09-18T10:00:00+00:00")
+
+    def test_the_exposed_approved_list_carries_the_edited_change_object(self):
+        # Review 4, S3: an edited change must reach a downstream step as the
+        # EDITED object, not as the original proposal.
+        code, output, _ = self.start(answers=envelopes(("c-a",)))
+        edited = dict(fx.change("c-a"), summary="a better summary")
+        edited["content_sha256"] = op_runner.change_content_sha256(edited)
+        decision_path = self.decide(output, {"c-a": edited})
+        code, out, track = self.resume(output, decision_path)
+        self.assertEqual(code, 0, out)
+        value = self.step(track, "compose")["decision"]["value"]
+        self.assertEqual(value["edited"], ["c-a"])
+        approved = {c["change_id"]: c for c in value["approved"]}
+        self.assertEqual(approved["c-a"]["summary"], "a better summary")
+        # and the downstream step was handed that object, not the original
+        request = self.fake.calls[-1]["request"]
+        self.assertEqual([c["summary"] for c in request["changes"]],
+                         ["a better summary"])
+
 
 class ResumeValidationTests(AuthorityCase):
     """A resume is a run: the same load-time refusals apply (review S3, S4)."""

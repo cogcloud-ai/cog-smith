@@ -246,6 +246,36 @@ class TestTheSeam(unittest.TestCase):
                 hashlib.sha256((dest / "src" / "task_logic.py")
                                .read_bytes()).hexdigest())
 
+    def test_a_crashing_output_checker_is_a_named_envelope(self):
+        # Review 4, S6, reproduced: the package's `check_output` ran OUTSIDE
+        # the machinery's task exception boundary, so a checker that tripped
+        # over a payload it did not expect raised a traceback out of the CLI
+        # after the task had already run. It is a named ok:false envelope
+        # now (contract §9d, code-cog machinery 0.1.4).
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = create_code_cog(tmp)
+            path = dest / 'src' / 'task_logic.py'
+            path.write_text(path.read_text() + CRASHING_CHECKER)
+            code, env, out = run_cog(dest, '--bundle',
+                                     'examples/sample-bundle.json')
+            self.assertEqual(code, 1, out)
+            self.assertNotIn('Traceback', out)
+            self.assertFalse(env['ok'])
+            self.assertEqual(env['error']['code'],
+                             'output-check-failed')
+            self.assertIn('TypeError', env['error']['detail'])
+            self.assertEqual(env['problems'][0]['check'],
+                             'output-check-failed')
+
+
+#: A package checker that trips over its own payload: what review 4's S6
+#: found in cog-record-run, reduced to one line.
+CRASHING_CHECKER = """
+
+
+def check_output(payload, bundle):    # noqa: F811 (replaces the template's)
+    raise TypeError("unhashable type: 'list'")
+"""
 
 PROBE = """
 import json, sys

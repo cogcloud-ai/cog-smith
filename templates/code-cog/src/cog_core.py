@@ -39,7 +39,7 @@ except ImportError:                                    # pragma: no cover
 
 #: The code-cog machinery lineage (cog-smith MACHINERY.md). Reported in
 #: every envelope's `binding`, so a saved result names the code that made it.
-MACHINERY_VERSION = "0.1.3"
+MACHINERY_VERSION = "0.1.4"
 
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
 
@@ -636,6 +636,17 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
         return _fail(task, "task-failed",
                      "task_logic.run must return (payload, problems)")
     payload, task_problems = result
-    problems = list(task_problems or []) + validate_output(payload, bundle)
+    # The package's output checker runs inside the SAME exception boundary as
+    # `run` (contract §9d): a checker that trips over a payload it did not
+    # expect is a named ok:false envelope, never a traceback out of the CLI.
+    # It gets its own code because "the task is broken" and "the task's
+    # self-check is broken" are different repairs.
+    try:
+        problems = list(task_problems or []) + validate_output(payload, bundle)
+    except JournalCorrupt as exc:
+        return _fail(task, "journal-corrupt", str(exc))
+    except Exception as exc:                    # the package's own checker
+        return _fail(task, "output-check-failed",
+                     f"{type(exc).__name__}: {exc}")
     return _envelope(task, True, payload=payload, problems=problems,
                      latency=round(time.monotonic() - started, 3))

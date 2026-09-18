@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.3
+**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.4
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: durable state is refused by name, with the
@@ -394,8 +394,12 @@ THAT hash is what the write grant carries; an edit may change what is
 written, never which item it targets or the `target_sha256` it was approved
 against. A decision can only select among the proposed changes; it can never
 add one. The applied decision is exposed as
-`{approved, rejected, edited, history}` — `history` being one entry per
-proposal with its verdict and both hashes.
+`{approved, rejected, edited, history, decided_by, decided_at}` — `approved`
+carrying the EFFECTIVE change objects (an edited change appears as the
+edited one), `history` one entry per proposal with its verdict and both
+hashes, and `decided_by`/`decided_at` the decision's own metadata, so a step
+that records the run can say who decided and when without reading the
+decision file itself (Op machinery 0.5.4).
 
 ```bash
 pixi run op -- --request examples/request.json --authority admission.json

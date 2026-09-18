@@ -1076,8 +1076,14 @@ def apply_decision(pending, decision):
                         f"proposed change needs exactly one decision.")
     if problems:
         raise op_spec.OpSpecError(problems)
+    # `decided_by`/`decided_at` travel with the decision so a downstream step
+    # can record WHO decided and WHEN without reading the decision file
+    # (contract §9d); `approved` carries the effective objects, which for an
+    # edited change is the EDITED one.
     return {"approved": approved, "rejected": rejected, "edited": edited,
-            "history": history}
+            "history": history,
+            "decided_by": decision["decided_by"].strip(),
+            "decided_at": decision["decided_at"].strip()}
 
 
 # ------------------------------------------------------------- the run ---
