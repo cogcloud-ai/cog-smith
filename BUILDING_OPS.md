@@ -430,6 +430,23 @@ asked for it. A step whose GRANT was denied is recorded `denied`; if that
 stopped the run it is the resume point too, and a denial that still stands
 simply stops the run again.
 
+**The runner does not reconcile; the Cog does.** A resume re-invokes a
+failed effectful step WITHOUT any runner-side check that the step's outside
+effects are where it left them — and that is the design, not an omission
+(contract §9f). The runner cannot know what "already applied" means for an
+arbitrary resource; only the Cog knows, and the Cog's own append-only
+journal is the record it reconciles against. So the honesty rule holds here
+as everywhere: a Cog that reaches outside the run is TRUSTED code, and a Cog
+that writes must be able to answer "did this already happen?" from its
+journal plus a read of the target, before it writes anything. The contract
+the runner keeps is narrower and worth stating: it supplies the journal
+path, it re-runs the failed step and nothing that passed, and it issues a
+fresh grant for that step. Everything about exactly-once lives in the Cog —
+which is why `cog-write-github` journals its intent between authorization
+and request, reconciles by reading the target, never re-sends a request
+whose answer it never got, and holds an item while any change on it is
+unsettled. Build a writer the same way, or do not build one.
+
 **One run, one process.** `runs/<run_id>/run.lock` is locked with `flock` at
 the start of a run and of every resume — before the Track is read. The lock
 is the open DESCRIPTOR, not the file's content: it is held for the process
