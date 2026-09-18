@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.0
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.1
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: durable state is refused by name, with the
@@ -221,6 +221,13 @@ when the Cog reported `ok: false` (a transport or model failure); an
 error-severity problem in an `ok` envelope is a judgement, not a glitch, and
 is never retried. Both envelopes stay in the Track.
 
+**`retry-once` is refused at load on an EFFECTFUL step** — one that carries
+`authority:`, or whose Cog declares a non-empty `reaches`. A Cog that may
+already have written outside the run is never re-invoked on a failure: it
+recovers by `--resume` plus journal reconciliation, which is the only path
+that can tell "it did not happen" from "it happened and I did not hear
+back".
+
 ### Inputs, defaults, and null
 
 An input is supplied when the request carries its KEY: an explicit `null` is a
@@ -314,7 +321,9 @@ A step declares what it requires; it never grants itself anything:
 ```
 
 The runner issues the grant immediately before the invocation and writes it
-to `runs/<run_id>/grants/<step>.json`, then invokes the Cog with `--grant`,
+to `runs/<run_id>/grants/<step>/<n>.json` — every issuance gets its own
+number, id and file, so a grant a Track entry points at is never overwritten
+by a reissue after an interruption — then invokes the Cog with `--grant`,
 `--run-id` and `--journal` **beside** the request. A read is issued only if
 its repositories are a subset of the admitted ones; a write only if every
 requested change was approved by the named human decision, whose record must
@@ -322,6 +331,13 @@ still hash to what the Track recorded. The grant carries EXACTLY the approved
 list — asking for more than was approved is a **denial, not a trim**. A
 denied step is recorded `denied`, is never invoked, and its `on_fail` applies
 as for a failure.
+
+Each granted change carries TWO hashes, and neither may be null: 
+`content_sha256` is the hash of the change object the human approved
+(recomputed on an edit, checked by the runner at issuance), and
+`target_sha256` is the content hash of the target item as the Op READ it —
+the staleness precondition the write Cog checks against a fresh fetch before
+applying. A change missing either is denied at issuance.
 
 `authority.ttl_minutes` at the top level of `op.yaml` (default 60) is how
 long an issued grant stays valid. A grant carries no credentials, cannot be
@@ -350,11 +366,17 @@ process **exits 3** printing
 `{ok: false, status: "paused", run_dir, pending}`.
 
 A decision (`openteams/op-decision [0.1]`) gives every proposed change
-exactly one verdict — `approve`, `reject`, or `edit` with the edited change.
-Its `payload_sha256` must match the pending file's, or the run refuses it:
-the human decided about something else. An edited change is re-hashed from
-its edited content, and THAT hash is what the write grant carries. A decision
-can only select among the proposed changes; it can never add one.
+exactly one verdict — `approve`, `reject`, or `edit` with the edited change —
+and says who decided and when (`decided_by`, `decided_at`, both required).
+Its `payload_sha256` must match the hash of the pending PAYLOAD, recomputed
+when the decision is applied, or the run refuses it: the human decided about
+something else. An edited change is re-hashed from its edited content, and
+THAT hash is what the write grant carries; an edit may change what is
+written, never which item it targets or the `target_sha256` it was approved
+against. A decision can only select among the proposed changes; it can never
+add one. The applied decision is exposed as
+`{approved, rejected, edited, history}` — `history` being one entry per
+proposal with its verdict and both hashes.
 
 ```bash
 pixi run op -- --request examples/request.json --authority admission.json
@@ -363,12 +385,29 @@ pixi run op -- --resume runs/<id> --decision decision.json
 ```
 
 Resume reloads the Track and the spec (op.yaml must still hash the same),
-applies the decision, exposes `steps.<id>.decision` =
-`{approved, rejected, edited}` to later mappings, and continues from the next
-step. Steps already passed are **never re-run**; a step a crash left
-`running` runs again (a Cog with a journal reconciles first). Resuming with
-no decision while one is pending exits 3 again, and every resume is appended
-to the Track's `resumes`.
+re-runs the load-time declaration and admission checks (a Cog manifest that
+changed while the run was paused is caught; a dry-run Track has nothing to
+resume), applies the decision, exposes `steps.<id>.decision` to later
+mappings, and continues from the next step. Steps already passed are **never
+re-run**; a step a crash left `running` runs again (a Cog with a journal
+reconciles first). Resuming with no decision while one is pending exits 3
+again, and every resume is appended to the Track's `resumes`.
+
+**One run, one process.** `runs/<run_id>/run.lock` is taken exclusively at
+the start of a run and of every resume — before the Track is read — and
+removed on exit. A resume of a run another live process holds is refused by
+name (exit 2); a lock left by a process that died is taken over, and the
+takeover is recorded in `resumes`.
+
+**Durability order.** Nothing external happens that the run directory does
+not already describe: accept the decision → record the decision and the
+resume, save → issue the grant, create the journal, record the step
+`running`, save → invoke. A Track on disk always says what was attempted.
+
+The run's own control entries — `grants/`, `pending/`, `decisions/`,
+`journal/`, `run.lock` and `track.json` — are RESERVED: `$run_dir` refuses
+them (and anything under them) at load, so no step can be handed the
+directory that holds its own authority as an output path.
 
 ## 7. Refused by name
 
@@ -381,6 +420,10 @@ construct and the phase that adds it — never discovered mid-run:
 | `human:` step | never — a human Gate is a policy on a step, `gate: {policy: human}` |
 | `state:` | phase 4 |
 | `authority` on a `foreach` step | phase 3 issues no per-element grants |
+| `on_fail: retry-once` on a step with `authority` or a reaching Cog | a reaching Cog recovers by resume and journal reconciliation |
+| a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
+| two write requirements reading different human gates | one gate per writing step |
+| `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `run.lock` or `track.json` | the runner's control entries are reserved |
 | `authority` on a step whose Cog is not `kind: code` | phase 3 supports authority on code Cogs only |
 | a requirement outside the Cog's declared `reaches` | the Cog does not declare it |
 | a step that names a reaching Cog and requires nothing | a reaching Cog runs only under a grant |
@@ -395,8 +438,9 @@ construct and the phase that adds it — never discovered mid-run:
 | reading a step you do not depend on | add it to depends_on |
 
 Exit codes: `0` completed (or completed-with-problems, or a planned dry run),
-`1` failed, `2` an invalid spec, request, admission or decision, `3` paused
-for a human. Stdout is one JSON object.
+`1` failed, `2` an invalid spec, request, admission or decision — and a
+resume of a run another process holds — `3` paused for a human. Stdout is one
+JSON object.
 
 ## 8. Changing an Op
 

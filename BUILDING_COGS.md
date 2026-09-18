@@ -1,8 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.0 /
-code-cog machinery 0.1.0  
+**Last verified:** 2026-09-17 against cog-smith Op machinery 0.5.1 /
+code-cog machinery 0.1.1  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
 not universal CogSpec requirements.
@@ -591,18 +591,30 @@ A Cog whose `reaches` is non-empty refuses to run without a grant
 
     pixi run run -- --bundle req.json --grant g.json --run-id RUN --journal j.jsonl
 
-`cog_core` checks the grant for you — expiry, the run it is bound to, and
-that this Cog is its recipient (`grant-expired`, `grant-wrong-run`,
-`grant-wrong-recipient`) — and gives you the per-call checks:
+`cog_core` checks the grant for you — its shape and run binding, expiry, and
+that this Cog is its recipient (`grant-invalid`, `grant-expired`,
+`grant-wrong-run`, `grant-wrong-recipient`; an invocation with a grant and no
+`--run-id` is `grant-invalid`) — and gives you the per-call checks:
 
 ```python
 ok, detail = cog_core.read_allowed(grant, "openteams-ai/apollo-desktop")
-ok, detail = cog_core.write_allowed(grant, change_id, content_sha256)
+ok, detail = cog_core.write_allowed(grant, change_id,
+                                    target_sha256,             # fetched NOW
+                                    content_sha256=...)        # optional
 ```
 
-Call one before EVERY external call, and report what you attempted in the
-payload's `authority_use` list (`cog_core.use(...)`). A denial is a
-`problems` entry, and the Gate — not your Cog — decides what it means.
+Call one before EVERY external call — they re-check expiry and run binding
+each time, so a long invocation cannot keep acting on a grant that has since
+expired — and report what you attempted in the payload's `authority_use` list
+(`cog_core.use(...)`). A denial is a `problems` entry, and the Gate — not
+your Cog — decides what it means.
+
+A granted change carries TWO hashes, and neither may be null:
+`content_sha256` is what the human approved (pass your bundle's copy as
+`content_sha256=` and a swapped-out change is denied), and `target_sha256` is
+the target's content as the Op read it. `write_allowed` REQUIRES the target
+hash you just fetched fresh from the target: staleness is that fetch
+disagreeing, and nothing here fails open on a missing hash.
 
 **The honesty rule.** This process runs as its owner, with the owner's
 ambient credentials. A grant is not a sandbox: it is a document your code
@@ -625,9 +637,17 @@ journal.append({"change_id": cid, "phase": "applied", "evidence": {...}})
 ```
 
 A change left `applying` by a crash is UNCERTAIN: reconcile it against the
-target (does the label/comment already exist?) and record `applied` with
-`reconciled: true`, rather than applying it again. That is what makes a
-resume safe.
+TARGET (does the label/comment already exist?) and record `applied` with
+`reconciled: true`, rather than applying it again. Asking the target is the
+point — the journal says an attempt started, not that it landed. That is what
+makes a resume safe.
+
+The journal repairs itself in one direction only: an unterminated LAST line
+is a torn write, so `read()` ignores it and `append()` cuts it and records
+`{"phase": "torn"}` before writing, which keeps the next entry readable. A
+malformed COMPLETE line is corruption: the invocation is refused with
+`journal-corrupt` rather than silently skipping a line that might record an
+effect.
 
 ## 8. Validate before running a model
 

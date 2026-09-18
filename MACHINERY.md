@@ -69,6 +69,44 @@ Contract: `planning/current/phase3-contract.md` §1. The honesty rule is part
 of the machinery's doc comments and stays there: the grant is checked by the
 Cog's OWN code; the local host is not an enforced restricted environment.
 
+### Code-cog 0.1.1 (2026-09-17) — the Codex review-1 fixes
+
+One bullet per finding of `planning/current/phase3-codex-review-1-cog-smith.md`
+that lives in this lineage, resolved as contract §9 decides. Each behavioural
+fix has a regression test that failed before it (`tests/test_code_cog.py`).
+
+- **B4 — the grant checks are per call and never fail open.** `check_grant`
+  requires the grant's top-level `run_id` and `valid.run_id` to be non-empty
+  strings that AGREE (a grant that matched on one and not the other used to
+  pass), refuses an invocation carrying no `--run-id` (`grant-invalid`), and
+  reads a malformed `recipient` without raising. `read_allowed` and
+  `write_allowed` re-check schema, expiry, run binding and recipient on EVERY
+  call — a long invocation can no longer keep authorizing operations after
+  its grant expired — using the run id `invoke` recorded, so author code is
+  unchanged. `write_allowed` takes the target's freshly fetched hash as a
+  REQUIRED argument and refuses a granted change whose `content_sha256` or
+  `target_sha256` is missing or null.
+- **B6 — a torn journal tail can no longer swallow the next outcome.**
+  `Journal.read()` ignores an unterminated LAST line only (a crash
+  mid-write), and `append()` REPAIRS it first: the fragment is cut and a
+  `{"phase": "torn", "discarded": ...}` entry records that it was, so the
+  next entry starts on a line of its own. A malformed COMPLETE line anywhere
+  is `JournalCorrupt` — never skipped — and `invoke` reads the journal before
+  calling `run` and returns a `journal-corrupt` envelope.
+- **S5 — two hashes, not one.** `content_sha256` (what the human approved)
+  and `target_sha256` (the target state approved against) are separate
+  fields on a granted change; staleness is `target_sha256` against a fresh
+  fetch, and `content_sha256` optionally guards the bundle from swapping a
+  change's content under an approved id.
+- **S7 — malformed input stays inside the envelope boundary.** A bundle the
+  declared schema refuses never reaches the package's `check_input`, so an
+  author's callback is only ever handed the shape it declared; the starter
+  checker also skips a non-object item.
+- **N1 — the starter's write sketch teaches complete recovery.** The four
+  required steps are numbered in `task_logic.py`: skip a decided change,
+  reconcile an `applying` one by ASKING THE TARGET, check the grant against a
+  freshly fetched target hash, then journal-and-apply.
+
 ## Op machinery (0.5.0, 2026-09-17): `templates/op/src/`
 
 A second lineage, on the same terms: `templates/op/src/` are the masters an
@@ -87,6 +125,80 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.5.1 — the Codex review-1 fixes
+
+One bullet per finding of `planning/current/phase3-codex-review-1-cog-smith.md`
+that lives in this lineage, resolved as contract §9 decides. Each behavioural
+fix has a regression test that failed before it (`tests/test_op_authority.py`,
+`tests/test_op_process.py`, `tests/test_op_runner.py`).
+
+- **B1 — nothing external happens before the Track says so.** Durability
+  order on a resume: accept the decision → record the decision AND the resume
+  and save → issue the grant, create the journal, record the step `running`
+  and save → invoke. Every step (not only a granted one) is recorded
+  `running` with its grant and journal before its Cog is launched, and the
+  record is REPLACED, not appended to, when the result arrives.
+- **B2 — `retry-once` is refused at load on an effectful step.** On a step
+  that carries `authority:`, and on a step whose Cog's manifest declares a
+  non-empty `reaches`. An effectful step recovers by resume plus journal
+  reconciliation, never by re-invocation (phase 2 §0); the message says so.
+- **B3 — one run, one process.** `runs/<run_id>/run.lock` is created
+  `O_CREAT|O_EXCL` at the start of a run and of every resume, BEFORE the
+  Track is read, and removed on exit. A live pid refuses the resume by name
+  (exit 2); a dead pid's lock is taken over and the takeover recorded in
+  `resumes`.
+- **B5 — the pending payload is authenticated.** `apply_decision` re-hashes
+  `pending["payload"]` and checks the decision against THAT, never against
+  the hash string the pending file carries; and a resume compares the
+  re-hashed payload with the `payload_sha256` the Track recorded at pause
+  time, so editing the proposals on disk refuses the decision by name.
+- **S1 — the run's control entries are reserved.** `grants`, `pending`,
+  `decisions`, `journal`, `run.lock` and `track.json` (and anything under
+  them) are refused as `$run_dir` subpaths at load and at evaluation, and
+  every control-file write verifies its resolved destination is inside the
+  run directory and not reached through a symlink. Application-level
+  integrity, not host sandboxing.
+- **S2 — decision validation is complete.** Duplicate or non-string change
+  ids refuse the PAUSE; `decided_by` and `decided_at` are required; an edited
+  change must carry the same fields and types as the proposal, may not
+  retarget it or restate its `target_sha256`; every approved and rejected
+  change is recorded with a RECOMPUTED `content_sha256`, and the decision
+  value carries a `history` list (one entry per proposal: verdict, both
+  hashes, reason).
+- **S3 — a resume re-validates.** Declaration and admission checks run on
+  resume exactly as on a fresh run (a Cog manifest changed while paused is
+  caught), and resuming a `planned` dry-run Track is refused by name.
+- **S4 — a resume restores the whole mapping context.** The original request
+  DIRECTORY is recorded in the Track (`request_dir`), so relative `$path`
+  operands resolve as they first did; `steps.X.envelope` is restored from the
+  envelopes the Track points at; and an empty `foreach` aggregate restores as
+  `[]` instead of reading the step's envelope directory as a file.
+- **S5 — two hashes on a change.** `content_sha256` is the change object's
+  own hash (recomputed on an edit, checked at issuance); `target_sha256` is
+  the target item's content hash as the Op read it (the staleness
+  precondition the write Cog checks). A grant carries both per change, and a
+  change missing either, or carrying a null one, is DENIED at issuance.
+- **S6 — grant identity and provenance are preserved.** Every issuance gets
+  its own number, id and file (`grants/<step>/<n>.json`); an earlier grant
+  file is never overwritten. A recipient version absent from the spec is read
+  from the Cog's manifest. Two write requirements reading different human
+  gates are refused at load (one gate per writing step).
+- **S7 — malformed values are named, not raised.** A list-valued change id or
+  repository, a non-list `changes`, and a non-string repository are `Denied`
+  reasons; a write requirement's expression is checked at load.
+- **S8 — the tests drive the runner.** `tests/test_op_process.py` runs
+  `op run` and `op run --resume` as separate PROCESSES against a real created
+  code Cog whose reconcile step consults a fake GitHub that keeps state, and
+  covers both crash windows (before and after the external effect landed),
+  the lock refusal, and the stale-lock takeover.
+- **S9 — the durability guarantee is the one implemented.** Every atomic
+  write fsyncs the containing directory after the rename, and the human's
+  `pending/<step>.md` is written the same way as the JSON.
+- **N2 — "only the approved list can produce a grant" is now the load rule.**
+  A write requirement's `changes` must be exactly
+  `{$from: steps.<id>.decision.approved}`; any other sub-path of the decision
+  is refused by name at load rather than denied at issuance.
 
 ### 0.5.0 — authority, grants, the human Gate, resume
 
