@@ -336,6 +336,43 @@ class TestGrantChecks(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("freshly fetched content hash", detail)
 
+    def test_a_read_grant_whose_repositories_are_a_number_denies(self):
+        # Verification finding 4: `target in 7` used to raise TypeError out
+        # of the helper instead of denying with a reason.
+        doc = self.doc(operations=[{"resource": "github", "action": "read",
+                                    "repositories": 7}])
+        ok, detail = probe(
+            self.dest,
+            'cog_core.read_allowed(grant, "openteams-ai/apollo-desktop", '
+            'run_id="run-1")', doc)
+        self.assertFalse(ok)
+        self.assertIn("LIST of repository strings", detail)
+
+    def test_a_read_grant_stating_one_repository_as_a_string_denies(self):
+        # `"owner/repo"` used to authorize the SUBSTRING "owner": a grant is
+        # never membership-tested against a bare string.
+        doc = self.doc(operations=[{"resource": "github", "action": "read",
+                                    "repositories": "owner/repo"}])
+        ok, detail = probe(self.dest,
+                           'cog_core.read_allowed(grant, "owner", '
+                           'run_id="run-1")', doc)
+        self.assertFalse(ok)
+        self.assertIn("LIST of repository strings", detail)
+        ok, _ = probe(self.dest,
+                      'cog_core.read_allowed(grant, "owner/repo", '
+                      'run_id="run-1")', doc)
+        self.assertFalse(ok)
+
+    def test_a_write_grant_whose_changes_are_not_a_list_denies(self):
+        doc = self.doc(operations=[{"resource": "github", "action": "write",
+                                    "changes": 7}])
+        ok, detail = probe(
+            self.dest,
+            'cog_core.write_allowed(grant, "c-1", "1" * 64, run_id="run-1")',
+            doc)
+        self.assertFalse(ok)
+        self.assertIn("never approved", detail)
+
     def test_a_grant_without_a_run_id_flag_is_refused_by_the_cli(self):
         path = Path(self.tmp.name) / "grant.json"
         path.write_text(json.dumps(self.doc()))
@@ -382,6 +419,7 @@ two crash windows distinguishable.
 """
 import json
 import os
+import time
 from pathlib import Path
 
 COUNTER = Path(os.environ["FAKE_GITHUB_COUNTER"])
@@ -418,6 +456,16 @@ def fetch_target_sha256(change):
 def run(bundle, grant, journal):
     import cog_core
     problems, used, outcomes = [], [], []
+    hold = os.environ.get("HOLD_FOR")
+    if hold:
+        # Overlapping-resume test: announce that the Cog is running and wait
+        # for the test to release it, so a second runner really does arrive
+        # while this one holds the run lock.
+        Path(hold + ".started").write_text("1")
+        for _ in range(600):
+            if Path(hold).exists():
+                break
+            time.sleep(0.05)
     done = journal.phases() if journal else {}
     for change in bundle.get("changes") or []:
         cid = change["change_id"]
@@ -435,7 +483,7 @@ def run(bundle, grant, journal):
             continue
         ok, detail = cog_core.write_allowed(
             grant, cid, fetch_target_sha256(change),
-            content_sha256=change.get("content_sha256"))
+            content_sha256=cog_core.change_content_sha256(change))
         if not ok:
             used.append(cog_core.use("write", "github", cid, "denied", detail))
             problems.append(cog_core.problem("authority", detail, "warn"))
@@ -492,11 +540,32 @@ def write_back_cog(tmp):
     return dest
 
 
-CONTENT_SHA = "a" * 64
 TARGET_SHA = "1" * 64
 
 
-def write_grant(tmp, change_ids, target_sha256=TARGET_SHA, **over):
+def content_hash(change):
+    """The change object's own hash, the way the runner computes it: canonical
+    JSON over everything EXCEPT the two hash fields (contract §9)."""
+    body = {k: v for k, v in change.items()
+            if k not in ("content_sha256", "target_sha256")}
+    return hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def bundle_change(change_id, body="original"):
+    """A change as it travels in the BUNDLE. Its `content_sha256` is a
+    STATED digest: the Cog computes the hash from the object and never reads
+    this field, so a bundle cannot agree with itself into an approval
+    (contract §9b, verification finding 2)."""
+    return {"change_id": change_id, "kind": "label", "body": body,
+            "content_sha256": content_hash({"change_id": change_id,
+                                            "kind": "label",
+                                            "body": "original"})}
+
+
+def write_grant(tmp, change_ids, target_sha256=TARGET_SHA, body="original",
+                **over):
     """A write grant carrying BOTH hashes per change (contract §9)."""
     path = Path(tmp) / "grant.json"
     path.write_text(json.dumps(grant(
@@ -504,15 +573,15 @@ def write_grant(tmp, change_ids, target_sha256=TARGET_SHA, **over):
         operations=[{"resource": "github", "action": "write",
                      "changes": [{"change_id": c,
                                   "repository": "openteams-ai/apollo-desktop",
-                                  "content_sha256": CONTENT_SHA,
+                                  "content_sha256": content_hash(
+                                      bundle_change(c, body)),
                                   "target_sha256": target_sha256}
                                  for c in change_ids]}], **over)))
     return path
 
 
-def changes_bundle(*change_ids, content_sha256=CONTENT_SHA):
-    return {"changes": [{"change_id": c, "content_sha256": content_sha256}
-                        for c in change_ids]}
+def changes_bundle(*change_ids, body="original"):
+    return {"changes": [bundle_change(c, body) for c in change_ids]}
 
 
 def run_write_back(dest, tmp, bundle, env_extra=None):
@@ -532,6 +601,49 @@ def run_write_back(dest, tmp, bundle, env_extra=None):
     except json.JSONDecodeError:
         envelope = None
     return completed, envelope
+
+
+# A real code Cog that PROPOSES changes — the human-gated half of the write
+# pair. Used by the production-seam process test, where every Cog in the run
+# is a created package invoked through the real `pixi run` command line.
+
+PROPOSE_TASK_LOGIC = '''
+"""Proposes one change for a human to decide about."""
+
+REPOSITORY = "openteams-ai/apollo-desktop"
+
+
+def run(bundle, grant, journal):
+    change = {"change_id": "c-1", "kind": "label", "repository": REPOSITORY,
+              "target": REPOSITORY + "#1",
+              "summary": str(bundle.get("note") or "add a label"),
+              "target_sha256": "1" * 64}
+    import cog_core
+    change["content_sha256"] = cog_core.change_content_sha256(change)
+    return {"changes": [change]}, []
+'''
+
+PROPOSE_OUTPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["changes"],
+    "properties": {"changes": {"type": "array"}},
+}
+PROPOSE_INPUT_SCHEMA = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "properties": {"note": {"type": "string"}},
+}
+
+
+def propose_cog(tmp):
+    dest = create_code_cog(tmp, name="cog-propose")
+    (dest / "src" / "task_logic.py").write_text(PROPOSE_TASK_LOGIC)
+    (dest / "context" / "input-schema.json").write_text(
+        json.dumps(PROPOSE_INPUT_SCHEMA))
+    (dest / "context" / "output-schema.json").write_text(
+        json.dumps(PROPOSE_OUTPUT_SCHEMA))
+    return dest
 
 
 class TestJournalAndWriteBack(unittest.TestCase):
@@ -586,11 +698,14 @@ class TestJournalAndWriteBack(unittest.TestCase):
                           env["payload"]["authority_use"][0]["detail"])
 
     def test_a_bundle_cannot_swap_the_content_under_an_approved_id(self):
+        # The CONTENT changed and the stated digest did not: the Cog hashes
+        # the change it is about to apply, so forwarding the old digest no
+        # longer passes (verification finding 2).
         with tempfile.TemporaryDirectory() as tmp:
             dest = write_back_cog(tmp)
             write_grant(tmp, ["c-1"])
             _, env = run_write_back(
-                dest, tmp, changes_bundle("c-1", content_sha256="b" * 64))
+                dest, tmp, changes_bundle("c-1", body="tampered"))
             self.assertEqual(env["payload"]["changes"][0]["outcome"], "denied")
             self.assertEqual(self.calls(tmp), [])
             self.assertIn("but the one to apply is",
@@ -675,6 +790,36 @@ class TestJournalAndWriteBack(unittest.TestCase):
             _, env = run_write_back(dest, tmp, bundle)
             self.assertEqual(env["payload"]["changes"][0]["outcome"], "skipped")
             self.assertEqual(self.calls(tmp), ["c-1"])
+
+    def test_a_torn_tail_that_splits_a_character_is_still_recoverable(self):
+        # Verification finding 4: the fragment `{"phase": "appl\xc3` (a
+        # multibyte character cut in half) used to raise UnicodeDecodeError
+        # while decoding the WHOLE file, so the entries before it were lost
+        # and no envelope came back at all. The tail is cut as bytes first.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            (Path(tmp) / "journal.jsonl").write_bytes(
+                b'{"change_id": "c-0", "phase": "applied"}\n'
+                b'{"change_id": "c-1", "phase": "appl\xc3')
+            completed, env = run_write_back(dest, tmp, changes_bundle("c-1"))
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(env["payload"]["changes"][0]["outcome"], "applied")
+            phases = [e["phase"] for e in self.journal(tmp)]
+            self.assertEqual(phases, ["applied", "torn", "applying", "applied"])
+            self.assertEqual(self.calls(tmp), ["c-1"])
+
+    def test_a_complete_line_that_is_not_utf8_is_named_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            (Path(tmp) / "journal.jsonl").write_bytes(
+                b'{"change_id": "c-1", "phase": "\xff\xfe"}\n')
+            completed, env = run_write_back(dest, tmp, changes_bundle("c-1"))
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(env["error"]["code"], "journal-corrupt")
+            self.assertIn("not valid UTF-8", env["error"]["detail"])
+            self.assertEqual(self.calls(tmp), [])
 
     def test_a_corrupt_complete_line_refuses_the_invocation(self):
         with tempfile.TemporaryDirectory() as tmp:

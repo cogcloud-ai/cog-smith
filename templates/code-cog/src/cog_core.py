@@ -39,7 +39,7 @@ except ImportError:                                    # pragma: no cover
 
 #: The code-cog machinery lineage (cog-smith MACHINERY.md). Reported in
 #: every envelope's `binding`, so a saved result names the code that made it.
-MACHINERY_VERSION = "0.1.1"
+MACHINERY_VERSION = "0.1.2"
 
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
 
@@ -198,18 +198,30 @@ class Journal:
         An unterminated LAST line is a torn write and is ignored — the
         records before it are still true. A malformed COMPLETE line anywhere
         is corruption, not noise: it raises `JournalCorrupt` rather than
-        being skipped, because skipping it would hide an effect."""
+        being skipped, because skipping it would hide an effect.
+
+        The tail is cut as BYTES, at the last newline, before anything is
+        decoded: a crash halfway through a multibyte character would
+        otherwise make decoding the whole file raise `UnicodeDecodeError`
+        and lose the records before it (contract §9b, finding 4). Each
+        complete line is then decoded strictly, so a line that is not UTF-8
+        is corruption with a name rather than a traceback."""
         if not self.path.exists():
             return []
-        text = self.path.read_text(encoding="utf-8")
-        lines = text.splitlines()
-        if text and not text.endswith("\n") and lines:
-            lines = lines[:-1]
+        data = self.path.read_bytes()
+        cut = len(data) if (not data or data.endswith(b"\n")) \
+            else data.rfind(b"\n") + 1
         entries = []
-        for number, line in enumerate(lines, start=1):
-            line = line.strip()
-            if not line:
+        for number, raw in enumerate(data[:cut].split(b"\n"), start=1):
+            if not raw.strip():
                 continue
+            try:
+                line = raw.decode("utf-8").strip()
+            except UnicodeDecodeError as exc:
+                raise JournalCorrupt(
+                    f"{self.path.name} line {number} is not valid UTF-8 "
+                    f"({exc}); the journal records external effects and is "
+                    f"never partly read") from exc
             try:
                 value = json.loads(line)
             except json.JSONDecodeError as exc:
@@ -253,6 +265,35 @@ def load_grant(path):
         return json.loads(Path(path).read_text())
     except json.JSONDecodeError as exc:
         raise ValueError(f"grant {Path(path).name} is not JSON: {exc}") from exc
+
+
+#: The two hash fields a granted change carries. They are EXCLUDED from the
+#: change's own content hash: the hash covers what the change says to do,
+#: not the hashes stated beside it (contract §9).
+CHANGE_HASHES = ("content_sha256", "target_sha256")
+
+
+def canonical_sha256(value):
+    """The hash of a JSON value, canonically serialized (sorted keys, no
+    whitespace) — the same bytes for the same document however it was
+    written. The Op runner hashes a change exactly this way."""
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def change_content_sha256(change):
+    """The content hash of a change OBJECT: everything about it except the
+    two hash fields.
+
+    Compute this from the change you are ABOUT TO APPLY and pass it to
+    `write_allowed`. Never forward the `content_sha256` a bundle carries:
+    forwarding it only checks that the bundle agrees with itself, so content
+    edited under an approved id would pass (contract §9b, finding 2)."""
+    if not isinstance(change, dict):
+        raise TypeError("a change is a JSON object")
+    return canonical_sha256({k: v for k, v in change.items()
+                             if k not in CHANGE_HASHES})
 
 
 def _expired(grant, now=None):
@@ -350,12 +391,29 @@ def operations(grant, resource=None, action=None):
 def read_allowed(grant, target, resource="github", run_id=None, now=None):
     """(ok, detail) for reading TARGET (e.g. a repository). The whole grant
     is re-checked first: expiry and run binding hold per CALL, not per
-    invocation."""
+    invocation.
+
+    `repositories` must be a LIST OF STRINGS. A grant that states a bare
+    string is refused by name — never membership-tested, which would
+    authorize every substring of it — and any other type is refused rather
+    than raising (contract §9b, finding 4)."""
     ok, detail = _usable(grant, run_id, now)
     if not ok:
         return False, detail
+    if not isinstance(target, str) or not target:
+        return False, (f"{resource} read of {target!r}: a read names one "
+                       f"target as a string")
     for op in operations(grant, resource, "read"):
-        if target in (op.get("repositories") or []):
+        repositories = op.get("repositories")
+        if repositories is None:
+            continue
+        if not isinstance(repositories, list) or any(
+                not isinstance(r, str) for r in repositories):
+            return False, (f"the grant's {resource} read operation declares "
+                           f"repositories {repositories!r}; a granted read "
+                           f"names a LIST of repository strings, and this "
+                           f"Cog reads no other shape")
+        if target in repositories:
             return True, None
     return False, (f"{resource} read of {target!r} is not in this grant")
 
@@ -363,9 +421,15 @@ def read_allowed(grant, target, resource="github", run_id=None, now=None):
 def approved_change(grant, change_id, resource="github"):
     """The grant's entry for CHANGE_ID, or None. The grant carries exactly
     the changes a human approved: a change that is not in it is denied, and
-    that is the whole check — never a trim of what was requested."""
+    that is the whole check — never a trim of what was requested.
+
+    A `changes` that is not a list of objects contributes nothing: it is not
+    iterated blindly, so a malformed grant denies rather than raising."""
     for op in operations(grant, resource, "write"):
-        for change in op.get("changes") or []:
+        changes = op.get("changes")
+        if not isinstance(changes, list):
+            continue
+        for change in changes:
             if isinstance(change, dict) and change.get("change_id") == change_id:
                 return change
     return None

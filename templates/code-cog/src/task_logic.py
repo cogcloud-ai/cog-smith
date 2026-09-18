@@ -50,9 +50,12 @@ run apply an effect exactly once.
             #    The grant carries two hashes: `content_sha256` (what the
             #    human approved) and `target_sha256` (the state approved
             #    against). Staleness is the fresh fetch disagreeing.
+            #    COMPUTE the content hash from the change you are about to
+            #    apply — never forward the digest the bundle states beside
+            #    it, which only checks the bundle against itself.
             ok, detail = cog_core.write_allowed(
                 grant, cid, fetch_target_sha256(change),
-                content_sha256=change.get("content_sha256"))
+                content_sha256=cog_core.change_content_sha256(change))
             if not ok:
                 used.append(cog_core.use("write", "github", cid, "denied", detail))
                 problems.append(cog_core.problem("authority", detail, "warn"))
