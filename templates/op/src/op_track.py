@@ -35,10 +35,19 @@ def new_run_id():
 
 
 def contained(path, base):
-    """PATH, checked to resolve INSIDE base. The runner's own control files
-    (the Track, grants, pending, decisions, journals) go through this: a
-    symlinked parent, or a destination that is itself a symlink out of the
-    run, is refused rather than followed (contract §9, review S1).
+    """PATH, checked to resolve INSIDE base through no link at all. The
+    runner's own control files (the Track, grants, pending, decisions,
+    journals) go through this (contract §9, §9b; review S1, finding 3).
+
+    Two rules, because resolving alone is not enough:
+
+    - the destination's parent must RESOLVE inside the run directory, so a
+      link out of the run is refused rather than followed; and
+    - no component of the path at or below the run directory may be a
+      symlink, so an alias INSIDE the run (`outputs` -> `grants`) cannot
+      make a step's output path address the runner's own control files. A
+      path that reaches the run only by following a link from outside is
+      refused for the same reason.
 
     This is application-level integrity, not host sandboxing: it keeps the
     runner from writing its own records somewhere else by accident or by a
@@ -47,10 +56,26 @@ def contained(path, base):
     if path.is_symlink():
         raise ValueError(f"{path} is a symlink; the runner writes its own "
                          f"records, never through a link")
-    resolved = path.parent.resolve()
+    parent = Path(os.path.abspath(str(path.parent)))
+    resolved = parent.resolve()
     if resolved != base and base not in resolved.parents:
         raise ValueError(f"{path} resolves outside the run directory {base}; "
                          f"the runner's records stay inside the run")
+    current, inside = Path(parent.anchor), False
+    for part in parent.parts[1:]:
+        current = current / part
+        if inside:
+            if current.is_symlink():
+                raise ValueError(
+                    f"{current} is a symlink inside the run directory "
+                    f"{base}; the runner writes its own records to real "
+                    f"directories, never through a link")
+        elif current.resolve() == base:
+            inside = True
+    if not inside:
+        raise ValueError(f"{path} reaches the run directory {base} only by "
+                         f"following a link; the runner's records stay "
+                         f"inside the run")
     return path
 
 
@@ -70,6 +95,45 @@ def _fsync_dir(path):
         os.close(fd)
 
 
+def ensure_dir(path):
+    """Create PATH and every missing ancestor DURABLY: each new directory's
+    entry is fsynced in its own parent. `mkdir(parents=True)` alone leaves a
+    newly created directory unpersisted, so a power loss could leave a
+    durable Track pointing at a grants or journal directory that is not
+    there (review finding 5)."""
+    path = Path(path)
+    missing, probe = [], path
+    while not probe.exists():
+        missing.append(probe)
+        if probe.parent == probe:                      # pragma: no cover
+            break
+        probe = probe.parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        _fsync_dir(directory.parent)
+    return path
+
+
+def touch_durable(path, base=None):
+    """Create an empty file and persist its DIRECTORY ENTRY. The journal is
+    created this way: the Track names it before anything external happens,
+    so the entry has to survive the same power loss the Track does."""
+    path = Path(path)
+    if base is not None:
+        contained(path, base)
+    ensure_dir(path.parent)
+    if not path.exists():
+        fd = os.open(str(path), os.O_CREAT | os.O_WRONLY, 0o644)
+        try:
+            os.fsync(fd)
+        except OSError:                                # pragma: no cover
+            pass
+        finally:
+            os.close(fd)
+        _fsync_dir(path.parent)
+    return path
+
+
 def write_atomic(path, text, base=None):
     """Write TEXT to PATH atomically and durably: a temporary sibling is
     written, flushed and fsynced, then replaces the destination in one step,
@@ -77,11 +141,12 @@ def write_atomic(path, text, base=None):
     loss. An interrupted write leaves the earlier file exactly as it was.
 
     `base`, when given, is the run directory the destination must resolve
-    inside."""
+    inside — checked BEFORE anything is created, so a refused destination
+    leaves no directories behind."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     if base is not None:
         contained(path, base)
+    ensure_dir(path.parent)
     tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as handle:

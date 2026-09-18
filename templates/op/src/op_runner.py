@@ -29,11 +29,13 @@ the ordinary envelope Gate: the proposed changes are written to
 the process exits 3. `--resume RUN_DIR --decision FILE` applies the human's
 answer and carries on; steps that already passed are never re-run.
 
-One run, one process: `runs/<run_id>/run.lock` is taken exclusively at the
-start and on every resume and removed on exit, so two resumes of the same
-paused run cannot both accept the decision and both write. A lock whose
-process is still alive refuses the resume (exit 2); one left by a process
-that died is taken over, and the takeover is recorded in `resumes`.
+One run, one process: `runs/<run_id>/run.lock` is locked with `flock` at the
+start and on every resume, so two resumes of the same paused run cannot both
+accept the decision and both write. The lock is the open DESCRIPTOR, held for
+the process lifetime and inherited by every Cog this runner launches; a run
+another process holds is refused by name (exit 2), and the kernel releases
+the lock when the last holder exits — there is no pid to parse and no stale
+lock to take over.
 
 Durability order, so the Track on disk always says what was attempted before
 anything external could happen: accept the decision → record the decision and
@@ -52,10 +54,11 @@ Track always lists every step of the spec.
 from __future__ import annotations
 
 import argparse
-import errno
+import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -218,8 +221,13 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
     always has something to decide about: a command that could not be
     launched, a nonzero exit (even after printing an envelope — a process
     that dies at 139 has not succeeded), output with no envelope, and a
-    malformed envelope all arrive the same way."""
+    malformed envelope all arrive the same way.
+
+    The run lock's descriptor is passed to the child (`pass_fds`): while a
+    Cog is running, the run stays locked even if this runner dies (contract
+    §9b)."""
     cog_dir = Path(cog_dir)
+    inherited = tuple(fd for fd in (LOCK_FD,) if fd is not None)
     previous = []
     context = []
     if grant_path:
@@ -234,7 +242,8 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
             task, "--", flag, str(request_path), *context,
         ]
         try:
-            completed = subprocess.run(command, text=True, capture_output=True)
+            completed = subprocess.run(command, text=True, capture_output=True,
+                                       pass_fds=inherited)
         except OSError as exc:
             return failed_envelope(
                 cog_dir, task,
@@ -357,80 +366,86 @@ class Denied(Exception):
     never invoked; `on_fail` then applies as it does for a failure."""
 
 
-#: One run, one process (contract §9). Two resumes of the same paused run
-#: would each accept the decision, issue the same grant, read the same empty
-#: journal, and apply the same change twice: atomically replacing the Track
-#: orders the WRITES, not the executions. The lock does.
+#: One run, one process (contract §9, §9b). Two resumes of the same paused
+#: run would each accept the decision, issue the same grant, read the same
+#: empty journal, and apply the same change twice: atomically replacing the
+#: Track orders the WRITES, not the executions. The lock does.
 LOCK_NAME = "run.lock"
 
-
-def _alive(pid):
-    """True when PID names a live process. A pid we may not signal is
-    somebody else's live process, so it counts as alive."""
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError as exc:
-        return exc.errno == errno.EPERM
-    return True
+#: The open descriptor of the lock this process holds, if any. It is passed
+#: to every Cog subprocess (`pass_fds`), so the lock outlives a runner that
+#: dies with a Cog still running: the kernel drops it only when the LAST
+#: holder exits (contract §9b).
+LOCK_FD = None
 
 
 class RunLock:
-    """An exclusive lock on one run directory, held across the whole
-    execution — taken BEFORE the Track is read, so two processes cannot even
-    reach the same decision.
+    """An advisory `flock` on one run directory's `run.lock`, held for the
+    process lifetime — taken BEFORE the Track is read, so two processes
+    cannot even reach the same decision.
 
-    A lock whose pid is still alive refuses the run by name (exit 2). A lock
-    left behind by a process that died is taken over, and the takeover is
-    recorded, so a crash never leaves a run permanently unresumable."""
+    The lock is the OPEN DESCRIPTOR, not the file's content: there is no pid
+    to parse, nothing to take over, and nothing to unlink. A process that
+    dies releases it because the kernel closes its descriptors; a process
+    that is alive holds it because the kernel says so. The file's JSON (pid,
+    time) is INFORMATIONAL — it says who to look for, and is never the
+    thing consulted to decide (review finding 1).
+
+    The descriptor is inherited by every Cog this runner launches, so a
+    runner killed mid-invocation keeps the run locked until its Cog is
+    finished too: the lock protects the whole execution, including an
+    outstanding external effect."""
 
     def __init__(self, run_dir):
         self.path = Path(run_dir) / LOCK_NAME
+        self.fd = None
         self.held = False
-        self.took_over = None
 
     def acquire(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        for attempt in (1, 2):
-            try:
-                fd = os.open(str(self.path),
-                             os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            except FileExistsError:
-                holder = self._holder()
-                pid = holder.get("pid")
-                if _alive(pid) and pid != os.getpid():
-                    raise op_spec.OpSpecError(
-                        f"run {self.path.parent.name} is already running as "
-                        f"pid {pid} (since {holder.get('at')}); one run, one "
-                        f"process — wait for it or remove {self.path} if that "
-                        f"process is gone.")
-                if attempt == 2:                       # pragma: no cover
-                    raise op_spec.OpSpecError(
-                        f"could not take over the stale lock {self.path}.")
-                self.took_over = holder
-                self.path.unlink(missing_ok=True)
-                continue
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump({"pid": os.getpid(), "at": op_track.utc_now()},
-                          handle)
-                handle.flush()
-                os.fsync(handle.fileno())
-            self.held = True
-            return self
-        return self                                    # pragma: no cover
-
-    def _holder(self):
+        global LOCK_FD
+        op_track.ensure_dir(self.path.parent)
+        fd = os.open(str(self.path), os.O_CREAT | os.O_RDWR, 0o644)
         try:
-            value = json.loads(self.path.read_text())
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            holder = self._holder(fd)
+            os.close(fd)
+            raise op_spec.OpSpecError(
+                f"run {self.path.parent.name} is already running as pid "
+                f"{holder.get('pid')} (since {holder.get('at')}); one run, "
+                f"one process — wait for that process to finish.")
+        self.fd, self.held, LOCK_FD = fd, True, fd
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, json.dumps({"pid": os.getpid(),
+                                 "at": op_track.utc_now()}).encode("utf-8"))
+        try:
+            os.fsync(fd)
+        except OSError:                                # pragma: no cover
+            pass
+        return self
+
+    def _holder(self, fd):
+        """Who the lock file SAYS is running. Informational only: a lock
+        file that is empty, truncated or not JSON at all still locks."""
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            value = json.loads(os.read(fd, 4096).decode("utf-8", "replace"))
             return value if isinstance(value, dict) else {}
         except (OSError, ValueError):
             return {}
 
     def release(self):
-        if self.held:
-            self.path.unlink(missing_ok=True)
-            self.held = False
+        """Close the descriptor; the kernel releases the lock when the last
+        holder — this process or a Cog that inherited it — is gone. The file
+        stays: unlinking it would let a second process create a NEW file and
+        lock that instead."""
+        global LOCK_FD
+        if self.fd is not None:
+            if LOCK_FD == self.fd:
+                LOCK_FD = None
+            os.close(self.fd)
+            self.fd, self.held = None, False
 
     def __enter__(self):
         return self.acquire()
@@ -467,6 +482,24 @@ def change_content_sha256(change):
     what the write grant carries as `content_sha256`."""
     return canonical_sha256({k: v for k, v in change.items()
                              if k not in CHANGE_HASHES})
+
+
+#: A content hash is 64 hexadecimal characters. Checked, not assumed: a
+#: grant that carried `target_sha256: "yes"` would authorize a write whose
+#: staleness precondition no fetch can ever match — or, worse, one a Cog
+#: comparing loosely would treat as satisfied (contract §9b).
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def hex64_problem(value, field, where):
+    """Why VALUE is not a content hash, or None."""
+    if not isinstance(value, str) or not value:
+        return (f"{where} carries {field} {value!r}; a change carries both "
+                f"hashes, and neither may be null")
+    if not HEX64.match(value):
+        return (f"{where} carries {field} {value!r}, which is not a sha256 "
+                f"(64 hex characters)")
+    return None
 
 
 def _document(path, schema, what):
@@ -673,12 +706,19 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions,
                                  f"{repository!r}, which this run was not "
                                  f"admitted to write")
                 for field in CHANGE_HASHES:
-                    if not isinstance(change.get(field), str) \
-                            or not change[field]:
-                        raise Denied(f"change {cid!r} carries {field} "
-                                     f"{change.get(field)!r}; a granted change "
-                                     f"carries both hashes, and neither may "
-                                     f"be null")
+                    problem = hex64_problem(change.get(field), field,
+                                            f"change {cid!r}")
+                    if problem:
+                        raise Denied(problem)
+                # The runner recomputes what it is about to authorize: the
+                # grant's `content_sha256` is the hash of THIS object, not a
+                # digest copied along with it (contract §9b, finding 2).
+                recomputed = change_content_sha256(change)
+                if change["content_sha256"] != recomputed:
+                    raise Denied(f"change {cid!r} carries content_sha256 "
+                                 f"{change['content_sha256']!r}, but its "
+                                 f"content hashes to {recomputed!r}; the "
+                                 f"approved change is not the one recorded")
             # EXACTLY the approved list, never the requested one.
             operations.append({
                 "resource": resource, "action": "write",
@@ -746,12 +786,23 @@ def pending_changes(payload, sid):
             f"Op step {sid!r} has a human Gate, so its payload must carry a "
             f"`changes` list of objects with a change_id (a string): that is "
             f"what the human decides about.")
-    seen, duplicates = set(), []
+    seen, duplicates, unhashed = set(), [], []
     for change in changes:
         cid = change["change_id"]
         if cid in seen and cid not in duplicates:
             duplicates.append(cid)
         seen.add(cid)
+        value = change.get("content_sha256")
+        if not isinstance(value, str) or not value:
+            unhashed.append(cid)
+    if unhashed:
+        # A proposal with no content hash is not repaired into one: the hash
+        # is what the human's approval is ABOUT, so a Cog that states none
+        # has not produced something decidable (contract §9b, finding 2).
+        raise op_spec.OpSpecError(
+            f"Op step {sid!r} proposes change(s) {unhashed} with no "
+            f"content_sha256; a proposed change states the hash of its own "
+            f"content, and the runner never invents one for it.")
     if duplicates:
         raise op_spec.OpSpecError(
             f"Op step {sid!r} proposes change id(s) {duplicates} more than "
@@ -871,10 +922,20 @@ def apply_decision(pending, decision):
                         "pending payload; the human decided about something "
                         "else.")
     for field in ("decided_by", "decided_at"):
-        if not isinstance(decision.get(field), str) or not decision[field]:
+        # `strip()`: a whitespace-only identity names nobody, and a Track
+        # that records one says nothing about who decided (review S2).
+        if not isinstance(decision.get(field), str) or not decision[field].strip():
             problems.append(f"the decision declares {field} "
                             f"{decision.get(field)!r}; a decision record says "
                             f"who decided and when.")
+    when = decision.get("decided_at")
+    if isinstance(when, str) and when.strip():
+        try:
+            datetime.fromisoformat(when.strip().replace("Z", "+00:00"))
+        except ValueError:
+            problems.append(f"the decision declares decided_at {when!r}, "
+                            f"which is not a timestamp; a durable decision "
+                            f"record says WHEN it was made.")
     if problems:
         raise op_spec.OpSpecError(problems)
 
@@ -1201,9 +1262,10 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             track.setdefault("grants", []).append(
                 grant_record(grant, grant_path))
             journal_path = Path(run_dir) / "journal" / f"{sid}.jsonl"
-            journal_path.parent.mkdir(parents=True, exist_ok=True)
-            op_track.contained(journal_path, run_dir)
-            journal_path.touch(exist_ok=True)
+            # Created DURABLY: the Track is about to name this journal as the
+            # evidence for an external effect, so its directory entry has to
+            # survive the same power loss the Track does (finding 5).
+            op_track.touch_durable(journal_path, base=run_dir)
             seam = {"grant_path": str(Path(grant_path).resolve()),
                     "run_id": run_id,
                     "journal_path": str(journal_path.resolve())}
@@ -1245,6 +1307,13 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
                                                      payload)
             fields["gate"] = {"policy": op_spec.HUMAN_GATE_POLICY,
                               "status": "pending",
+                              # What the ENVELOPE Gate decided before the
+                              # human was asked. A human approving proposals
+                              # does not erase the problems the Cog reported
+                              # making them: the step keeps
+                              # `passed-with-problems` (contract §9b,
+                              # finding 6).
+                              "envelope_status": gate["status"],
                               "asked_at": pending["asked_at"],
                               # The hash the TRACK remembers: a resume
                               # re-hashes the pending payload and compares it
@@ -1377,13 +1446,13 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
     lock = RunLock(run_dir).acquire()
     try:
         return _resume(package_root, run_dir, track_path, decision_path,
-                       authority_path, lock)
+                       authority_path)
     finally:
         lock.release()
 
 
-def _resume(package_root, run_dir, track_path, decision_path, authority_path,
-            lock):
+def _resume(package_root, run_dir, track_path, decision_path,
+            authority_path):
     track = json.loads(track_path.read_text())
     spec = op_spec.load(package_root / "op.yaml")
     if spec.sha256() != track.get("spec_sha256"):
@@ -1453,8 +1522,12 @@ def _resume(package_root, run_dir, track_path, decision_path, authority_path,
         decision_copy = run_dir / "decisions" / f"{sid}.json"
         op_track.write_json(decision_copy, decision, base=run_dir)
         digest = sha256_file(decision_copy)
-        record["status"] = "passed"
+        # The human decided about the proposals; the ENVELOPE Gate's verdict
+        # on the step that made them stands (contract §9b, finding 6).
+        envelope_status = (record.get("gate") or {}).get("envelope_status")
+        record["status"] = STEP_STATUS.get(envelope_status, "passed")
         record["gate"] = {"policy": op_spec.HUMAN_GATE_POLICY, "status": "pass",
+                          "envelope_status": envelope_status,
                           "asked_at": (record.get("gate") or {}).get("asked_at"),
                           "payload_sha256": remembered,
                           "decided_at": op_track.utc_now(),
@@ -1471,10 +1544,6 @@ def _resume(package_root, run_dir, track_path, decision_path, authority_path,
 
     entry = {"at": op_track.utc_now(),
              "decision": str(decision_copy.resolve()) if decision_copy else None}
-    if lock is not None and lock.took_over:
-        # A lock left by a process that died: whose, and when, so the Track
-        # says why this resume was allowed to take the run over.
-        entry["took_over_lock"] = lock.took_over
     track.setdefault("resumes", []).append(entry)
     track["status"] = "running"
     track["ended_at"] = None

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 
@@ -178,9 +179,20 @@ def operator_keys(expr):
     return None
 
 
+def normalized_subpath(subpath):
+    """SUBPATH with `.` and `..` collapsed — what it actually NAMES.
+
+    The reserved-name check reads this, never the text as written: a
+    dynamic operand of `outputs/../grants` names `grants` however it is
+    spelled (contract §9b, review finding 3)."""
+    return os.path.normpath(str(subpath or "."))
+
+
 def reserved_run_subpath(subpath):
-    """The control entry SUBPATH names or lives under, or None."""
-    parts = [p for p in Path(str(subpath or "")).parts if p not in (".", "/")]
+    """The control entry SUBPATH names or lives under, or None. The subpath
+    is NORMALISED first, so no spelling of a reserved name gets through."""
+    normalized = normalized_subpath(subpath)
+    parts = [p for p in Path(normalized).parts if p not in (".", "/")]
     if parts and parts[0] in RESERVED_RUN_SUBPATHS:
         return parts[0]
     return None
@@ -202,9 +214,9 @@ def run_dir_path(subpath, run_dir):
         raise OpSpecError(f"$run_dir subpath {subpath!r} names the run's "
                           f"{reserved!r}, which the runner owns; "
                           f"{list(RESERVED_RUN_SUBPATHS)} are reserved.")
-    candidate = Path(subpath)
+    candidate = Path(normalized_subpath(subpath))
     base = Path(run_dir).resolve()
-    if candidate.is_absolute():
+    if Path(subpath).is_absolute():
         raise OpSpecError(f"$run_dir subpath {subpath!r} is absolute; "
                           f"$run_dir names a directory inside this run.")
     target = (base / candidate).resolve()
@@ -212,6 +224,17 @@ def run_dir_path(subpath, run_dir):
         raise OpSpecError(f"$run_dir subpath {subpath!r} resolves outside the "
                           f"run directory; $run_dir names a directory inside "
                           f"this run.")
+    # No component may be a link, even one pointing back inside the run: an
+    # alias is how a step would be handed the runner's own control entries
+    # under another name (contract §9b).
+    current = base
+    for part in candidate.parts:
+        current = current / part
+        if current.is_symlink():
+            raise OpSpecError(
+                f"$run_dir subpath {subpath!r} passes through {part!r}, "
+                f"which is a symlink; $run_dir names a real directory "
+                f"inside this run.")
     target.mkdir(parents=True, exist_ok=True)
     return str(target)
 

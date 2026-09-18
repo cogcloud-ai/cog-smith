@@ -9,6 +9,11 @@ carrying `src/cog_cli.py` is launched directly with this interpreter, and a
 fixture Cog with no code is answered from CANNED (a JSON file of
 `{task: [envelope, ...]}`).
 
+CANNED of `-` keeps the PRODUCTION `invoke_cog` untouched — command
+construction, the request-flag fallback and `--grant/--run-id/--journal`
+passing all run for real, against a fake `pixi` on PATH that executes the
+Cog's declared task (contract §9b, verification finding 7).
+
 That keeps the crash-window tests honest: the runner crosses a real process
 boundary, a planted `os._exit` really kills the Cog mid-write, and the
 resume is a second process reading what the first one left on disk.
@@ -65,8 +70,8 @@ def make_invoke(canned):
 
 
 def main(argv):
-    canned = json.loads(Path(argv[0]).read_text())
-    op_runner.invoke_cog = make_invoke(canned)
+    if argv[0] != "-":
+        op_runner.invoke_cog = make_invoke(json.loads(Path(argv[0]).read_text()))
     op_runner.ROOT = Path(argv[1]).resolve()
     return op_runner.main(argv[2:])
 

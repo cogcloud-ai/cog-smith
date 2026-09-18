@@ -12,7 +12,9 @@ checks its own grant before it reaches outside the run (contract §0).
 import contextlib
 import io
 import json
+import os
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -440,6 +442,36 @@ class WriteGrantTests(AuthorityCase):
         self.assertIn("c-a", self.step(track, "compose")["decision"]["value"]
                       ["edited"])
 
+    def test_an_approved_change_that_no_longer_hashes_to_itself_is_denied(self):
+        # Verification finding 2: issuance RECOMPUTES the content hash of
+        # every approved change. A Track whose recorded decision was edited
+        # after the fact — the change altered, the hash left alone — is a
+        # denial, not a grant.
+        code, output, _ = self.start(answers=envelopes(("c-a",)))
+        decision = self.decide(output, {"c-a": "approve"})
+        code, out, track = self.resume(output, decision)
+        self.assertEqual(code, 0, out)
+        self.step(track, "compose")["decision"]["value"]["approved"][0][
+            "summary"] = "something else entirely"
+        self.step(track, "write-github")["status"] = "not-reached"
+        Path(out["track"]).write_text(json.dumps(track))
+        code, out2, track2 = self.resume(out)
+        record = self.step(track2, "write-github")
+        self.assertEqual(record["status"], "denied")
+        self.assertIn("its content hashes to", record["gate"]["reasons"][0])
+
+    def test_a_change_whose_target_hash_is_not_a_sha256_is_denied(self):
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [
+                               fx.change("c-a", target_sha256="yes")]}),
+                           fx.envelope(payload={})]}
+        code, output, _ = self.start(answers=answers)
+        decision = self.decide(output, {"c-a": "approve"})
+        code, out, track = self.resume(output, decision)
+        record = self.step(track, "write-github")
+        self.assertEqual(record["status"], "denied")
+        self.assertIn("not a sha256", record["gate"]["reasons"][0])
+
     def test_a_change_for_an_unadmitted_repository_is_denied(self):
         code, output, _ = self.start(
             answers={"ask": [fx.envelope(payload={"items": []}),
@@ -657,6 +689,39 @@ class PendingAndDecisionTests(AuthorityCase):
         self.assertIn("decided about something else",
                       "\n".join(caught.exception.problems))
 
+    def test_a_proposal_with_a_null_content_hash_refuses_the_pause(self):
+        # Verification finding 2: the runner never REPAIRS a missing content
+        # hash into a valid-looking approved change — the pause is refused
+        # by name, because the hash is what the approval is about.
+        naked = dict(fx.change("c-a"), content_sha256=None)
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [naked]}),
+                           fx.envelope(payload={})]}
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(answers=answers)
+        self.assertIn("no content_sha256",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_human_gated_step_keeps_passed_with_problems(self):
+        # Verification finding 6: approving the proposals does not erase the
+        # problems the Cog reported making them.
+        answers = {"ask": [fx.envelope(payload={"items": []}),
+                           fx.envelope(payload={"changes": [fx.change("c-a")]},
+                                       problems=[{"check": "coverage",
+                                                  "severity": "warn",
+                                                  "detail": "one item skipped"}]),
+                           fx.envelope(payload={})]}
+        code, output, track = self.start(answers=answers)
+        self.assertEqual(code, op_runner.PAUSED_EXIT)
+        self.assertEqual(self.step(track, "compose")["gate"]["envelope_status"],
+                         "pass-with-problems")
+        decision = self.decide(output, {"c-a": "approve"})
+        code, out, track = self.resume(output, decision)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.step(track, "compose")["status"],
+                         "passed-with-problems")
+        self.assertEqual(track["status"], "completed-with-problems")
+
     def test_a_duplicate_change_id_refuses_the_pause(self):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [
@@ -671,6 +736,18 @@ class PendingAndDecisionTests(AuthorityCase):
         for field in ("decided_by", "decided_at"):
             code, output, _ = self.start()
             decision = self.decide(output, {"c-a": "approve"}, **{field: None})
+            with self.assertRaises(op_spec.OpSpecError) as caught:
+                self.resume(output, decision)
+            self.assertIn(field, "\n".join(caught.exception.problems))
+
+    def test_a_decision_whose_who_and_when_say_nothing_is_refused(self):
+        # Review S2's remainder: `decided_at: "not-a-time"` and a
+        # whitespace-only `decided_by` were accepted as metadata.
+        for field, value in (("decided_at", "not-a-time"),
+                             ("decided_by", "   ")):
+            code, output, _ = self.start()
+            decision = self.decide(output, {"c-a": "approve"},
+                                   **{field: value})
             with self.assertRaises(op_spec.OpSpecError) as caught:
                 self.resume(output, decision)
             self.assertIn(field, "\n".join(caught.exception.problems))
@@ -921,6 +998,62 @@ class ControlFileTests(unittest.TestCase):
         self.assertIn("symlink", str(caught.exception))
         self.assertEqual(target.read_text(), "{}")
 
+    def test_a_control_file_is_never_written_through_a_within_run_alias(self):
+        # Verification finding 3: `outputs` -> `grants` resolves INSIDE the
+        # run, so resolving alone let it through. A link is a link.
+        (self.run_dir / "grants").mkdir()
+        (self.run_dir / "outputs").symlink_to(self.run_dir / "grants")
+        with self.assertRaises(ValueError) as caught:
+            op_track.write_json(self.run_dir / "outputs" / "0.json",
+                                {"smuggled": True}, base=self.run_dir)
+        self.assertIn("symlink", str(caught.exception))
+        self.assertEqual(list((self.run_dir / "grants").iterdir()), [])
+
+    def test_a_run_dir_operand_cannot_spell_a_control_directory(self):
+        # Verification finding 3: the reserved-name check reads the
+        # NORMALISED subpath, so a dynamic `outputs/../grants` names grants.
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.run_dir_path("outputs/../grants", str(self.run_dir))
+        self.assertIn("reserved", "\n".join(caught.exception.problems))
+        self.assertFalse((self.run_dir / "grants").exists())
+        self.assertFalse((self.run_dir / "outputs").exists())
+
+    def test_run_dir_refuses_a_symlinked_component_inside_the_run(self):
+        (self.run_dir / "grants").mkdir()
+        (self.run_dir / "outputs").symlink_to(self.run_dir / "grants")
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.run_dir_path("outputs/here", str(self.run_dir))
+        self.assertIn("symlink", "\n".join(caught.exception.problems))
+        self.assertEqual(list((self.run_dir / "grants").iterdir()), [])
+
+    def test_every_newly_created_directory_entry_is_fsynced(self):
+        # Verification finding 5: `mkdir(parents=True)` alone leaves a new
+        # directory's ENTRY unpersisted in its parent.
+        synced = []
+        real, op_track._fsync_dir = op_track._fsync_dir, \
+            lambda path: synced.append(Path(path))
+        try:
+            op_track.write_json(self.run_dir / "grants" / "step" / "0.json",
+                                {"grant": True}, base=self.run_dir)
+        finally:
+            op_track._fsync_dir = real
+        self.assertIn(self.run_dir, synced)                    # grants/
+        self.assertIn(self.run_dir / "grants", synced)          # grants/step/
+        self.assertIn(self.run_dir / "grants" / "step", synced)  # the file
+
+    def test_a_journal_is_created_with_its_directory_entry_fsynced(self):
+        synced = []
+        real, op_track._fsync_dir = op_track._fsync_dir, \
+            lambda path: synced.append(Path(path))
+        try:
+            op_track.touch_durable(self.run_dir / "journal" / "s.jsonl",
+                                   base=self.run_dir)
+        finally:
+            op_track._fsync_dir = real
+        self.assertTrue((self.run_dir / "journal" / "s.jsonl").exists())
+        self.assertIn(self.run_dir, synced)              # journal/'s entry
+        self.assertIn(self.run_dir / "journal", synced)  # the file's entry
+
     def test_an_atomic_write_leaves_no_temporary_file_behind(self):
         path = op_track.write_atomic(self.run_dir / "pending" / "s.md",
                                      "# decide\n", base=self.run_dir)
@@ -932,6 +1065,96 @@ class ControlFileTests(unittest.TestCase):
                                       elements=[],
                                       envelope=str(self.run_dir / "envelopes"))
         self.assertEqual(op_runner._results_of(record), ([], []))
+
+
+class RunLockTests(unittest.TestCase):
+    """One run, one process — an advisory `flock` on an open descriptor, not
+    a pid file (contract §9b, verification finding 1). `flock` is bound to
+    the OPEN FILE DESCRIPTION, so a second acquire conflicts even in this
+    process: the tests need no second interpreter to prove it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.run_dir = Path(self.tmp.name) / "run"
+        self.run_dir.mkdir()
+
+    def take(self):
+        lock = op_runner.RunLock(self.run_dir).acquire()
+        self.addCleanup(lock.release)
+        return lock
+
+    def refused(self):
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.RunLock(self.run_dir).acquire()
+        return "\n".join(caught.exception.problems)
+
+    def test_a_held_run_refuses_a_second_acquire_by_name(self):
+        self.take()
+        self.assertIn("one run, one process", self.refused())
+
+    def test_an_empty_lock_file_is_still_a_held_lock(self):
+        # The old pid file read an empty lock as `{}`, called it stale,
+        # unlinked it and let a second process in while the first was still
+        # between creating the file and writing its JSON.
+        lock = self.take()
+        os.ftruncate(lock.fd, 0)
+        self.assertEqual((self.run_dir / "run.lock").read_bytes(), b"")
+        self.assertIn("one run, one process", self.refused())
+
+    def test_a_lock_file_left_behind_holds_nothing(self):
+        # No takeover logic: a file whose holder is gone is simply lockable,
+        # and its content — here a pid `os.kill` could never take — is never
+        # consulted (verification finding 4).
+        (self.run_dir / "run.lock").write_text(
+            json.dumps({"pid": 10 ** 30, "at": "earlier"}))
+        lock = self.take()
+        self.assertTrue(lock.held)
+
+    def test_a_lock_file_that_is_not_json_holds_nothing(self):
+        (self.run_dir / "run.lock").write_text("not json at all")
+        self.assertTrue(self.take().held)
+
+    def test_releasing_keeps_the_file_and_frees_the_lock(self):
+        op_runner.RunLock(self.run_dir).acquire().release()
+        self.assertTrue((self.run_dir / "run.lock").exists())
+        self.assertTrue(self.take().held)
+
+    def test_the_lock_descriptor_is_passed_to_every_cog_subprocess(self):
+        # The lock protects the EXECUTION, including an outstanding Cog: the
+        # descriptor is inherited, so a runner killed mid-invocation keeps
+        # the run locked until its Cog is gone too.
+        lock = self.take()
+        captured = {}
+        real = op_runner.subprocess.run
+
+        def fake_run(command, **kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(
+                returncode=0, stdout=json.dumps(fx.envelope()), stderr="")
+
+        op_runner.subprocess.run = fake_run
+        try:
+            op_runner.invoke_cog(self.run_dir, "ask", self.run_dir / "r.json")
+        finally:
+            op_runner.subprocess.run = real
+        self.assertEqual(captured["pass_fds"], (lock.fd,))
+
+    def test_no_lock_means_no_inherited_descriptor(self):
+        captured = {}
+        real = op_runner.subprocess.run
+
+        def fake_run(command, **kwargs):
+            captured.update(kwargs)
+            return types.SimpleNamespace(
+                returncode=0, stdout=json.dumps(fx.envelope()), stderr="")
+
+        op_runner.subprocess.run = fake_run
+        try:
+            op_runner.invoke_cog(self.run_dir, "ask", self.run_dir / "r.json")
+        finally:
+            op_runner.subprocess.run = real
+        self.assertEqual(captured["pass_fds"], ())
 
 
 class TtlTests(AuthorityCase):
