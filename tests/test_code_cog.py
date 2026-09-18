@@ -676,6 +676,114 @@ def propose_cog(tmp):
     return dest
 
 
+# A write-back that leaves its change UNRESOLVED the first time, and a
+# recorder that counts its invocations: the pair the runner-level resume test
+# of contract §9e needs. The first write invocation journals `uncertain` (the
+# request went out, the answer was lost) and reports `write-back-unresolved`
+# at ERROR severity, so the Gate fails and the run stops there. The next
+# invocation reads the journal, asks the fake GitHub whether the effect
+# landed, records `applied` and passes.
+
+UNRESOLVED_WRITE_TASK_LOGIC = '''
+"""A fake write-back whose first attempt ends uncertain (contract §9e)."""
+import json
+import os
+from pathlib import Path
+
+COUNTER = Path(os.environ["FAKE_GITHUB_COUNTER"])
+STATE = COUNTER.with_name("applied.json")
+ATTEMPTS = COUNTER.with_name("write-attempts.json")
+
+
+def _read(path, default):
+    return json.loads(path.read_text()) if path.exists() else default
+
+
+def _append(path, value):
+    items = _read(path, [])
+    items.append(value)
+    path.write_text(json.dumps(items))
+
+
+def run(bundle, grant, journal):
+    import cog_core
+    problems, used, outcomes, unresolved = [], [], [], []
+    _append(ATTEMPTS, [c["change_id"] for c in bundle.get("changes") or []])
+    done = journal.phases() if journal else {}
+    for change in bundle.get("changes") or []:
+        cid = change["change_id"]
+        if done.get(cid) in ("applied", "failed", "denied"):
+            outcomes.append({"change_id": cid, "outcome": "skipped"})
+            continue
+        if done.get(cid) == "uncertain":
+            # Reconciliation is a READ, and it is the only call made here.
+            used.append(cog_core.use("read", "github", cid, "authorized",
+                                     "reconciled"))
+            if cid in _read(STATE, []):
+                journal.append({"change_id": cid, "phase": "applied",
+                                "reconciled": True})
+                outcomes.append({"change_id": cid, "outcome": "applied"})
+                continue
+        journal.append({"change_id": cid, "phase": "uncertain"})
+        _append(COUNTER, cid)
+        state = _read(STATE, [])
+        state.append(cid)
+        STATE.write_text(json.dumps(state))
+        used.append(cog_core.use("write", "github", cid, "uncertain",
+                                 "no answer from github"))
+        outcomes.append({"change_id": cid, "outcome": "uncertain"})
+        unresolved.append(cid)
+    if unresolved:
+        problems.append(cog_core.problem(
+            "write-back-unresolved",
+            "left uncertain, so this step has not finished: "
+            + ", ".join(unresolved), "error"))
+    return {"changes": outcomes, "authority_use": used}, problems
+'''
+
+
+def unresolved_write_cog(tmp):
+    dest = create_code_cog(tmp, name="cog-write-github")
+    declare_reaches(dest, actions=("write",))
+    (dest / "src" / "task_logic.py").write_text(UNRESOLVED_WRITE_TASK_LOGIC)
+    (dest / "context" / "input-schema.json").write_text(
+        json.dumps(WRITE_BACK_INPUT_SCHEMA))
+    (dest / "context" / "output-schema.json").write_text(
+        json.dumps(WRITE_BACK_OUTPUT_SCHEMA))
+    return dest
+
+
+RECORD_TASK_LOGIC = '''
+"""Writes the run record, and counts the times it was asked to."""
+import json
+import os
+from pathlib import Path
+
+RECORDS = Path(os.environ["FAKE_GITHUB_COUNTER"]).with_name("records.json")
+
+
+def run(bundle, grant, journal):
+    records = json.loads(RECORDS.read_text()) if RECORDS.exists() else []
+    records.append(bundle.get("outcomes") or [])
+    RECORDS.write_text(json.dumps(records))
+    return {"recorded": len(records)}, []
+'''
+
+
+def record_cog(tmp):
+    dest = create_code_cog(tmp, name="cog-record-run")
+    (dest / "src" / "task_logic.py").write_text(RECORD_TASK_LOGIC)
+    (dest / "context" / "input-schema.json").write_text(json.dumps(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema",
+         "type": "object",
+         "properties": {"outcomes": {"type": "array"}}}))
+    (dest / "context" / "output-schema.json").write_text(json.dumps(
+        {"$schema": "https://json-schema.org/draft/2020-12/schema",
+         "type": "object", "required": ["recorded"],
+         "properties": {"recorded": {"type": "integer"}}}))
+    return dest
+
+
 class TestJournalAndWriteBack(unittest.TestCase):
     def calls(self, tmp):
         path = Path(tmp) / "calls.json"

@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.4
+**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.5
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: durable state is refused by name, with the
@@ -354,7 +354,8 @@ not, and must never be described as, an enforced restricted environment.
 The Track keeps the scope and provenance: top-level `authority`
 (`{path, sha256}`), `grants` (one entry per grant: id, step, path, the
 operations with their counts, and who issued it), and `resumes`; per step
-`grant`, `journal`, and the `authority_use` list the Cog reported.
+`grant`, `journal`, and the `authority_use` list the Cog reported. A run
+that stopped also carries `failed_step`: the step to resume at.
 
 ## 6. The human Gate, pause, and resume
 
@@ -415,6 +416,19 @@ mappings, and continues from the next step. Steps already passed are **never
 re-run**; a step a crash left `running` runs again (a Cog with a journal
 reconciles first). Resuming with no decision while one is pending exits 3
 again, and every resume is appended to the Track's `resumes`.
+
+**A failed run resumes too** (Op machinery 0.5.5). When a step's Gate fails
+and the step is `on_fail: stop`, the run ends `failed` and the Track names
+that step in `failed_step`. `--resume RUN_DIR` (no decision needed) re-runs
+THAT step and then the steps after it, which have never run. This is how a
+Cog that reports unfinished work gets to finish it: a write-back that left a
+change uncertain returns an error-severity problem, the Gate fails, the run
+stops before anything downstream records a final state, and the resume
+invokes the Cog again so it can reconcile against the target. A step that
+passed is still never re-run, so the resume costs nothing but the step that
+asked for it. A step whose GRANT was denied is recorded `denied`; if that
+stopped the run it is the resume point too, and a denial that still stands
+simply stops the run again.
 
 **One run, one process.** `runs/<run_id>/run.lock` is locked with `flock` at
 the start of a run and of every resume — before the Track is read. The lock
@@ -481,7 +495,8 @@ construct and the phase that adds it — never discovered mid-run:
 Exit codes: `0` completed (or completed-with-problems, or a planned dry run),
 `1` failed, `2` an invalid spec, request, admission or decision — and a
 resume of a run another process holds — `3` paused for a human. Stdout is one
-JSON object.
+JSON object. Exit `1` is not the end of the run: the Track says which step
+stopped it, and `--resume` starts again there.
 
 ## 8. Changing an Op
 

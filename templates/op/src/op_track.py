@@ -188,6 +188,9 @@ def new_track(spec, run_id, input_request, status="running"):
         "authority": None,
         "grants": [],
         "resumes": [],
+        # The step a stopping verdict ended the run at — the resume point of
+        # a failed run (contract §9e). `None` while the run is live.
+        "failed_step": None,
         "steps": [],
     }
 

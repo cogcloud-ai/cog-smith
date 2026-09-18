@@ -1,7 +1,7 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.4 /
+**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.5 /
 code-cog machinery 0.1.4  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,

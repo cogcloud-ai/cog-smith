@@ -29,6 +29,12 @@ the ordinary envelope Gate: the proposed changes are written to
 the process exits 3. `--resume RUN_DIR --decision FILE` applies the human's
 answer and carries on; steps that already passed are never re-run.
 
+A FAILED run resumes too (contract §9e): the step that stopped it — the one
+the Track names in `failed_step` — is the resume point, so a Cog that
+reports unfinished work (a write left uncertain, say) is re-run and finishes
+it, and the steps after it then run for the first time. Steps that passed
+are still never re-run.
+
 One run, one process: `runs/<run_id>/run.lock` is locked with `flock` at the
 start and on every resume, so two resumes of the same paused run cannot both
 accept the decision and both write. The lock is the open DESCRIPTOR, held for
@@ -1279,6 +1285,10 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
     dependents = spec.dependents()
     blocked = set()
     track["steps"] = []
+    # This attempt has not stopped anywhere yet. `failed_step` names the step
+    # a `stop` ended the run at, so a resume knows where to pick it up again
+    # (contract §9e).
+    track["failed_step"] = None
 
     for position, step in enumerate(spec.ordered):
         sid = step["id"]
@@ -1332,6 +1342,7 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
                     track["steps"].append(
                         op_track.step_record(later, "not-reached"))
                 track["status"] = "failed"
+                track["failed_step"] = sid
                 track["ended_at"] = op_track.utc_now()
                 track_path = op_track.save(track, run_dir)
                 return 1, {"ok": False, "status": "failed", "failed_step": sid,
@@ -1425,6 +1436,7 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             for later in spec.ordered[position + 1:]:
                 track["steps"].append(op_track.step_record(later, "not-reached"))
             track["status"] = "failed"
+            track["failed_step"] = sid
             track["ended_at"] = op_track.utc_now()
             track_path = op_track.save(track, run_dir)
             return 1, {"ok": False, "status": "failed", "failed_step": sid,
@@ -1517,11 +1529,12 @@ def run(package_root, request_path, dry_run=False, runs_dir=None,
 
 
 def resume(package_root, run_dir, decision_path=None, authority_path=None):
-    """Continue a paused or interrupted run: apply the human's decision to
-    the step that asked for it, and carry on from the next step.
+    """Continue a paused, interrupted or FAILED run: apply the human's
+    decision to the step that asked for it, and carry on from the next step.
 
     Steps already `passed` are never re-run; a step left `running` by a
-    crash runs again (a Cog with a journal reconciles first)."""
+    crash runs again (a Cog with a journal reconciles first), and the step
+    that STOPPED a failed run runs again too (contract §9e)."""
     package_root = Path(package_root).resolve()
     run_dir = Path(run_dir).resolve()
     track_path = run_dir / "track.json"
@@ -1537,6 +1550,15 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
                        authority_path)
     finally:
         lock.release()
+
+
+def _stopping_step(track):
+    """The step a failed run stopped at, for a Track that does not name it:
+    the last record the run actually reached with a stopping verdict."""
+    for record in reversed(track.get("steps") or []):
+        if record["status"] in ("failed", "denied"):
+            return record["id"]
+    return None
 
 
 def _resume(package_root, run_dir, track_path, decision_path,
@@ -1588,6 +1610,17 @@ def _resume(package_root, run_dir, track_path, decision_path,
     done = {r["id"]: r for r in track.get("steps") or []
             if r["status"] in ("passed", "passed-with-problems", "skipped",
                                "blocked", "denied", "awaiting-decision")}
+    # The step that stopped a FAILED run is the resume point (contract §9e):
+    # a Cog that reported unfinished work — a write left uncertain — is
+    # invoked again so it can finish it, and the steps after it run for the
+    # first time. A `failed` record is not in `done` to begin with; a
+    # `denied` one is, so it is taken out here. Nothing that PASSED is ever
+    # re-run. Tracks written before 0.5.5 carry no `failed_step`, so the
+    # stopping step is read off the records instead.
+    if track.get("status") == "failed":
+        stopper = track.get("failed_step") or _stopping_step(track)
+        if stopper is not None:
+            done.pop(stopper, None)
 
     decision_copy = None
     if decision_path:

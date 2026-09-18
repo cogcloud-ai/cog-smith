@@ -48,6 +48,25 @@ def spec_doc():
     return fx.spec_doc([compose, write])
 
 
+def unresolved_spec_doc():
+    """compose (human Gate, canned) -> write-github (unresolved once) ->
+    record-run: the three steps contract §9e's runner-level test needs."""
+    compose = fx.cog_step("compose", gate={"policy": "human", "guards": []})
+    compose["input"] = {"note": {"$from": "inputs.note"}}
+    write = fx.cog_step("write-github", task="run", depends_on=["compose"],
+                        authority={"requires": [
+                            {"resource": "github", "action": "write",
+                             "changes": {"$from":
+                                         "steps.compose.decision.approved"}}]})
+    write["cog"]["id"] = "openteams/cog-write-github"
+    write["input"] = {"changes": {"$from": "steps.compose.decision.approved"}}
+    record = fx.cog_step("record-run", task="run", depends_on=["write-github"])
+    record["cog"]["id"] = "openteams/cog-record-run"
+    record["input"] = {"outcomes": {"$from":
+                                    "steps.write-github.payload.changes"}}
+    return fx.spec_doc([compose, write, record])
+
+
 class ProcessCrashTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -223,6 +242,104 @@ class ProcessCrashTests(unittest.TestCase):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # free again
         finally:
             os.close(fd)
+
+
+class UnresolvedResumeTests(unittest.TestCase):
+    """Contract §9e: uncertain means the step has not finished.
+
+    The write Cog leaves its change uncertain and reports
+    `write-back-unresolved` at error severity. The Gate fails, the run stops
+    there, and the recording step downstream never runs — nothing records a
+    final state that is not final. `op run --resume` then re-runs THAT step
+    (Op machinery 0.5.5), the Cog reconciles, and the run finishes.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.package = self.root / "op-test"
+        fx.write_cog(self.root, "compose")
+        cc.unresolved_write_cog(self.root)
+        cc.record_cog(self.root)
+        fx.write_package(self.package, unresolved_spec_doc())
+        self.request = fx.write_request(self.root / "request.json",
+                                        {"note": "hello"})
+        self.authority = self.root / "authority.json"
+        self.authority.write_text(json.dumps(fx.authority_doc()))
+        self.canned = self.root / "canned.json"
+        self.canned.write_text(json.dumps({"ask": [fx.envelope(
+            payload={"changes": [fx.change("c-1")]})]}))
+
+    def drive(self, *args):
+        env = dict(os.environ)
+        env["FAKE_GITHUB_COUNTER"] = str(self.root / "calls.json")
+        completed = subprocess.run(
+            [sys.executable, str(DRIVER), str(self.canned), str(self.package),
+             *args], capture_output=True, text=True, env=env, cwd=str(ROOT))
+        try:
+            return completed.returncode, json.loads(completed.stdout)
+        except json.JSONDecodeError:                     # pragma: no cover
+            self.fail(f"driver printed no JSON: {completed.stdout}\n"
+                      f"{completed.stderr}")
+
+    def read(self, name, default=None):
+        path = self.root / name
+        return json.loads(path.read_text()) if path.exists() else default
+
+    def track(self, run_dir):
+        return json.loads((Path(run_dir) / "track.json").read_text())
+
+    def status(self, track, sid):
+        return next(s["status"] for s in track["steps"] if s["id"] == sid)
+
+    def test_an_unresolved_write_stops_the_run_and_resume_re_runs_that_step(self):
+        code, paused = self.drive("--request", str(self.request),
+                                  "--authority", str(self.authority))
+        self.assertEqual(code, op_runner.PAUSED_EXIT, paused)
+        run_dir = paused["run_dir"]
+        pending = json.loads(Path(paused["pending"]).read_text())
+        decision = self.root / "decision.json"
+        decision.write_text(json.dumps(fx.decision_doc(
+            pending["run_id"], pending["step"], pending["payload_sha256"],
+            {"c-1": "approve"})))
+
+        # ---- the run stops at the write step, and nothing downstream runs
+        code, output = self.drive("--resume", run_dir, "--decision",
+                                  str(decision))
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertEqual(output["failed_step"], "write-github")
+        track = self.track(run_dir)
+        self.assertEqual(track["status"], "failed")
+        self.assertEqual(track["failed_step"], "write-github")
+        self.assertEqual(self.status(track, "compose"), "passed")
+        self.assertEqual(self.status(track, "write-github"), "failed")
+        self.assertEqual(self.status(track, "record-run"), "not-reached")
+        self.assertIsNone(self.read("records.json"))     # nothing recorded
+        self.assertEqual(self.read("write-attempts.json"), [["c-1"]])
+
+        # ---- the resume re-runs THAT step, and only that step
+        code, output = self.drive("--resume", run_dir)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(output["status"], "completed")
+        track = self.track(run_dir)
+        self.assertIsNone(track["failed_step"])
+        self.assertEqual(self.status(track, "compose"), "passed")
+        self.assertEqual(self.status(track, "write-github"), "passed")
+        self.assertEqual(self.status(track, "record-run"), "passed")
+        # the write step ran twice (it had unfinished work), the recording
+        # step once — AFTER the write finished — and the human-gated step
+        # not again: a second pause would have ended this run at exit 3.
+        self.assertEqual(self.read("write-attempts.json"), [["c-1"], ["c-1"]])
+        self.assertEqual(self.read("records.json"),
+                         [[{"change_id": "c-1", "outcome": "applied"}]])
+        self.assertEqual(self.read("calls.json"), ["c-1"])   # exactly once
+        journal = [json.loads(line) for line in
+                   (Path(run_dir) / "journal" / "write-github.jsonl")
+                   .read_text().splitlines() if line.strip()]
+        self.assertEqual([e["phase"] for e in journal],
+                         ["uncertain", "applied"])
 
 
 #: A fake `pixi` on PATH. It does what pixi does for the runner's purposes —

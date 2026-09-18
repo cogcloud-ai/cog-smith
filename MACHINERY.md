@@ -184,6 +184,33 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.5.5 — a failed run resumes at the step that stopped it (review 5)
+
+Contract §9e, from
+`planning/current/phase3-codex-review-5-code-cogs-verification.md` (new
+finding 1). Regression test: `tests/test_op_process.py::UnresolvedResumeTests
+::test_an_unresolved_write_stops_the_run_and_resume_re_runs_that_step` — a
+real Op, as processes, whose write Cog leaves its change uncertain once.
+
+- **New 1 — `uncertain` was resumable in the Cog but not in the Op.** A Cog
+  that reports unfinished work returns an error-severity problem, so its
+  Gate fails and an `on_fail: stop` step ends the run. Until now that was
+  the end of the run: the only way to reconcile was to invoke the Cog by
+  hand. Now the Track records `failed_step` — the step a stopping verdict
+  ended the run at — and `op run --resume RUN_DIR` (no decision needed)
+  takes that step out of the `done` set and runs it again, followed by the
+  steps after it, which never ran. `passed` and `passed-with-problems`
+  steps are still never re-run, so a resume costs only the step that asked
+  for it.
+- **A `denied` step that stopped the run is a resume point too.** It is the
+  one stopping status that was already IN the `done` set, so without this a
+  resume would have carried on past it as though it had been skipped. A
+  denial that still stands simply stops the run again.
+- **Older Tracks still resume.** A Track written before 0.5.5 carries no
+  `failed_step`; the stopping step is then read off the records (the last
+  `failed` or `denied` one), so a run started under 0.5.4 resumes under
+  0.5.5 without special handling.
+
 ### 0.5.4 — the decision says who, when, and what was edited (review 4)
 
 Contract §9d, from `planning/current/phase3-codex-review-4-code-cogs-and-op.md`.
