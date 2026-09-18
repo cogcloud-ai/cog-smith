@@ -247,6 +247,123 @@ class TestTheSeam(unittest.TestCase):
                                .read_bytes()).hexdigest())
 
 
+PROBE = """
+import json, sys
+sys.path.insert(0, "src")
+import cog_core
+grant = json.loads(sys.argv[1])
+print(json.dumps(%s))
+"""
+
+
+def probe(dest, expression, grant_doc):
+    """Evaluate one expression over the created Cog's OWN machinery, in its
+    own process (the machinery loads the package manifest at import)."""
+    completed = subprocess.run(
+        [sys.executable, "-c", PROBE % expression, json.dumps(grant_doc)],
+        cwd=str(dest), capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+class TestGrantChecks(unittest.TestCase):
+    """The per-call grant helpers: nothing fails open (review B4, S7)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dest = create_code_cog(self.tmp.name)
+        declare_reaches(self.dest)
+        self.addCleanup(self.tmp.cleanup)
+
+    def doc(self, **over):
+        return dict(grant("openteams/cog-widget"), **over)
+
+    def test_a_grant_whose_two_run_ids_disagree_is_invalid(self):
+        doc = self.doc(run_id="run-other")     # valid.run_id is still run-1
+        self.assertEqual(
+            probe(self.dest, 'cog_core.check_grant(grant, run_id="run-1")',
+                  doc)[0], "grant-invalid")
+
+    def test_an_invocation_without_a_run_id_is_invalid(self):
+        self.assertEqual(
+            probe(self.dest, "cog_core.check_grant(grant)", self.doc())[0],
+            "grant-invalid")
+
+    def test_a_malformed_recipient_is_named_not_crashed(self):
+        code, detail = probe(self.dest,
+                             'cog_core.check_grant(grant, run_id="run-1")',
+                             self.doc(recipient=["bad"]))
+        self.assertEqual(code, "grant-wrong-recipient")
+        self.assertIn("recipient", detail)
+
+    def test_read_allowed_re_checks_expiry_on_every_call(self):
+        expired = grant("openteams/cog-widget", expires_in_minutes=-1)
+        ok, detail = probe(
+            self.dest,
+            'cog_core.read_allowed(grant, "openteams-ai/apollo-desktop", '
+            'run_id="run-1")', expired)
+        self.assertFalse(ok)
+        self.assertIn("grant-expired", detail)
+
+    def test_read_allowed_re_checks_the_run_binding_on_every_call(self):
+        ok, detail = probe(
+            self.dest,
+            'cog_core.read_allowed(grant, "openteams-ai/apollo-desktop", '
+            'run_id="run-somewhere-else")', self.doc())
+        self.assertFalse(ok)
+        self.assertIn("grant-wrong-run", detail)
+
+    def test_write_allowed_never_fails_open_on_a_null_hash(self):
+        doc = self.doc(operations=[
+            {"resource": "github", "action": "write",
+             "changes": [{"change_id": "c-1", "content_sha256": None,
+                          "target_sha256": None}]}])
+        ok, detail = probe(
+            self.dest,
+            'cog_core.write_allowed(grant, "c-1", "whatever-the-target-says", '
+            'run_id="run-1")', doc)
+        self.assertFalse(ok)
+        self.assertIn("carries both hashes", detail)
+
+    def test_write_allowed_needs_a_freshly_fetched_target_hash(self):
+        doc = self.doc(operations=[
+            {"resource": "github", "action": "write",
+             "changes": [{"change_id": "c-1", "content_sha256": "a" * 64,
+                          "target_sha256": "b" * 64}]}])
+        ok, detail = probe(
+            self.dest,
+            'cog_core.write_allowed(grant, "c-1", None, run_id="run-1")', doc)
+        self.assertFalse(ok)
+        self.assertIn("freshly fetched content hash", detail)
+
+    def test_a_grant_without_a_run_id_flag_is_refused_by_the_cli(self):
+        path = Path(self.tmp.name) / "grant.json"
+        path.write_text(json.dumps(self.doc()))
+        code, env, _ = run_cog(self.dest, "--bundle",
+                               "examples/sample-bundle.json",
+                               "--grant", str(path))
+        self.assertEqual(code, 1)
+        self.assertEqual(env["error"]["code"], "grant-invalid")
+        self.assertIn("--run-id", env["error"]["detail"])
+
+    def test_a_bundle_the_schema_refuses_never_reaches_the_packages_checker(self):
+        # `{"items": [1]}` used to crash `check_input` on `item.get`; it is a
+        # named invalid-input envelope (review S7).
+        bundle = Path(self.tmp.name) / "bad-bundle.json"
+        bundle.write_text(json.dumps({"items": [1]}))
+        code, env, out = run_cog(self.dest, "--bundle", str(bundle),
+                                 "--grant", str(self.write_grant()),
+                                 "--run-id", "run-1")
+        self.assertEqual(code, 1, out)
+        self.assertEqual(env["error"]["code"], "invalid-input")
+        self.assertTrue(all(p["check"] == "input" for p in env["problems"]))
+
+    def write_grant(self):
+        path = Path(self.tmp.name) / "grant.json"
+        path.write_text(json.dumps(self.doc()))
+        return path
+
+
 # --------------------------------------------------------------------------
 # A fake write-back Cog: the starter package with task_logic.py (the
 # AUTHOR-OWNED module) replaced by a two-phase, journal-reconciling
@@ -256,21 +373,46 @@ class TestTheSeam(unittest.TestCase):
 # repaired on the next invocation, and the change is applied exactly once.
 
 WRITE_BACK_TASK_LOGIC = '''
-"""A fake write-back: applies approved changes against a counting stub."""
+"""A fake write-back over a fake GitHub that keeps STATE.
+
+`calls.json` counts every attempted apply; `applied.json` is what the fake
+GitHub actually holds. Reconciliation consults `applied.json` — it never
+assumes an `applying` line means the effect landed — which is what makes the
+two crash windows distinguishable.
+"""
 import json
 import os
 from pathlib import Path
 
 COUNTER = Path(os.environ["FAKE_GITHUB_COUNTER"])
+STATE = COUNTER.with_name("applied.json")
+TARGETS = COUNTER.with_name("targets.json")
+
+
+def _read(path, default):
+    return json.loads(path.read_text()) if path.exists() else default
 
 
 def fake_github_apply(change_id):
-    calls = json.loads(COUNTER.read_text()) if COUNTER.exists() else []
+    calls = _read(COUNTER, [])
     calls.append(change_id)
     COUNTER.write_text(json.dumps(calls))
     if change_id == os.environ.get("FAKE_GITHUB_FAILS"):
         raise RuntimeError("github refused this change")
+    state = _read(STATE, [])
+    state.append(change_id)
+    STATE.write_text(json.dumps(state))
     return {"url": f"https://example.invalid/{change_id}"}
+
+
+def fake_github_has(change_id):
+    """The reconcile query: does the effect already exist on the target?"""
+    return change_id in _read(STATE, [])
+
+
+def fetch_target_sha256(change):
+    """The target item's CURRENT content hash, fetched fresh."""
+    return _read(TARGETS, {}).get(change["change_id"], "1" * 64)
 
 
 def run(bundle, grant, journal):
@@ -282,23 +424,29 @@ def run(bundle, grant, journal):
         if done.get(cid) in ("applied", "failed"):
             outcomes.append({"change_id": cid, "outcome": "skipped"})
             continue
-        ok, detail = cog_core.write_allowed(grant, cid,
-                                            change.get("content_sha256"))
-        if not ok:
-            used.append(cog_core.use("write", "github", cid, "denied", detail))
-            problems.append(cog_core.problem("authority", detail, "warn"))
-            outcomes.append({"change_id": cid, "outcome": "denied"})
-            continue
-        if done.get(cid) == "applying":
-            # Uncertain: GitHub may have accepted it before the crash.
-            # Reconcile instead of applying again.
+        if done.get(cid) == "applying" and fake_github_has(cid):
+            # Uncertain, and the target says it landed: reconcile, never
+            # apply again.
             journal.append({"change_id": cid, "phase": "applied",
                             "reconciled": True})
             used.append(cog_core.use("write", "github", cid, "authorized",
                                      "reconciled"))
             outcomes.append({"change_id": cid, "outcome": "applied"})
             continue
+        ok, detail = cog_core.write_allowed(
+            grant, cid, fetch_target_sha256(change),
+            content_sha256=change.get("content_sha256"))
+        if not ok:
+            used.append(cog_core.use("write", "github", cid, "denied", detail))
+            problems.append(cog_core.problem("authority", detail, "warn"))
+            outcomes.append({"change_id": cid,
+                             "outcome": "stale"
+                             if "approved against target content" in detail
+                             else "denied"})
+            continue
         journal.append({"change_id": cid, "phase": "applying"})
+        if os.environ.get("CRASH_BEFORE") == cid:
+            os._exit(9)          # planted: journal line, nothing applied
         try:
             evidence = fake_github_apply(cid)
         except RuntimeError as exc:
@@ -344,14 +492,27 @@ def write_back_cog(tmp):
     return dest
 
 
-def write_grant(tmp, change_ids):
+CONTENT_SHA = "a" * 64
+TARGET_SHA = "1" * 64
+
+
+def write_grant(tmp, change_ids, target_sha256=TARGET_SHA, **over):
+    """A write grant carrying BOTH hashes per change (contract §9)."""
     path = Path(tmp) / "grant.json"
     path.write_text(json.dumps(grant(
         "openteams/cog-write-github",
         operations=[{"resource": "github", "action": "write",
-                     "changes": [{"change_id": c, "content_sha256": None}
-                                 for c in change_ids]}])))
+                     "changes": [{"change_id": c,
+                                  "repository": "openteams-ai/apollo-desktop",
+                                  "content_sha256": CONTENT_SHA,
+                                  "target_sha256": target_sha256}
+                                 for c in change_ids]}], **over)))
     return path
+
+
+def changes_bundle(*change_ids, content_sha256=CONTENT_SHA):
+    return {"changes": [{"change_id": c, "content_sha256": content_sha256}
+                        for c in change_ids]}
 
 
 def run_write_back(dest, tmp, bundle, env_extra=None):
@@ -378,15 +539,19 @@ class TestJournalAndWriteBack(unittest.TestCase):
         path = Path(tmp) / "calls.json"
         return json.loads(path.read_text()) if path.exists() else []
 
+    def journal(self, tmp):
+        path = Path(tmp) / "journal.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()
+                if line.strip()]
+
     def test_a_failing_change_is_reported_and_the_step_passes_with_problems(self):
         sys.path.insert(0, str(ROOT / "templates" / "op" / "src"))
         import op_runner                                # noqa: E402
         with tempfile.TemporaryDirectory() as tmp:
             dest = write_back_cog(tmp)
             write_grant(tmp, ["c-ok", "c-bad"])
-            bundle = {"changes": [{"change_id": "c-ok"},
-                                  {"change_id": "c-bad"}]}
-            completed, env = run_write_back(dest, tmp, bundle,
+            completed, env = run_write_back(dest, tmp,
+                                            changes_bundle("c-ok", "c-bad"),
                                             {"FAKE_GITHUB_FAILS": "c-bad"})
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertTrue(env["ok"])
@@ -400,44 +565,127 @@ class TestJournalAndWriteBack(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = write_back_cog(tmp)
             write_grant(tmp, ["c-approved"])
-            bundle = {"changes": [{"change_id": "c-not-approved"}]}
-            _, env = run_write_back(dest, tmp, bundle)
+            _, env = run_write_back(dest, tmp, changes_bundle("c-not-approved"))
             self.assertEqual(env["payload"]["changes"][0]["outcome"], "denied")
             self.assertEqual(self.calls(tmp), [])       # never attempted
             self.assertEqual(env["payload"]["authority_use"][0]["outcome"],
                              "denied")
 
+    def test_a_stale_target_is_denied_by_the_cog(self):
+        # The grant's target_sha256 is the state the human approved against;
+        # the world moved, so this change is not applied (contract §9).
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            (Path(tmp) / "targets.json").write_text(
+                json.dumps({"c-1": "9" * 64}))
+            _, env = run_write_back(dest, tmp, changes_bundle("c-1"))
+            self.assertEqual(env["payload"]["changes"][0]["outcome"], "stale")
+            self.assertEqual(self.calls(tmp), [])
+            self.assertIn("approved against target content",
+                          env["payload"]["authority_use"][0]["detail"])
+
+    def test_a_bundle_cannot_swap_the_content_under_an_approved_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            _, env = run_write_back(
+                dest, tmp, changes_bundle("c-1", content_sha256="b" * 64))
+            self.assertEqual(env["payload"]["changes"][0]["outcome"], "denied")
+            self.assertEqual(self.calls(tmp), [])
+            self.assertIn("but the one to apply is",
+                          env["payload"]["authority_use"][0]["detail"])
+
+    def test_a_grant_with_a_null_hash_authorizes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"], target_sha256=None)
+            _, env = run_write_back(dest, tmp, changes_bundle("c-1"))
+            self.assertEqual(env["payload"]["changes"][0]["outcome"], "denied")
+            self.assertEqual(self.calls(tmp), [])
+            self.assertIn("carries both hashes",
+                          env["payload"]["authority_use"][0]["detail"])
+
     def test_a_crash_after_github_accepted_applies_the_change_exactly_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = write_back_cog(tmp)
             write_grant(tmp, ["c-1"])
-            bundle = {"changes": [{"change_id": "c-1"}]}
+            bundle = changes_bundle("c-1")
             completed, _ = run_write_back(dest, tmp, bundle,
                                           {"CRASH_AFTER": "c-1"})
             self.assertEqual(completed.returncode, 9)   # planted crash
             self.assertEqual(self.calls(tmp), ["c-1"])
-            journal = [json.loads(line) for line in
-                       (Path(tmp) / "journal.jsonl").read_text().splitlines()]
-            self.assertEqual([e["phase"] for e in journal], ["applying"])
+            self.assertEqual([e["phase"] for e in self.journal(tmp)],
+                             ["applying"])
 
-            # resume: the Cog reads the journal FIRST and reconciles
+            # resume: the Cog reads the journal FIRST and asks the target
             completed, env = run_write_back(dest, tmp, bundle)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(env["payload"]["changes"][0]["outcome"], "applied")
             self.assertEqual(self.calls(tmp), ["c-1"])  # exactly once
-            journal = [json.loads(line) for line in
-                       (Path(tmp) / "journal.jsonl").read_text().splitlines()]
-            self.assertTrue(journal[-1].get("reconciled"))
+            self.assertTrue(self.journal(tmp)[-1].get("reconciled"))
+
+    def test_a_crash_before_github_accepted_still_applies_the_change_once(self):
+        # The other window: the journal says `applying`, but nothing landed.
+        # Reconciliation consults the target and applies it for real.
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            bundle = changes_bundle("c-1")
+            completed, _ = run_write_back(dest, tmp, bundle,
+                                          {"CRASH_BEFORE": "c-1"})
+            self.assertEqual(completed.returncode, 9)
+            self.assertEqual(self.calls(tmp), [])       # nothing applied
+            self.assertEqual([e["phase"] for e in self.journal(tmp)],
+                             ["applying"])
+
+            completed, env = run_write_back(dest, tmp, bundle)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(env["payload"]["changes"][0]["outcome"], "applied")
+            self.assertEqual(self.calls(tmp), ["c-1"])  # exactly once
+            self.assertFalse(self.journal(tmp)[-1].get("reconciled"))
 
     def test_a_second_invocation_skips_a_change_with_an_outcome(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = write_back_cog(tmp)
             write_grant(tmp, ["c-1"])
-            bundle = {"changes": [{"change_id": "c-1"}]}
+            bundle = changes_bundle("c-1")
             run_write_back(dest, tmp, bundle)
             _, env = run_write_back(dest, tmp, bundle)
             self.assertEqual(env["payload"]["changes"][0]["outcome"], "skipped")
             self.assertEqual(self.calls(tmp), ["c-1"])
+
+    def test_a_torn_last_line_never_swallows_the_next_outcome(self):
+        # A crash mid-write leaves an unterminated fragment. The next
+        # `applied` line must be readable on its own, or a later invocation
+        # loses the outcome and repeats the effect (review B6).
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            bundle = changes_bundle("c-1")
+            (Path(tmp) / "journal.jsonl").write_text(
+                '{"change_id": "c-0", "phase": "appl')   # torn, no newline
+            _, env = run_write_back(dest, tmp, bundle)
+            self.assertEqual(env["payload"]["changes"][0]["outcome"], "applied")
+            entries = self.journal(tmp)
+            self.assertEqual(entries[0]["phase"], "torn")
+            self.assertEqual([e["phase"] for e in entries[1:]],
+                             ["applying", "applied"])
+            # and the outcome is now visible to the next invocation
+            _, env = run_write_back(dest, tmp, bundle)
+            self.assertEqual(env["payload"]["changes"][0]["outcome"], "skipped")
+            self.assertEqual(self.calls(tmp), ["c-1"])
+
+    def test_a_corrupt_complete_line_refuses_the_invocation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = write_back_cog(tmp)
+            write_grant(tmp, ["c-1"])
+            (Path(tmp) / "journal.jsonl").write_text(
+                'not json at all\n{"change_id": "c-1", "phase": "applied"}\n')
+            completed, env = run_write_back(dest, tmp, changes_bundle("c-1"))
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(env["error"]["code"], "journal-corrupt")
+            self.assertEqual(self.calls(tmp), [])
 
 
 if __name__ == "__main__":

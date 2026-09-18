@@ -39,9 +39,15 @@ except ImportError:                                    # pragma: no cover
 
 #: The code-cog machinery lineage (cog-smith MACHINERY.md). Reported in
 #: every envelope's `binding`, so a saved result names the code that made it.
-MACHINERY_VERSION = "0.1.0"
+MACHINERY_VERSION = "0.1.1"
 
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
+
+#: The run this process is serving, set by `invoke` once the grant has been
+#: checked against it. The per-call helpers re-read it, so `read_allowed` and
+#: `write_allowed` re-check expiry and run binding on EVERY call without the
+#: author having to thread the run id through their own code.
+_INVOCATION_RUN_ID = None
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -124,6 +130,13 @@ def task_logic_sha256():
 
 # ----------------------------------------------------------- the journal --
 
+class JournalCorrupt(Exception):
+    """A COMPLETE journal line that is not a JSON object. Never skipped: a
+    journal the Cog cannot read in full cannot prove what was already done,
+    so the invocation is refused (`journal-corrupt`) instead of risking a
+    second external effect."""
+
+
 class Journal:
     """An append-only JSONL record of what this Cog did outside the run.
 
@@ -133,16 +146,19 @@ class Journal:
     passes `--journal`; the Cog reads it FIRST on every invocation, so a
     change whose outcome is already recorded is skipped and a change left
     `applying` is reconciled before anything is attempted again.
+
+    A crash mid-write can leave an UNTERMINATED last line. That fragment is
+    torn: `read()` ignores it, and `append()` REPAIRS it first — the
+    fragment is cut and a `{"phase": "torn"}` entry records that it was —
+    so the next real entry starts on a line of its own and can never be
+    swallowed by the fragment (review B6).
     """
 
     def __init__(self, path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def append(self, entry):
-        """Write one entry (a dict), stamping `at` when it carries none."""
-        if not isinstance(entry, dict):
-            raise TypeError("a journal entry is a JSON object")
+    def _write(self, entry):
         entry = dict(entry)
         entry.setdefault("at", utc_now())
         line = json.dumps(entry, ensure_ascii=False) + "\n"
@@ -152,22 +168,60 @@ class Journal:
             os.fsync(handle.fileno())
         return entry
 
+    def repair(self):
+        """Terminate a torn last line, if there is one; returns the discarded
+        fragment or None. Called before every append."""
+        if not self.path.exists():
+            return None
+        data = self.path.read_bytes()
+        if not data or data.endswith(b"\n"):
+            return None
+        cut = data.rfind(b"\n") + 1
+        fragment = data[cut:].decode("utf-8", "replace")
+        with open(self.path, "r+b") as handle:
+            handle.truncate(cut)
+            handle.flush()
+            os.fsync(handle.fileno())
+        self._write({"phase": "torn", "discarded": fragment})
+        return fragment
+
+    def append(self, entry):
+        """Write one entry (a dict), stamping `at` when it carries none."""
+        if not isinstance(entry, dict):
+            raise TypeError("a journal entry is a JSON object")
+        self.repair()
+        return self._write(entry)
+
     def read(self):
-        """Every entry, in order. A trailing torn line (a crash mid-write)
-        is dropped rather than raising: the record before it is still true."""
+        """Every entry, in order.
+
+        An unterminated LAST line is a torn write and is ignored — the
+        records before it are still true. A malformed COMPLETE line anywhere
+        is corruption, not noise: it raises `JournalCorrupt` rather than
+        being skipped, because skipping it would hide an effect."""
         if not self.path.exists():
             return []
+        text = self.path.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        if text and not text.endswith("\n") and lines:
+            lines = lines[:-1]
         entries = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        for number, line in enumerate(lines, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict):
-                entries.append(value)
+            except json.JSONDecodeError as exc:
+                raise JournalCorrupt(
+                    f"{self.path.name} line {number} is not readable JSON "
+                    f"({exc}); the journal records external effects and is "
+                    f"never partly read") from exc
+            if not isinstance(value, dict):
+                raise JournalCorrupt(
+                    f"{self.path.name} line {number} is not a JSON object; "
+                    f"a journal entry is an object")
+            entries.append(value)
         return entries
 
     def phases(self):
@@ -217,11 +271,14 @@ def _expired(grant, now=None):
     return False, None
 
 
-def check_grant(grant, run_id=None, now=None, cog_id=None):
+def check_grant(grant, run_id=None, now=None, cog_id=None,
+                require_run_id=True):
     """(code, detail) when this grant may not be used, else (None, None).
 
     Checked before any external call: a grant for another run, another Cog,
-    or a moment that has passed is refused by THIS Cog."""
+    or a moment that has passed is refused by THIS Cog. Nothing here fails
+    open — a grant whose run binding disagrees with itself, or an invocation
+    that carries no `--run-id`, is `grant-invalid` (review B4)."""
     cog_id = cog_id or SELF_ID["id"]
     if not isinstance(grant, dict):
         return "grant-invalid", "the grant is not a JSON object"
@@ -234,18 +291,46 @@ def check_grant(grant, run_id=None, now=None, cog_id=None):
     valid = grant.get("valid")
     if not isinstance(valid, dict):
         return "grant-invalid", "the grant declares no validity conditions"
+    # ONE run binding, stated twice and required to agree: a grant whose
+    # top-level run_id and valid.run_id differ is not a document this Cog
+    # can act on, whichever of the two an invocation happens to match.
+    top, inner = grant.get("run_id"), valid.get("run_id")
+    for name, value in (("run_id", top), ("valid.run_id", inner)):
+        if not isinstance(value, str) or not value:
+            return "grant-invalid", (f"the grant declares {name} {value!r}; a "
+                                     f"grant names the run it belongs to")
+    if top != inner:
+        return "grant-invalid", (f"the grant's run_id {top!r} and valid.run_id "
+                                 f"{inner!r} disagree")
+    if run_id is None and require_run_id:
+        return "grant-invalid", ("this invocation carries no --run-id; a "
+                                 "grant is used only in the run it names")
     expired, detail = _expired(grant, now)
     if expired:
         return "grant-expired", detail
-    bound = valid.get("run_id") or grant.get("run_id")
-    if run_id is not None and str(bound) != str(run_id):
-        return "grant-wrong-run", (f"the grant is bound to run {bound!r}, not "
+    if run_id is not None and str(top) != str(run_id):
+        return "grant-wrong-run", (f"the grant is bound to run {top!r}, not "
                                    f"to this run ({run_id!r})")
-    recipient = ((grant.get("recipient") or {}).get("cog") or {}).get("id")
+    recipient = grant.get("recipient")
+    recipient = recipient.get("cog") if isinstance(recipient, dict) else None
+    recipient = recipient.get("id") if isinstance(recipient, dict) else None
     if recipient != cog_id:
         return "grant-wrong-recipient", (f"the grant names {recipient!r} as "
                                          f"its recipient, not {cog_id!r}")
     return None, None
+
+
+def _usable(grant, run_id=None, now=None):
+    """(ok, detail) — the whole grant, re-checked before ONE external call.
+
+    Validity is not a load-time property: a long invocation can outlive its
+    grant, so every per-call helper comes back through here."""
+    bound = run_id if run_id is not None else _INVOCATION_RUN_ID
+    code, detail = check_grant(grant, run_id=bound, now=now,
+                               require_run_id=False)
+    if code:
+        return False, f"{code}: {detail}"
+    return True, None
 
 
 def operations(grant, resource=None, action=None):
@@ -262,8 +347,13 @@ def operations(grant, resource=None, action=None):
     return out
 
 
-def read_allowed(grant, target, resource="github"):
-    """(ok, detail) for reading TARGET (e.g. a repository)."""
+def read_allowed(grant, target, resource="github", run_id=None, now=None):
+    """(ok, detail) for reading TARGET (e.g. a repository). The whole grant
+    is re-checked first: expiry and run binding hold per CALL, not per
+    invocation."""
+    ok, detail = _usable(grant, run_id, now)
+    if not ok:
+        return False, detail
     for op in operations(grant, resource, "read"):
         if target in (op.get("repositories") or []):
             return True, None
@@ -281,18 +371,45 @@ def approved_change(grant, change_id, resource="github"):
     return None
 
 
-def write_allowed(grant, change_id, content_sha256=None, resource="github"):
-    """(ok, detail) for writing CHANGE_ID, optionally against the current
-    content hash of its target (staleness: the world moved since approval)."""
+def write_allowed(grant, change_id, target_sha256, content_sha256=None,
+                  resource="github", run_id=None, now=None):
+    """(ok, detail) for writing CHANGE_ID.
+
+    TWO hashes, and neither may be null (contract §9):
+
+    - `target_sha256` is the content hash of the target item as the Op READ
+      it. Pass the hash you just fetched FRESH from the target: if it
+      differs, the world moved since the human approved and the change is
+      stale. It is required — a caller with nothing to compare has not
+      checked staleness, and this helper never fails open.
+    - `content_sha256`, when you pass it, is the hash of the change your
+      bundle carries: it must equal the one the human approved, so a bundle
+      cannot swap a change's content under an approved id.
+    """
+    ok, detail = _usable(grant, run_id, now)
+    if not ok:
+        return False, detail
     change = approved_change(grant, change_id, resource)
     if change is None:
         return False, (f"change {change_id!r} is not in this grant; it was "
                        f"never approved")
-    if (content_sha256 is not None
-            and change.get("content_sha256") not in (None, content_sha256)):
-        return False, (f"change {change_id!r} was approved against content "
-                       f"{change.get('content_sha256')!r}, but the target is "
-                       f"now {content_sha256!r}")
+    for field in ("content_sha256", "target_sha256"):
+        if not isinstance(change.get(field), str) or not change[field]:
+            return False, (f"the grant's change {change_id!r} carries "
+                           f"{field} {change.get(field)!r}; a granted change "
+                           f"carries both hashes")
+    if not isinstance(target_sha256, str) or not target_sha256:
+        return False, (f"writing change {change_id!r} needs the target's "
+                       f"freshly fetched content hash, got "
+                       f"{target_sha256!r}")
+    if change["target_sha256"] != target_sha256:
+        return False, (f"change {change_id!r} was approved against target "
+                       f"content {change['target_sha256']!r}, but the target "
+                       f"is now {target_sha256!r}")
+    if content_sha256 is not None and change["content_sha256"] != content_sha256:
+        return False, (f"change {change_id!r} was approved as content "
+                       f"{change['content_sha256']!r}, but the one to apply "
+                       f"is {content_sha256!r}")
     return True, None
 
 
@@ -318,10 +435,17 @@ def _schema_problems(value, schema, check):
 
 
 def validate_input(bundle):
-    """The declared input schema, then the package's own input checks."""
+    """The declared input schema, then the package's own input checks.
+
+    The package's checker runs ONLY over a bundle the declared schema
+    accepted: a `check_input` written against the declared shape may assume
+    it, and a bundle that violates the schema is reported as schema problems
+    rather than crashing the author's callback (review S7)."""
     if not isinstance(bundle, dict):
         return [problem("input", "input is not an object")]
     problems = _schema_problems(bundle, INPUT_SCHEMA, "input")
+    if problems:
+        return problems
     checker = getattr(task_logic, "check_input", None)
     if checker:
         problems.extend(checker(bundle) or [])
@@ -395,6 +519,7 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
     None. Fails CLOSED: a Cog that declares `reaches` and is handed no grant
     refuses before `run` is called, and an invalid grant is refused with the
     reason named."""
+    global _INVOCATION_RUN_ID
     import time
     started = time.monotonic()
 
@@ -415,9 +540,20 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
         code, detail = check_grant(grant, run_id=run_id, now=now)
         if code:
             return _fail(task, code, detail)
+    _INVOCATION_RUN_ID = run_id
+
+    # The journal is read BEFORE any work: a journal this Cog cannot read in
+    # full cannot prove what was already done outside the run.
+    if journal is not None:
+        try:
+            journal.read()
+        except JournalCorrupt as exc:
+            return _fail(task, "journal-corrupt", str(exc))
 
     try:
         result = task_logic.run(bundle, grant, journal)
+    except JournalCorrupt as exc:
+        return _fail(task, "journal-corrupt", str(exc))
     except Exception as exc:                            # the task's own bug
         return _fail(task, "task-failed", f"{type(exc).__name__}: {exc}")
     if (not isinstance(result, tuple) or len(result) != 2):

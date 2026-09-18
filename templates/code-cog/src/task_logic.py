@@ -23,7 +23,9 @@ is a cog_core.Journal (or None): read it FIRST so an effect already applied
 is never applied twice, and record `applying` before an external effect and
 `applied`/`failed` after it.
 
-A sketch of the reaching shape, for when you replace this:
+A sketch of the reaching shape, for when you replace this. All four of the
+numbered steps are REQUIRED, not decoration: they are what makes a resumed
+run apply an effect exactly once.
 
     def run(bundle, grant, journal):
         import cog_core
@@ -32,15 +34,31 @@ A sketch of the reaching shape, for when you replace this:
         for change in bundle["changes"]:
             cid = change["change_id"]
             if done.get(cid) in ("applied", "failed"):
-                continue                         # already decided, exactly once
-            ok, detail = cog_core.write_allowed(grant, cid,
-                                                change.get("content_sha256"))
+                continue                     # 1. already decided: exactly once
+            if done.get(cid) == "applying":
+                # 2. UNCERTAIN: a crash between the call and the journal line.
+                #    Ask the target whether the effect is already there —
+                #    never re-apply on the strength of the journal alone.
+                if already_there(change):    # your own reconcile query
+                    journal.append({"change_id": cid, "phase": "applied",
+                                    "reconciled": True})
+                    used.append(cog_core.use("write", "github", cid,
+                                             "authorized", "reconciled"))
+                    continue
+            # 3. Fetch the target's CURRENT content hash — freshly, from the
+            #    target, never from the bundle — and check the grant with it.
+            #    The grant carries two hashes: `content_sha256` (what the
+            #    human approved) and `target_sha256` (the state approved
+            #    against). Staleness is the fresh fetch disagreeing.
+            ok, detail = cog_core.write_allowed(
+                grant, cid, fetch_target_sha256(change),
+                content_sha256=change.get("content_sha256"))
             if not ok:
                 used.append(cog_core.use("write", "github", cid, "denied", detail))
                 problems.append(cog_core.problem("authority", detail, "warn"))
                 continue
             journal.append({"change_id": cid, "phase": "applying"})
-            ...                                  # the one external call
+            ...                              # 4. the one external call
             journal.append({"change_id": cid, "phase": "applied",
                             "evidence": {...}})
             used.append(cog_core.use("write", "github", cid, "authorized"))
@@ -55,6 +73,10 @@ def check_input(bundle):
     problems = []
     seen = set()
     for index, item in enumerate(bundle.get("items") or []):
+        if not isinstance(item, dict):
+            # The declared schema has already refused this shape; a checker
+            # still never assumes what it was handed.
+            continue
         iid = item.get("id")
         if iid in seen:
             problems.append(cog_core.problem(
