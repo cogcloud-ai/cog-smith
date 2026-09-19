@@ -74,6 +74,14 @@ class TestInvoke(unittest.TestCase):
         self.assertEqual(env["payload"]["item_count"],
                          len(sample_bundle()["items"]))
 
+    def test_a_full_run_carries_no_schema_problem(self):
+        """The contract, not `ok`: a Cog whose tests assert only `ok` can emit
+        a payload its own output schema refuses — the first live triage sweep
+        found exactly that on first contact with real data."""
+        env = cog_core.invoke(sample_bundle())
+        self.assertEqual([p for p in env["problems"] if p["check"] == "schema"],
+                         [], env["problems"])
+
     def test_binding_names_the_code_and_carries_no_model(self):
         env = cog_core.invoke(sample_bundle())
         self.assertEqual(env["binding"]["kind"], "code")

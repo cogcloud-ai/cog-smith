@@ -4,10 +4,13 @@ Covers: manifest consistency, schema/example agreement, envelope mechanics,
 the grounding contract check, salvage, and identity matching. Extend with task-specific
 cases as task_logic.py grows — fixtures in evals/ cover the model-backed path.
 """
+import contextlib
+import io
 import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -19,6 +22,35 @@ import task_logic   # noqa: E402
 
 def sample_bundle():
     return json.loads((ROOT / "examples" / "sample-bundle.json").read_text())
+
+
+class _FakeResponse(io.BytesIO):
+    """Just enough of an http.client.HTTPResponse for urlopen's caller."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@contextlib.contextmanager
+def canned_model(content):
+    """Run the Cog against a canned model reply — no model, no network.
+    tests/mock_model.py in cog-smith is the live-loop equivalent; this is the
+    same shape in-process, so the deterministic suite can exercise the FULL
+    invocation path (render, parse, validate, envelope)."""
+    payload = {"model": cog_core.MODEL,
+               "choices": [{"message": {"role": "assistant",
+                                        "content": content}}]}
+
+    def _urlopen(request, timeout=None):
+        return _FakeResponse(json.dumps(payload).encode())
+
+    with mock.patch.object(cog_core, "health",
+                           lambda *a, **k: (True, "canned model")), \
+         mock.patch.object(cog_core.urllib.request, "urlopen", _urlopen):
+        yield
 
 
 class TestManifestConsistency(unittest.TestCase):
@@ -70,6 +102,42 @@ class TestSchemasAndExamples(unittest.TestCase):
         problems = cog_core.validate_input({"focus": "x"})   # missing items
         self.assertTrue(problems)
         self.assertTrue(all(p["check"] == "input" for p in problems))
+
+
+class TestSampleInvocation(unittest.TestCase):
+    """The contract, not `ok`. A Cog whose tests assert only `ok` can emit a
+    payload its own output schema refuses — which is exactly what the first
+    live triage sweep found. Assert the SCHEMA verdict."""
+
+    def test_a_full_invocation_carries_no_schema_problem(self):
+        example = (ROOT / "context" / "output-example.json").read_text()
+        with canned_model(example):
+            env = cog_core.invoke(sample_bundle())
+        self.assertTrue(env["ok"], env.get("error"))
+        self.assertEqual([p for p in env["problems"] if p["check"] == "schema"],
+                         [], env["problems"])
+
+    def test_the_binding_deadline_is_what_invoke_uses(self):
+        seen = {}
+
+        def _urlopen(request, timeout=None):
+            seen["timeout"] = timeout
+            return _FakeResponse(json.dumps(
+                {"model": cog_core.MODEL,
+                 "choices": [{"message": {"content": "{}"}}]}).encode())
+
+        with mock.patch.object(cog_core, "health",
+                               lambda *a, **k: (True, "canned model")), \
+             mock.patch.object(cog_core.urllib.request, "urlopen", _urlopen):
+            cog_core.invoke(sample_bundle())
+            self.assertEqual(seen["timeout"], cog_core.REQUEST_TIMEOUT_S)
+            cog_core.invoke(sample_bundle(), timeout=600)
+            self.assertEqual(seen["timeout"], 600)
+
+    def test_an_out_of_bounds_deadline_is_refused_by_name(self):
+        env = cog_core.invoke(sample_bundle(), timeout=1)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "invalid-timeout")
 
 
 class TestEnvelopeMechanics(unittest.TestCase):

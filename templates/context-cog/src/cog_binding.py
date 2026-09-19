@@ -22,6 +22,15 @@ import yaml
 
 RECORD_SCHEMA = "openteams/binding-record [0.1]"
 
+# The caller's deadline for one model call is a BINDING fact, not a constant:
+# a 3B model on loopback and a cloud model asked to read 160k characters do not
+# share a deadline (phase 3 live sweep: a 161,000-character request outran a
+# hard-coded 180 s). It is written by `use --timeout` / `resolve --timeout`,
+# carried in the record, and overridable for one call by `cog_cli --timeout`.
+REQUEST_TIMEOUT_DEFAULT = 180
+REQUEST_TIMEOUT_MIN = 10
+REQUEST_TIMEOUT_MAX = 1800
+
 DEFAULTS = {
     "record": RECORD_SCHEMA,
     "capability": "model-endpoint/openai-compatible",
@@ -30,6 +39,7 @@ DEFAULTS = {
     "api_key_env": None,
     "response_format": "json_object",
     "locality": "local",
+    "request_timeout_s": REQUEST_TIMEOUT_DEFAULT,
     "pinned": False,
     "satisfier": {"source": "default",
                   "note": "built-in default; run resolve or use to bind explicitly"},
@@ -190,6 +200,7 @@ _OPTIONAL_FIELDS = {
     "response_format": (str, type(None)),
     "insecure_http": bool,
     "model_aliases": list,
+    "request_timeout_s": int,
 }
 _SERVED_FIELDS = {
     "revision": (str, type(None)),
@@ -220,6 +231,30 @@ def served_pin_evidence(served):
     return bool(served.get("revision")
                 or _is_digest(served.get("weights_sha256"))
                 or _is_digest(served.get("effective_sha256")))
+
+
+def timeout_problems(value):
+    """Problems with a caller-deadline value, as a list. The ONE bounds rule —
+    the record validator, `use`, `resolve` and the CLI override must agree
+    about what a deadline may be (a deadline nobody can meet and a deadline
+    that never expires are both unusable)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return [f"request_timeout_s must be an integer number of seconds, got "
+                f"{type(value).__name__}"]
+    if not (REQUEST_TIMEOUT_MIN <= value <= REQUEST_TIMEOUT_MAX):
+        return [f"request_timeout_s {value} is outside "
+                f"{REQUEST_TIMEOUT_MIN}–{REQUEST_TIMEOUT_MAX} seconds"]
+    return []
+
+
+def request_timeout(record):
+    """The caller deadline this binding states, in seconds. A record written
+    before the field existed has none, and inherits the default rather than
+    failing — the field is optional in the record schema."""
+    value = (record or {}).get("request_timeout_s")
+    if timeout_problems(value):
+        return REQUEST_TIMEOUT_DEFAULT
+    return value
 
 
 def validate_record(record):
@@ -264,6 +299,8 @@ def validate_record(record):
         problems.append(f"unknown response_format {rf!r}")
     if record.get("locality") not in LOCALITIES:
         problems.append(f"unknown locality {record.get('locality')!r}")
+    if "request_timeout_s" in record:
+        problems.extend(timeout_problems(record["request_timeout_s"]))
     # the invariant itself: pinned <=> evidence
     if bool(record.get("pinned")) != served_pin_evidence(record.get("served_model")):
         if record.get("pinned"):

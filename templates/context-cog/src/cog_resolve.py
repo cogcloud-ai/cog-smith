@@ -292,6 +292,9 @@ def resolve_one(req, locality_constraint, args):
         "api_key_env": default.get("api_key_env"),
         "response_format": response_format,
         "locality": locality,
+        "request_timeout_s": (cog_binding.REQUEST_TIMEOUT_DEFAULT
+                              if getattr(args, "timeout", None) is None
+                              else args.timeout),
         "pinned": served_pinned,
         "satisfier": {
             "source": "resolve" + ("+undeclared" if undeclared else ""),
@@ -342,9 +345,19 @@ def main():
                     help="permit a satisfier the manifest does not declare — the "
                          "binding records satisfier.declared: false; pin evidence "
                          "is reported independently")
+    ap.add_argument("--timeout", type=int, metavar="N",
+                    help=f"caller deadline for one model call, in seconds "
+                         f"({cog_binding.REQUEST_TIMEOUT_MIN}–"
+                         f"{cog_binding.REQUEST_TIMEOUT_MAX}; default "
+                         f"{cog_binding.REQUEST_TIMEOUT_DEFAULT})")
     ap.add_argument("--start", action="store_true", help="start the dependency after resolving")
     ap.add_argument("--dry-run", action="store_true", help="report only; write nothing")
     args = ap.parse_args()
+
+    if args.timeout is not None:
+        bad = cog_binding.timeout_problems(args.timeout)
+        if bad:
+            sys.exit("timeout check: " + "; ".join(bad))
 
     me, err = load_cog(ROOT)
     if err:
@@ -387,7 +400,8 @@ def main():
         served_note = f"served model pinned (weights sha256 {served['weights_sha256'][:12]}…)"
     else:
         served_note = "served model UNPINNED — declare a deployment revision to pin it"
-    print(f"\nwrote model.json — package pin {pin}; {served_note}")
+    print(f"\nwrote model.json — package pin {pin}; {served_note}; "
+          f"caller deadline {cog_binding.request_timeout(record)}s")
 
     env = record.get("api_key_env")
     if env:

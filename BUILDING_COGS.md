@@ -1,8 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.5 /
-code-cog machinery 0.1.4  
+**Last verified:** 2026-09-19 against cog-smith Op machinery 0.5.6 /
+context-cog machinery 0.4.0 / code-cog machinery 0.1.4  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
 not universal CogSpec requirements.
@@ -165,6 +165,14 @@ checks the candidate and writes a local binding record named model.json.
 The binding record is installation state, not source code. It is ignored by Git
 and records the concrete endpoint, model identity, locality, credential
 reference, pin state, and satisfier used by that installation.
+
+It also records the **caller deadline** for one model call,
+`request_timeout_s` (default 180 seconds, bounds 10 to 1800). The deadline
+belongs to the binding, not to the code: a small model on loopback and a cloud
+model asked to read a whole backlog do not share one. Set it when you bind —
+`pixi run resolve -- --timeout 900` or `pixi run use <preset> --timeout 900` —
+and override it for a single call with `pixi run ask -- --bundle big.json
+--timeout 900`. A record written before the field existed inherits the default.
 
 ### Verify health and identity
 

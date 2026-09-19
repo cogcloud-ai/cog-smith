@@ -50,6 +50,55 @@ a manifest). These rules are mirrored by hand in cog-smith's
 Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
+## 0.4.0 (2026-09-19): the caller deadline is a binding fact
+
+Behavior change in the masters. Contract: `planning/current/phase3-contract.md`
+§11 items 3 and 4. The phase 3 live sweep sent a 161,000-character dependency
+request to a cloud model and lost it to a deadline hard-coded at 180 seconds
+inside `cog_core.invoke` — a number with nowhere to be said otherwise. A
+deadline is a property of the BINDING (a 3B model on loopback and a cloud model
+reading a whole backlog do not share one), so it moved into the record:
+
+- `cog_binding` gains `REQUEST_TIMEOUT_DEFAULT = 180`,
+  `REQUEST_TIMEOUT_MIN = 10`, `REQUEST_TIMEOUT_MAX = 1800`, the single bounds
+  rule `timeout_problems(value)`, and the reader `request_timeout(record)`.
+  `request_timeout_s` joins `DEFAULTS` and the record's OPTIONAL fields, and
+  `validate_record` enforces the bounds on load AND write, like every other
+  record rule. Optional means a model.json written before 0.4.0 keeps working
+  and inherits the default — the field is new, the installation is not wrong.
+  Booleans are refused explicitly (`isinstance(True, int)` is the trap).
+- `cog_use` gains `--timeout N`, writes `request_timeout_s`, prints it, and
+  shows it under `--show`; the check runs BEFORE anything is written, beside
+  the locality and transport contract checks.
+- `cog_resolve` gains `--timeout N` and states the deadline in every record it
+  writes, so a binding has one however it was produced.
+- `cog_core` reads it once at import (`REQUEST_TIMEOUT_S`), and
+  `invoke(bundle, timeout=None, ...)` means "what the binding says". An
+  explicit value is a one-call override, bounds-checked like any other, and an
+  impossible one is the named envelope error `invalid-timeout` rather than a
+  traceback.
+- `cog_cli` gains `--timeout N` for that one call, refused by the argument
+  parser (exit 2) when out of bounds.
+
+No environment override was added: `COG_MODEL_*` exists for the fields that
+change the model's IDENTITY, and a deadline does not (see the contract's Open
+items).
+
+Starter tests (§11 item 4): `templates/context-cog/tests/test_cog.py.tmpl`
+gains a `canned_model` helper — the in-process twin of `tests/mock_model.py`,
+patching `cog_core.health` and `urllib.request.urlopen` — and asserts that a
+FULL invocation of the sample bundle carries no `schema` problem, that invoke
+uses the binding's deadline and honors an override, and that an impossible
+override is refused by name. The equivalent code-cog assertion is in
+`templates/code-cog/tests/test_cog.py.tmpl`
+(`test_a_full_run_carries_no_schema_problem`). Asserting `ok` alone is what let
+`cog-read-github` emit a field its own output schema did not declare.
+
+cog-smith coverage: `tests/test_context_cog_timeout.py` (17 tests, including
+`use`/`resolve` through real processes and a pre-0.4.0 record still binding).
+Rolled out by re-copying the masters into the three judgment Cogs and every
+other sibling carrying this lineage; each re-verified by `smith check`.
+
 ## Code-cog machinery (0.1.0, 2026-09-17): `templates/code-cog/src/`
 
 A third lineage, on the same terms. `templates/code-cog/src/cog_core.py` and
@@ -183,6 +232,20 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.5.6 — the pending sheet names what it shows (2026-09-19)
+
+Contract §11 item 5. The live nexus sweep handed a human a decision sheet
+whose `kind` and `target` columns were blank on all 33 rows: `render_pending`
+read `kind`/`target`, and the change shape the proposing Cogs emit says
+`change_type` and `target_item_ids`. Two readers, `change_kind(change)` and
+`change_target(change)`, now read what is actually there — `kind`/`target`
+first (nothing is demoted), then `change_type` and the FIRST of
+`target_item_ids`. A change naming neither renders an empty cell as before,
+and an empty `target_item_ids` is not an IndexError. Presentation only: the
+pending JSON, the hashes, the decision vocabulary and the change shape itself
+are untouched, so a decision file made against 0.5.5 still applies.
+Tests: `tests/test_op_authority.py::PendingSheetTests` (4).
 
 ### 0.5.5 — a failed run resumes at the step that stopped it (review 5)
 

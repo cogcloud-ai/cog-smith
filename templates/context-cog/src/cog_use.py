@@ -96,6 +96,12 @@ def main():
     ap.add_argument("--response-format", choices=["json_object", "json_schema", "none"],
                     help="json_schema constrains decoding (llama-server); none omits the param")
     ap.add_argument("--revision", help="deployment/model revision you trust; marks the binding pinned")
+    ap.add_argument("--timeout", type=int, metavar="N",
+                    help=f"caller deadline for one model call, in seconds "
+                         f"({cog_binding.REQUEST_TIMEOUT_MIN}–"
+                         f"{cog_binding.REQUEST_TIMEOUT_MAX}; default "
+                         f"{cog_binding.REQUEST_TIMEOUT_DEFAULT}) — a big input "
+                         f"to a remote model needs a bigger one")
     ap.add_argument("--locality", choices=sorted(cog_binding.LOCALITIES),
                     help="override the preset's locality classification")
     ap.add_argument("--insecure-http", action="store_true",
@@ -109,6 +115,7 @@ def main():
         print(f"model    : {record['model']}")
         print(f"format   : {record.get('response_format') or 'none'}")
         print(f"locality : {record.get('locality')}")
+        print(f"timeout  : {cog_binding.request_timeout(record)}s")
         print(f"pinned   : {record.get('pinned')}")
         print(f"key      : {'set' if key else 'NOT SET'}")
         print(f"source   : {source}")
@@ -155,6 +162,12 @@ def main():
     if not ok:
         sys.exit(f"transport check: {reason}")
 
+    timeout = (cog_binding.REQUEST_TIMEOUT_DEFAULT if args.timeout is None
+               else args.timeout)
+    timeout_bad = cog_binding.timeout_problems(timeout)
+    if timeout_bad:
+        sys.exit("timeout check: " + "; ".join(timeout_bad))
+
     record = {
         "record": cog_binding.RECORD_SCHEMA,
         "capability": "model-endpoint/openai-compatible",
@@ -163,6 +176,7 @@ def main():
         "api_key_env": cfg.get("api_key_env"),
         "response_format": cfg.get("response_format"),
         "locality": cfg["locality"],
+        "request_timeout_s": timeout,
         "pinned": bool(args.revision),
         "satisfier": {
             "source": f"use-preset:{args.preset}" if args.preset else "use-custom",
@@ -184,6 +198,7 @@ def main():
     print(f"  model    : {cfg['model']}")
     print(f"  format   : {cfg.get('response_format') or 'none'}")
     print(f"  locality : {cfg['locality']} (manifest constraint: {constraint})")
+    print(f"  timeout  : {timeout}s (caller deadline for one model call)")
     print(f"  pinned   : {record['pinned']} (served model)"
           + ("" if record["pinned"] else "  — pass --revision to pin the served model"))
     if note:

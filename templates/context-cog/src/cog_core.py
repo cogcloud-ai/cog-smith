@@ -40,6 +40,9 @@ RECORD, API_KEY, BINDING_SOURCE = cog_binding.load_record(ROOT)
 ENDPOINT = RECORD["endpoint"]
 MODEL = RECORD["model"]
 RESPONSE_FORMAT = RECORD.get("response_format")
+# The caller's deadline comes from the binding, not from this file (see
+# cog_binding.REQUEST_TIMEOUT_*). `cog_cli --timeout` overrides it for one call.
+REQUEST_TIMEOUT_S = cog_binding.request_timeout(RECORD)
 
 OUTPUT_SCHEMA = json.loads((ROOT / "context" / "output-schema.json").read_text())
 _declared_input = (MANIFEST.get("context") or {}).get("input_schema")
@@ -259,8 +262,19 @@ def _fail(task, code, detail, binding=None):
                      problems=[problem(code, detail)], binding=binding)
 
 
-def invoke(bundle, timeout=180, task="ask"):
-    """Run this Cog against an input bundle. Returns an envelope-v1 dict."""
+def invoke(bundle, timeout=None, task="ask"):
+    """Run this Cog against an input bundle. Returns an envelope-v1 dict.
+
+    `timeout` is the caller's deadline for the model call, in seconds. None
+    means "what the binding says" (`request_timeout_s`, default 180); an
+    explicit value is a one-call override and is bounds-checked like any other.
+    """
+    if timeout is None:
+        timeout = REQUEST_TIMEOUT_S
+    else:
+        bad = cog_binding.timeout_problems(timeout)
+        if bad:
+            return _fail(task, "invalid-timeout", "; ".join(bad))
     violations = RECORD.get("_violations")
     if violations:
         # Fail closed BEFORE anything can leave the machine.
