@@ -543,6 +543,19 @@ Prefer checks that can be evaluated mechanically: parsed shape, required keys,
 minimum findings, expected classification, forbidden canary tokens, citation
 existence, and grounding.
 
+Where the fixture is about a DECISION, assert the decision — `fields:` names
+payload keys and the values the answer must carry:
+
+    expect:
+      fields:
+        priority: unrated
+        priority_evidence: null
+
+A `forbid_tokens:` list says what the Cog must not SAY, which is the right
+tool for a canary and the wrong one for an outcome: it passes any answer that
+avoids the token, including a wrong one, and fails a correct answer that
+explains why the token was ineligible (Codex review 9).
+
 Evaluation against a live model complements deterministic tests. It does not
 replace them.
 

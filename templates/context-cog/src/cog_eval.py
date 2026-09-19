@@ -194,6 +194,17 @@ def run_fixture(path):
               bool(parsed.get("abstained")) == bool(want_abstain),
               f"abstain_reason={parsed.get('abstain_reason')!r}")
 
+    # `fields` asserts the STRUCTURED RESULT (machinery 0.4.2, contract §11b).
+    # Outside the not-abstained block on purpose: an abstention is a result
+    # with fields too. A fixture that can only forbid a token asserts what the
+    # Cog must not SAY, never what it must DECIDE — a response that assigned
+    # P2 while citing some other grounded passage passed the review-priority
+    # fixture, and a correct `unrated` answer that explained why the
+    # reviewer's marker was ineligible FAILED it (Codex review 9).
+    for key, want in (expect.get("fields") or {}).items():
+        got = (parsed or {}).get(key)
+        check(f"{key} == {want!r}", got == want, f"got {got!r}")
+
     if parsed is not None and not parsed.get("abstained"):
         for key in expect.get("required_keys") or []:
             check(f"has '{key}'", key in parsed)

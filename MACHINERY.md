@@ -138,6 +138,29 @@ cog-overlap-duplicate-detector), cog-author, cog-build-evaluator,
 cog-explicit-action-extractor, cog-meeting-highlights, cog-op-designer and
 testcog; each re-verified by `smith check`.
 
+## 0.4.2 (2026-09-19): an eval fixture can assert the RESULT
+
+Contract §11b, from Codex review 9. A fixture's vocabulary could say what the
+Cog must not SAY (`forbid_tokens`) but not what it must DECIDE. The
+review-priority fixture was therefore satisfied by a response that assigned
+`P2` while citing some other grounded passage, and FAILED by a correct
+`unrated` answer whose reason explained that the reviewer's `Blocking (P2)`
+marker was ineligible — the forbidden token appearing in the explanation of
+why it was forbidden.
+
+`cog_eval` gains `expect.fields`: a mapping of payload key to the value the
+answer must carry, checked with `==`, one check line per key. It is outside
+the not-abstained block on purpose — an abstention is a result with fields
+too. `forbid_tokens` is unchanged and remains the right tool for a canary.
+
+    expect:
+      fields:
+        priority: unrated
+        priority_evidence: null
+
+Additive: every existing fixture is unaffected. Rolled out to the nine
+carriers with 0.4.1; BUILDING_COGS §7 says when to reach for which.
+
 ## Code-cog machinery (0.1.0, 2026-09-17): `templates/code-cog/src/`
 
 A third lineage, on the same terms. `templates/code-cog/src/cog_core.py` and
