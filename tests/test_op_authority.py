@@ -15,6 +15,7 @@ import json
 import os
 import tempfile
 import types
+import unicodedata
 import unittest
 from pathlib import Path
 
@@ -587,7 +588,7 @@ class HumanGateTests(AuthorityCase):
         self.assertEqual(pending["step"], "compose")
         self.assertEqual(pending["payload_sha256"],
                          op_runner.canonical_sha256(pending["payload"]))
-        self.assertIn("c-a", (run_dir / "pending" / "compose.md").read_text())
+        self.assertIn("c\\-a", (run_dir / "pending" / "compose.md").read_text())
         self.assertEqual(track["status"], "paused")
         record = self.step(track, "compose")
         self.assertEqual(record["status"], "awaiting-decision")
@@ -739,24 +740,79 @@ class PendingSheetTests(unittest.TestCase):
         line = self.sheet(self.hashed({
             "change_id": "c-1", "repository": REPO, "summary": "something",
         })).splitlines()[-1]
-        self.assertEqual(line, "| c-1 |  |  | something |")
+        self.assertEqual(line, "| c\\-1 |  |  | something |")
 
     def test_an_empty_target_id_list_is_not_an_index_error(self):
         line = self.sheet(self.hashed({
             "change_id": "c-1", "change_type": "close_item",
             "target_item_ids": [], "repository": REPO, "summary": "close it",
         })).splitlines()[-1]
-        self.assertEqual(line, "| c-1 | close\\_item |  | close it |")
+        self.assertEqual(line, "| c\\-1 | close\\_item |  | close it |")
+
+
+HOSTILE_CELLS = [
+    # Codex review 10, finding 1, verbatim plus review 9's originals.
+    "owner/repo#1​0",                     # zero-width space
+    "‮reversed‬ text",               # bidi override and pop
+    "before\u001b[31mred\u001b[0m after",      # terminal escape
+    "\u0007bell and \u0000nul",                # other C0 controls
+    ":smile: :+1:",                            # GitHub emoji shortcodes
+    "@mention and @org/team",                  # mentions
+    "https://example.invalid/a?b=c#d",         # bare autolink
+    "www.example.invalid/path",                # www autolink
+    "&#124; &amp; &lt;script&gt;",             # numeric and named entities
+    "a | b || c",                              # pipes
+    "`code` ```fence```",                      # code spans
+    "[owner/repo#1](https://example.invalid)",  # link hiding its target
+    "first\r\nsecond\n\n| x | y |",            # newlines inventing rows
+    "<!-- hide the rest",                      # HTML comment opener
+    "nbsp and line para",       # Zs / Zl / Zp separators
+    "\U0001f600 and \U000e0041 tag-letter",    # astral: one visible, one Cf
+]
+
+
+def unescaped_punctuation(text):
+    """Every ASCII punctuation character in `text` that does NOT have a
+    backslash in front of it. The invariant is that this is empty."""
+    loose, i = [], 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            i += 2
+            continue
+        if text[i] in op_runner.CELL_ESCAPES:
+            loose.append((i, text[i]))
+        i += 1
+    return loose
+
+
+def invisible_characters(text):
+    """Every character in a Unicode `C*` or `Z*` category other than an
+    ordinary space. The invariant is that this is empty."""
+    return [(i, ch) for i, ch in enumerate(text)
+            if ch != " " and unicodedata.category(ch)[0] in ("C", "Z")]
 
 
 class PendingSheetLiteralTextTests(unittest.TestCase):
-    """Every cell renders as LITERAL TEXT (Op machinery 0.5.7).
+    """Every cell satisfies the literal-text INVARIANT (Op machinery 0.5.8).
 
     Codex review 9, blocker 3: a valid `content_sha256` says nothing about
-    how a proposal READS. The sheet is what the human decides from, so a
-    target that is a Markdown link, a summary with a pipe or a newline, and
-    an HTML comment opener must all survive as the characters they are.
+    how a proposal READS. Review 10, finding 1: escaping a chosen list of
+    metacharacters left `:emoji:`, `@mentions`, bare autolinks and — worse —
+    every invisible character alive, so `owner/repo#1<U+200B>0` still read as
+    `owner/repo#10`.
+
+    So the test is not a catalogue of renderings (which would need a
+    renderer) but a checkable property of the string itself, asserted over
+    the hostile inputs: no ASCII punctuation character stands unescaped, and
+    no character in a `C*` or `Z*` category other than a space is present at
+    all.
     """
+
+    def assertLiteral(self, text):
+        self.assertEqual(unescaped_punctuation(text), [],
+                         f"unescaped ASCII punctuation in {text!r}")
+        self.assertEqual(invisible_characters(text), [],
+                         f"invisible character in {text!r}")
 
     def sheet(self, **change):
         body = dict({"repository": REPO}, **change)
@@ -793,13 +849,66 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
         parts.append(buf)
         return [p.strip() for p in parts[1:-1]]
 
+    def test_every_cell_of_a_hostile_row_satisfies_the_invariant(self):
+        """The whole point, over every input Codex named: each cell of a row
+        built from hostile strings is literal text by the invariant."""
+        for hostile in HOSTILE_CELLS:
+            with self.subTest(hostile=hostile):
+                for value in self.cells(change_id=hostile,
+                                        change_type=hostile,
+                                        target=hostile, summary=hostile):
+                    self.assertLiteral(value)
+
+    def test_the_whole_sheet_carries_no_invisible_character(self):
+        """Not only the rows: the heading, the run id and the asked-at line
+        go through the same cell()."""
+        sheet = self.sheet(change_id="c-1​1", change_type="add_label",
+                           target="nexus#1‮", summary="ok\u0007")
+        self.assertEqual(invisible_characters(sheet.replace("\n", " ")), [])
+
+    def test_a_zero_width_space_is_shown_as_its_codepoint(self):
+        """Review 10 finding 1: `owner/repo#1<U+200B>0` READ as
+        `owner/repo#10`. It must now say what it contains."""
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="owner/repo#1​0", summary="plain")
+        self.assertEqual(cells[2], "owner\\/repo\\#1U\\+200B0")
+        self.assertLiteral(cells[2])
+
+    def test_bidi_controls_are_shown_as_their_codepoints(self):
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1",
+                           summary="‮reversed‬")
+        self.assertEqual(cells[3], "U\\+202EreversedU\\+202C")
+
+    def test_a_terminal_escape_is_shown_as_its_codepoint(self):
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1", summary="a\u001b[31mred")
+        self.assertEqual(cells[3], "aU\\+001B\\[31mred")
+
+    def test_an_emoji_shortcode_stays_a_shortcode(self):
+        """`:smile:` became a picture on GitHub; a backslash before each
+        colon is enough to stop the shortcode."""
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1", summary=":smile: done")
+        self.assertEqual(cells[3], "\\:smile\\: done")
+
+    def test_a_mention_and_an_autolink_are_not_live(self):
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="@org/team",
+                           summary="see https://example.invalid and www.x.y")
+        self.assertEqual(cells[2], "\\@org\\/team")
+        self.assertEqual(
+            cells[3],
+            "see https\\:\\/\\/example\\.invalid and www\\.x\\.y")
+
     def test_a_markdown_link_target_shows_the_literal_target(self):
         """`[owner/repo#1](https://example.invalid)` must not become a link
         whose text hides where the change actually goes."""
         row = self.row(change_id="c-1", change_type="add_label",
                        target="[owner/repo#1](https://example.invalid)",
                        summary="looks innocent")
-        self.assertIn("\\[owner/repo\\#1\\]\\(https://example.invalid\\)", row)
+        self.assertIn(
+            "\\[owner\\/repo\\#1\\]\\(https\\:\\/\\/example\\.invalid\\)", row)
         self.assertNotIn("](", row)
 
     def test_a_pipe_in_a_cell_does_not_shift_the_columns(self):
@@ -813,18 +922,17 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
         sheet = self.sheet(change_id="c-1\nc-2", change_type="add_label",
                            target="nexus#1",
                            summary="first line\r\nsecond line\n\n| x | y | z |")
-        rows = [ln for ln in sheet.splitlines() if ln.startswith("| c-")]
+        rows = [ln for ln in sheet.splitlines() if ln.startswith("| c\\-")]
         self.assertEqual(len(rows), 1)
-        self.assertIn("c-1 c-2", rows[0])
+        self.assertIn("c\\-1 c\\-2", rows[0])
         self.assertIn("first line second line", rows[0])
 
     def test_an_html_comment_cannot_conceal_what_follows(self):
-        row = self.row(change_id="c-1", change_type="add_label",
-                       target="nexus#1",
-                       summary="<!-- hide the rest")
-        self.assertNotIn("<!--", row)
-        self.assertNotIn("<", row.replace("| ", "").replace(" |", ""))
-        self.assertIn("&lt;\\!--", row)
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1",
+                           summary="<!-- hide the rest")
+        self.assertNotIn("<!--", cells[3])
+        self.assertEqual(cells[3], "\\<\\!\\-\\- hide the rest")
 
     def test_backticks_and_emphasis_do_not_reformat_a_cell(self):
         cells = self.cells(change_id="c-1", change_type="add_label",
@@ -834,12 +942,15 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
             cells[3],
             "\\`code\\` \\*bold\\* \\_under\\_ \\~strike\\~ \\#tag \\!bang")
 
-    def test_an_ampersand_entity_stays_the_text_it_was(self):
-        """HTML-escaping `&` first is what keeps a literal `&lt;` from being
-        rendered as `<` by an HTML-capable renderer."""
+    def test_an_entity_is_escaped_once_and_not_twice(self):
+        """0.5.7 HTML-escaped as well, so `&#124;` came out `&amp;\\#124;`
+        — escaped twice, and read as an entity for `&`. The backslash rule
+        alone covers it (review 10, finding 1's entity check)."""
         cells = self.cells(change_id="c-1", change_type="add_label",
-                           target="nexus#1", summary="&lt;script&gt; & co")
-        self.assertEqual(cells[3], "&amp;lt;script&amp;gt; &amp; co")
+                           target="nexus#1", summary="&#124; &lt;script&gt;")
+        self.assertEqual(cells[3],
+                         "\\&\\#124\\; \\&lt\\;script\\&gt\\;")
+        self.assertNotIn("&amp;", cells[3])
 
     def test_a_backslash_is_escaped_before_anything_is_added(self):
         cells = self.cells(change_id="c-1", change_type="add_label",
@@ -852,6 +963,16 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
         self.assertEqual(cells[0], "c\\|1")
         self.assertEqual(cells[1], "link\\_\\*duplicate\\*")
         self.assertEqual(cells[2], "\\[t\\]\\(u\\)")
+
+    def test_the_header_says_the_json_beside_it_is_the_authority(self):
+        """The sheet is escaped, so a cell does not read back as the string
+        the Cog proposed: say where the authority lives (§11c)."""
+        sheet = self.sheet(change_id="c-1", change_type="add_label",
+                           target="nexus#1", summary="plain")
+        head = sheet.split("| change_id")[0]
+        self.assertIn("compose.json", head)
+        self.assertIn("authority", head)
+        self.assertIn("reading aid", head)
 
 
 class PendingAndDecisionTests(AuthorityCase):

@@ -63,13 +63,13 @@ import argparse
 import errno
 import fcntl
 import hashlib
-import html
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -911,34 +911,71 @@ def change_target(change):
     return str(target or "")
 
 
-# Every Markdown metacharacter that can change how a cell READS. `<` and `>`
-# are in the list for completeness; the HTML escape below has already removed
-# them by the time the backslashes go on (machinery 0.5.7).
-CELL_ESCAPES = "\\`*_[]()#!~|<>"
+# EVERY ASCII punctuation character (the 32 of them, GFM's own list). GFM
+# permits a backslash before any one of them, and a backslash-escaped `@`,
+# `#`, `:` or `h` -- well, `:` and `@` -- is no longer the start of a mention,
+# an issue reference, an emoji shortcode or an autolink. Escaping the whole
+# set is what makes the invariant CHECKABLE: a cell is literal text iff no
+# ASCII punctuation character in it stands unescaped (machinery 0.5.8).
+CELL_ESCAPES = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+
+
+def _escaped(text):
+    """`text` with a backslash before every ASCII punctuation character."""
+    return "".join("\\" + ch if ch in CELL_ESCAPES else ch for ch in text)
 
 
 def cell(value):
-    """A pending-sheet cell as LITERAL TEXT (Op machinery 0.5.7).
+    """A pending-sheet cell as LITERAL TEXT (Op machinery 0.5.8).
 
     The sheet is what the human decides from, and a valid `content_sha256`
     says nothing about how a proposal RENDERS: a target of
     `[owner/repo#1](https://example.invalid)` hides the real target behind
-    link text, a pipe shifts the columns, a newline invents a row, and `<!--`
-    can swallow everything after it in an HTML-capable renderer (Codex review
-    9, blocker 3). So: collapse every run of whitespace (newlines included) to
-    one space, HTML-escape `&`, `<`, `>`, then backslash-escape the Markdown
-    metacharacters. Order matters — escaping `<` to `\\<` first and then to
-    HTML would leave a visible backslash.
+    link text, a pipe shifts the columns, a newline invents a row, `:smile:`
+    becomes a picture, and `owner/repo#1<U+200B>0` READS as `owner/repo#10`
+    while being a different string (Codex review 9 blocker 3; review 10
+    finding 1). Two rules, both checkable without a renderer:
+
+    1. Every ASCII punctuation character is backslash-escaped. That disables
+       every GFM construct at once -- autolinks, `@mentions`, `#references`,
+       `:emoji:`, links, emphasis, code spans, HTML -- so there is no list of
+       metacharacters to keep up to date, and no second escaping pass to
+       double up with (0.5.7 HTML-escaped `&<>` as well; `&#124;` came out as
+       `&amp;\\#124;`. The backslash rule alone covers them, so the HTML
+       escape is gone).
+    2. Every character that is not visible AS ITSELF -- Unicode category
+       `C*` (control, format including zero-width and bidi overrides,
+       surrogate, private use, unassigned) or `Z*` (separators) other than
+       an ordinary space -- is replaced by visible text `U+XXXX`. Nothing
+       invisible can hide in a cell, because nothing invisible survives.
+
+    Whitespace runs (newlines included) collapse to one space first, so the
+    common case stays readable and only the exotic characters get spelled
+    out.
     """
     text = " ".join(str("" if value is None else value).split())
-    text = html.escape(text, quote=False)
-    return "".join("\\" + ch if ch in CELL_ESCAPES else ch for ch in text)
+    out = []
+    for ch in text:
+        if ch != " " and unicodedata.category(ch)[0] in ("C", "Z"):
+            out.append(_escaped(f"U+{ord(ch):04X}"))
+        else:
+            out.append(_escaped(ch))
+    return "".join(out)
 
 
 def render_pending(doc):
     """The human's copy: one line per change, every cell literal text."""
     lines = [f"# Decision needed: {cell(doc['step'])}", "",
              f"Run: {cell(doc['run_id'])}", f"Asked: {cell(doc['asked_at'])}", "",
+             # The sheet is a READING AID. Every cell below is escaped to
+             # literal text, which means a cell does not read back as the
+             # string the Cog proposed; the JSON is the thing being approved
+             # and the thing the digests are over (machinery 0.5.8).
+             f"The authority is `{cell(doc['step'])}.json` beside this file: "
+             "it holds each change in full, and the digests are over it. "
+             "This sheet is a reading aid — every cell is escaped to literal "
+             "text, so punctuation shows a backslash and an invisible "
+             "character shows as `U+XXXX`.", "",
              f"Decide with: `{doc['decide_with']}`", "",
              "| change_id | kind | target | summary |",
              "|---|---|---|---|"]

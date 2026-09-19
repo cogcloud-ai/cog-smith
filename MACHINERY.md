@@ -295,6 +295,48 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.5.8 — the literal-text invariant, checkable without a renderer (2026-09-19)
+
+Contract §11c, from Codex review 10 (finding 1). 0.5.7 escaped a CHOSEN LIST
+of metacharacters, which is the wrong shape of rule: the list was incomplete
+by construction. `:smile:` still became a picture on GitHub, `@mention` still
+mentioned, a bare `https://…` and a `www.…` still autolinked — and, far
+worse, every invisible character survived untouched, so a target of
+`owner/repo#1<U+200B>0` READ as `owner/repo#10` and a bidi override
+(U+202E/U+202C) could reorder displayed text. The tests also asserted source
+strings, not rendered output, so they proved nothing about a renderer.
+
+`op_runner.cell(value)` now enforces a property instead of a list:
+
+1. Every run of whitespace, newlines included, collapses to one space.
+2. Every character that is not visible AS ITSELF — Unicode category `C*`
+   (control, format, surrogate, private use, unassigned) or `Z*` other than
+   U+0020 — is replaced by the visible text `U+XXXX`.
+3. Every ASCII punctuation character (GFM's 32) gets a backslash. GFM allows
+   a backslash before any of them, which disables autolinks, mentions,
+   `#references`, emoji shortcodes, links, emphasis, code spans and HTML in
+   one rule, with nothing to keep up to date.
+
+The HTML escape of `& < >` is REMOVED: rule 3 subsumes it and the two
+together escaped twice (`&#124;` came out `&amp;\#124;`). `CELL_ESCAPES` is
+now the full ASCII punctuation set.
+
+Because the rule is a property, the test is a property: over the hostile
+inputs the review listed (zero-width, bidi controls, terminal escapes,
+`:emoji:`, `@mention`, bare URLs, `www.`, `&#124;`, pipes, backticks, links,
+newlines) every cell is asserted to carry NO unescaped ASCII punctuation and
+NO `C*`/`Z*` character other than a space. That needs no renderer.
+
+The sheet's header now states that the `<step>.json` beside it is the
+authority and the sheet is a reading aid — the cells are escaped, so a cell
+does not read back as the string the Cog proposed, and the digests are over
+the JSON.
+
+Presentation only: the pending JSON, the hashes, the decision vocabulary and
+the change shape are untouched, so a decision file made against 0.5.7 still
+applies. Tests: `tests/test_op_authority.py::PendingSheetLiteralTextTests`
+(15).
+
 ### 0.5.7 — every pending-sheet cell is literal text (2026-09-19)
 
 Contract §11b, from Codex review 9 (blocker 3). `render_pending` interpolated
