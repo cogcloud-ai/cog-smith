@@ -974,6 +974,46 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
         self.assertIn("authority", head)
         self.assertIn("reading aid", head)
 
+    def test_the_header_claims_no_general_invisibility(self):
+        """Machinery 0.5.9 (Codex review 11, finding 4). 0.5.8's header said
+        "an invisible character shows as `U+XXXX`", which is not true in
+        general: combining marks (U+034F) and variation selectors (U+FE0F)
+        are `Mn`, look-alike letters are ordinary letters, and none of them
+        is `C*` or `Z*`. The header now states the three things the code
+        does and names what it does not detect. Wording only — `cell()` is
+        unchanged."""
+        head = self.sheet(change_id="c-1", change_type="add_label",
+                          target="nexus#1", summary="plain"
+                          ).split("| change_id")[0]
+        for absolute in ("an invisible character shows",
+                         "nothing invisible", "punctuation shows a backslash"):
+            self.assertNotIn(absolute, head)
+        self.assertIn("NOT detected", head)
+        for named in ("Combining marks", "variation selectors",
+                      "look-alike letters"):
+            self.assertIn(named, head)
+        self.assertIn("string equality is decided there", head)
+        # And the same restraint in the docstring the maintainer reads.
+        doc = op_runner.cell.__doc__
+        self.assertIn("WHAT THIS DOES NOT DO", doc)
+        self.assertNotIn("Nothing invisible can hide", doc)
+        self.assertNotIn("nothing invisible survives", doc)
+
+    def test_the_wording_change_moved_no_cell(self):
+        """0.5.9 is wording: the three things the header claims, and the two
+        it now says it does not do. `cell()` itself is untouched, and the
+        hostile-input invariant above still holds over every one of them."""
+        for hostile in HOSTILE_CELLS:
+            with self.subTest(hostile=hostile):
+                self.assertLiteral(op_runner.cell(hostile))
+        self.assertEqual(op_runner.cell("a​b"), "aU\\+200Bb")
+        self.assertEqual(op_runner.cell("  a \n b  "), "a b")
+        self.assertEqual(op_runner.cell("a͏b"), "a͏b",
+                         "a combining mark is not detected, as the header "
+                         "now says")
+        self.assertEqual(op_runner.cell("а"), "а",
+                         "a Cyrillic look-alike is an ordinary letter")
+
 
 class PendingAndDecisionTests(AuthorityCase):
     """What the human decided about, and that it is still what was proposed

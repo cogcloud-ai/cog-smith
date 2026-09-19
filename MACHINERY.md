@@ -295,6 +295,39 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.5.9 — the sheet claims only what it does (2026-09-19)
+
+Contract §11d, from Codex review 11 (finding 4). WORDING ONLY: `cell()` is
+byte-for-byte unchanged and every 0.5.8 rendering is identical, so a decision
+file made against 0.5.8 still applies and no digest moves.
+
+0.5.8's header said that "an invisible character shows as `U+XXXX`" and that
+"punctuation shows a backslash". Neither is true in general. Rule 2 encodes
+Unicode `C*` and `Z*`, which leaves combining marks and variation selectors
+(`Mn`: U+034F, U+FE0F) passing through, look-alike letters (Cyrillic `а` for
+Latin `a`) undetected because they are ordinary letters, and U+3164 HANGUL
+FILLER (`Lo`) likewise; and an escaped punctuation character ordinarily
+renders WITHOUT its backslash. A reading aid that overstates its guarantee
+invites exactly the mistake it exists to prevent: treating visual equality as
+string equality.
+
+The header and the `cell()` docstring now say what the code does — ASCII
+punctuation is escaped so that Markdown cannot restyle or link the text;
+control, format and separator characters are shown as `U+XXXX`; runs of
+whitespace are collapsed to one space — and name what it does NOT detect:
+combining marks, variation selectors and look-alike letters. Both say the
+`<step>.json` beside the sheet is the authority and that **string equality is
+decided there**. The docstring also records that whitespace collapsing is
+lossy and that literal text `U+200B` is indistinguishable from an encoded
+U+200B.
+
+Tests: `tests/test_op_authority.py::PendingSheetLiteralTextTests` gains
+`test_the_header_claims_no_general_invisibility` (the header makes no
+absolute claim, and names the three undetected classes) and
+`test_the_wording_change_moved_no_cell` (the invariant still holds over every
+hostile input, and a combining mark and a Cyrillic look-alike pass through as
+the header now says).
+
 ### 0.5.8 — the literal-text invariant, checkable without a renderer (2026-09-19)
 
 Contract §11c, from Codex review 10 (finding 1). 0.5.7 escaped a CHOSEN LIST

@@ -926,7 +926,7 @@ def _escaped(text):
 
 
 def cell(value):
-    """A pending-sheet cell as LITERAL TEXT (Op machinery 0.5.8).
+    """A pending-sheet cell as LITERAL TEXT (Op machinery 0.5.9).
 
     The sheet is what the human decides from, and a valid `content_sha256`
     says nothing about how a proposal RENDERS: a target of
@@ -943,15 +943,33 @@ def cell(value):
        double up with (0.5.7 HTML-escaped `&<>` as well; `&#124;` came out as
        `&amp;\\#124;`. The backslash rule alone covers them, so the HTML
        escape is gone).
-    2. Every character that is not visible AS ITSELF -- Unicode category
-       `C*` (control, format including zero-width and bidi overrides,
-       surrogate, private use, unassigned) or `Z*` (separators) other than
-       an ordinary space -- is replaced by visible text `U+XXXX`. Nothing
-       invisible can hide in a cell, because nothing invisible survives.
+    2. Every character in Unicode category `C*` (control, format including
+       zero-width and bidi overrides, surrogate, private use, unassigned) or
+       `Z*` (separators) other than an ordinary space is replaced by visible
+       text `U+XXXX`.
 
     Whitespace runs (newlines included) collapse to one space first, so the
     common case stays readable and only the exotic characters get spelled
-    out.
+    out. That is lossy: leading, trailing and repeated whitespace does not
+    survive, and the literal text `U+200B` is indistinguishable from an
+    encoded U+200B.
+
+    WHAT THIS DOES NOT DO (machinery 0.5.9, Codex review 11 finding 4).
+    Rule 2 covers the categories it names and no more; it is not a general
+    guarantee about invisibility, and it is not a confusable-character
+    defense:
+
+      * combining marks (`Mn`, e.g. U+034F) and variation selectors
+        (U+FE0F) are neither `C*` nor `Z*`, so they pass through and can
+        change how the characters beside them render;
+      * look-alike letters -- Cyrillic `а` for Latin `a` -- are ordinary
+        letters and are not detected at all;
+      * a character like U+3164 HANGUL FILLER is `Lo` and renders as
+        nothing much, and is likewise not detected.
+
+    The sheet is a READING AID. `<step>.json` beside it is the authority:
+    the digests are over the JSON and string equality is decided there, not
+    by how a cell looks.
     """
     text = " ".join(str("" if value is None else value).split())
     out = []
@@ -967,15 +985,20 @@ def render_pending(doc):
     """The human's copy: one line per change, every cell literal text."""
     lines = [f"# Decision needed: {cell(doc['step'])}", "",
              f"Run: {cell(doc['run_id'])}", f"Asked: {cell(doc['asked_at'])}", "",
-             # The sheet is a READING AID. Every cell below is escaped to
-             # literal text, which means a cell does not read back as the
-             # string the Cog proposed; the JSON is the thing being approved
-             # and the thing the digests are over (machinery 0.5.8).
+             # The sheet is a READING AID, and the header says only what the
+             # code above actually does (machinery 0.5.9, review 11 finding
+             # 4): 0.5.8's "an invisible character shows as U+XXXX" claimed a
+             # general property the encoding does not have, and "punctuation
+             # shows a backslash" is not how an escape renders.
              f"The authority is `{cell(doc['step'])}.json` beside this file: "
-             "it holds each change in full, and the digests are over it. "
-             "This sheet is a reading aid — every cell is escaped to literal "
-             "text, so punctuation shows a backslash and an invisible "
-             "character shows as `U+XXXX`.", "",
+             "it holds each change in full, the digests are over it, and "
+             "string equality is decided there — not by how a cell looks. "
+             "This sheet is a reading aid: every ASCII punctuation character "
+             "is escaped so that Markdown cannot restyle or link the text, "
+             "control, format and separator characters are shown as "
+             "`U+XXXX`, and runs of whitespace are collapsed to one space. "
+             "Combining marks, variation selectors and look-alike letters "
+             "are NOT detected.", "",
              f"Decide with: `{doc['decide_with']}`", "",
              "| change_id | kind | target | summary |",
              "|---|---|---|---|"]
