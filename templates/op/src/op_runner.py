@@ -889,6 +889,27 @@ def pending_changes(payload, sid):
     return changes
 
 
+def change_kind(change):
+    """What a proposed change IS, whatever the proposing Cog called the field.
+    `kind`/`target` were the pending sheet's guess; the change shape the Cogs
+    actually emit says `change_type` and `target_item_ids` (machinery 0.5.6 —
+    the live sweep's decision sheet had two blank columns). Neither name is
+    promoted over the other: the renderer reads what is there."""
+    return str(change.get("kind") or change.get("change_type") or "")
+
+
+def change_target(change):
+    """The item a proposed change is about. `target`, else the FIRST of
+    `target_item_ids` — the sheet is one line per change, and a human who
+    needs every id reads the JSON beside it."""
+    target = change.get("target")
+    if not target:
+        ids = change.get("target_item_ids")
+        if isinstance(ids, list) and ids:
+            target = ids[0]
+    return str(target or "")
+
+
 def render_pending(doc):
     """The human's copy: one line per change."""
     lines = [f"# Decision needed: {doc['step']}", "",
@@ -898,8 +919,7 @@ def render_pending(doc):
              "|---|---|---|---|"]
     for change in pending_changes(doc["payload"], doc["step"]):
         lines.append("| {} | {} | {} | {} |".format(
-            change.get("change_id"), change.get("kind", ""),
-            change.get("target", ""),
+            change.get("change_id"), change_kind(change), change_target(change),
             " ".join(str(change.get("summary", "")).split())))
     return "\n".join(lines) + "\n"
 

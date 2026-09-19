@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-18 against cog-smith Op machinery 0.5.5
+**Last verified:** 2026-09-19 against cog-smith Op machinery 0.5.6
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
 It is a runner SUBSET on purpose: durable state is refused by name, with the

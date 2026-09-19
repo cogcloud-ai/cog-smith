@@ -696,6 +696,59 @@ class HumanGateTests(AuthorityCase):
         self.assertEqual(self.fake.calls[-1]["task"], "ask")
 
 
+class PendingSheetTests(unittest.TestCase):
+    """The decision sheet names what it shows (Op machinery 0.5.6).
+
+    The live nexus sweep handed a human a Markdown table whose `kind` and
+    `target` columns were blank for every one of 33 changes: the renderer read
+    `kind`/`target`, and the change shape the proposing Cogs emit says
+    `change_type` and `target_item_ids`. Neither name is promoted over the
+    other — the renderer reads what is there."""
+
+    def sheet(self, *changes):
+        doc = {"schema": op_runner.PENDING_SCHEMA, "run_id": "run-1",
+               "step": "compose", "payload": {"changes": list(changes)},
+               "asked_at": "2026-09-19T00:00:00+00:00",
+               "decide_with": "op run --resume . --decision <file>"}
+        return op_runner.render_pending(doc)
+
+    def hashed(self, body):
+        return dict(body,
+                    content_sha256=op_runner.change_content_sha256(body),
+                    target_sha256="1" * 64)
+
+    def test_the_cogs_change_shape_fills_both_columns(self):
+        line = self.sheet(self.hashed({
+            "change_id": "c-1", "change_type": "link_duplicate",
+            "target_item_ids": ["nexus#33", "nexus#34"],
+            "repository": REPO, "summary": "link the duplicate pair",
+        })).splitlines()[-1]
+        self.assertIn("| link_duplicate |", line)
+        self.assertIn("| nexus#33 |", line)
+
+    def test_kind_and_target_still_win_when_present(self):
+        line = self.sheet(self.hashed({
+            "change_id": "c-1", "kind": "label", "target": "nexus#35",
+            "change_type": "add_label", "target_item_ids": ["nexus#99"],
+            "repository": REPO, "summary": "add type:bug",
+        })).splitlines()[-1]
+        self.assertIn("| label |", line)
+        self.assertIn("| nexus#35 |", line)
+
+    def test_a_change_that_names_neither_renders_blank_not_crashed(self):
+        line = self.sheet(self.hashed({
+            "change_id": "c-1", "repository": REPO, "summary": "something",
+        })).splitlines()[-1]
+        self.assertEqual(line, "| c-1 |  |  | something |")
+
+    def test_an_empty_target_id_list_is_not_an_index_error(self):
+        line = self.sheet(self.hashed({
+            "change_id": "c-1", "change_type": "close_item",
+            "target_item_ids": [], "repository": REPO, "summary": "close it",
+        })).splitlines()[-1]
+        self.assertEqual(line, "| c-1 | close_item |  | close it |")
+
+
 class PendingAndDecisionTests(AuthorityCase):
     """What the human decided about, and that it is still what was proposed
     when the decision is applied (review B5, S2)."""
