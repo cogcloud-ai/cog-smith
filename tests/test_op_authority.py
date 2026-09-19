@@ -723,8 +723,8 @@ class PendingSheetTests(unittest.TestCase):
             "target_item_ids": ["nexus#33", "nexus#34"],
             "repository": REPO, "summary": "link the duplicate pair",
         })).splitlines()[-1]
-        self.assertIn("| link_duplicate |", line)
-        self.assertIn("| nexus#33 |", line)
+        self.assertIn("| link\\_duplicate |", line)
+        self.assertIn("| nexus\\#33 |", line)
 
     def test_kind_and_target_still_win_when_present(self):
         line = self.sheet(self.hashed({
@@ -733,7 +733,7 @@ class PendingSheetTests(unittest.TestCase):
             "repository": REPO, "summary": "add type:bug",
         })).splitlines()[-1]
         self.assertIn("| label |", line)
-        self.assertIn("| nexus#35 |", line)
+        self.assertIn("| nexus\\#35 |", line)
 
     def test_a_change_that_names_neither_renders_blank_not_crashed(self):
         line = self.sheet(self.hashed({
@@ -746,7 +746,112 @@ class PendingSheetTests(unittest.TestCase):
             "change_id": "c-1", "change_type": "close_item",
             "target_item_ids": [], "repository": REPO, "summary": "close it",
         })).splitlines()[-1]
-        self.assertEqual(line, "| c-1 | close_item |  | close it |")
+        self.assertEqual(line, "| c-1 | close\\_item |  | close it |")
+
+
+class PendingSheetLiteralTextTests(unittest.TestCase):
+    """Every cell renders as LITERAL TEXT (Op machinery 0.5.7).
+
+    Codex review 9, blocker 3: a valid `content_sha256` says nothing about
+    how a proposal READS. The sheet is what the human decides from, so a
+    target that is a Markdown link, a summary with a pipe or a newline, and
+    an HTML comment opener must all survive as the characters they are.
+    """
+
+    def sheet(self, **change):
+        body = dict({"repository": REPO}, **change)
+        doc = {"schema": op_runner.PENDING_SCHEMA, "run_id": "run-1",
+               "step": "compose",
+               "payload": {"changes": [dict(
+                   body, content_sha256=op_runner.change_content_sha256(body),
+                   target_sha256="1" * 64)]},
+               "asked_at": "2026-09-19T00:00:00+00:00",
+               "decide_with": "op run --resume . --decision <file>"}
+        return op_runner.render_pending(doc)
+
+    def row(self, **change):
+        return self.sheet(**change).splitlines()[-1]
+
+    def cells(self, **change):
+        """Split the row the way a Markdown table parser does: on UNESCAPED
+        pipes only. If the escaping were wrong this would find extra cells,
+        which is the point."""
+        row = self.row(**change)
+        parts, buf, i = [], "", 0
+        while i < len(row):
+            ch = row[i]
+            if ch == "\\" and i + 1 < len(row):
+                buf += row[i:i + 2]
+                i += 2
+                continue
+            if ch == "|":
+                parts.append(buf)
+                buf = ""
+            else:
+                buf += ch
+            i += 1
+        parts.append(buf)
+        return [p.strip() for p in parts[1:-1]]
+
+    def test_a_markdown_link_target_shows_the_literal_target(self):
+        """`[owner/repo#1](https://example.invalid)` must not become a link
+        whose text hides where the change actually goes."""
+        row = self.row(change_id="c-1", change_type="add_label",
+                       target="[owner/repo#1](https://example.invalid)",
+                       summary="looks innocent")
+        self.assertIn("\\[owner/repo\\#1\\]\\(https://example.invalid\\)", row)
+        self.assertNotIn("](", row)
+
+    def test_a_pipe_in_a_cell_does_not_shift_the_columns(self):
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1",
+                           summary="add a | b to the item")
+        self.assertEqual(len(cells), 4)
+        self.assertEqual(cells[3], "add a \\| b to the item")
+
+    def test_a_newline_does_not_invent_a_row(self):
+        sheet = self.sheet(change_id="c-1\nc-2", change_type="add_label",
+                           target="nexus#1",
+                           summary="first line\r\nsecond line\n\n| x | y | z |")
+        rows = [ln for ln in sheet.splitlines() if ln.startswith("| c-")]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("c-1 c-2", rows[0])
+        self.assertIn("first line second line", rows[0])
+
+    def test_an_html_comment_cannot_conceal_what_follows(self):
+        row = self.row(change_id="c-1", change_type="add_label",
+                       target="nexus#1",
+                       summary="<!-- hide the rest")
+        self.assertNotIn("<!--", row)
+        self.assertNotIn("<", row.replace("| ", "").replace(" |", ""))
+        self.assertIn("&lt;\\!--", row)
+
+    def test_backticks_and_emphasis_do_not_reformat_a_cell(self):
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1",
+                           summary="`code` *bold* _under_ ~strike~ #tag !bang")
+        self.assertEqual(
+            cells[3],
+            "\\`code\\` \\*bold\\* \\_under\\_ \\~strike\\~ \\#tag \\!bang")
+
+    def test_an_ampersand_entity_stays_the_text_it_was(self):
+        """HTML-escaping `&` first is what keeps a literal `&lt;` from being
+        rendered as `<` by an HTML-capable renderer."""
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1", summary="&lt;script&gt; & co")
+        self.assertEqual(cells[3], "&amp;lt;script&amp;gt; &amp; co")
+
+    def test_a_backslash_is_escaped_before_anything_is_added(self):
+        cells = self.cells(change_id="c-1", change_type="add_label",
+                           target="nexus#1", summary="a \\| b")
+        self.assertEqual(cells[3], "a \\\\\\| b")
+
+    def test_every_column_is_escaped_not_only_the_summary(self):
+        cells = self.cells(change_id="c|1", change_type="link_*duplicate*",
+                           target="[t](u)", summary="plain")
+        self.assertEqual(cells[0], "c\\|1")
+        self.assertEqual(cells[1], "link\\_\\*duplicate\\*")
+        self.assertEqual(cells[2], "\\[t\\]\\(u\\)")
 
 
 class PendingAndDecisionTests(AuthorityCase):

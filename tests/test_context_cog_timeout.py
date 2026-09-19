@@ -187,6 +187,55 @@ class TestInvokeReadsTheBinding(unittest.TestCase):
             self.assertEqual(self._deadline_seen_by_core(cog),
                              cog_binding.REQUEST_TIMEOUT_DEFAULT)
 
+    # The written record must reach the SOCKET, not merely a module constant
+    # (Codex review 9, nit 2: printing `REQUEST_TIMEOUT_S` would pass even if
+    # `invoke` ignored it). This probe runs a full invocation in the created
+    # Cog's own process with the model replaced, and reports the deadline the
+    # HTTP call was actually given.
+    INVOKE_PROBE = (
+        "import json, sys, io\n"
+        "from unittest import mock\n"
+        "sys.path.insert(0, 'src')\n"
+        "import cog_core\n"
+        "seen = []\n"
+        "example = open('context/output-example.json').read()\n"
+        "class R(io.BytesIO):\n"
+        "    status = 200\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *e): return False\n"
+        "def _urlopen(request, timeout=None):\n"
+        "    seen.append(timeout)\n"
+        "    return R(json.dumps({'model': cog_core.MODEL, 'choices': ["
+        "{'message': {'content': example}}]}).encode())\n"
+        "with mock.patch.object(cog_core, 'health', lambda *a, **k: (True, 'canned')), \\\n"
+        "     mock.patch.object(cog_core.urllib.request, 'urlopen', _urlopen):\n"
+        "    env = cog_core.invoke(json.load(open('examples/sample-bundle.json')))\n"
+        "    override = cog_core.invoke("
+        "json.load(open('examples/sample-bundle.json')), timeout=1200)\n"
+        "print(json.dumps({'binding': cog_core.REQUEST_TIMEOUT_S, 'seen': seen,\n"
+        "                  'ok': bool(env.get('ok')),\n"
+        "                  'override_ok': bool(override.get('ok'))}))\n"
+    )
+
+    def _invocation(self, cog):
+        r = subprocess.run([sys.executable, "-c", self.INVOKE_PROBE],
+                           cwd=str(cog), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout.strip().splitlines()[-1])
+
+    def test_a_written_record_reaches_the_invocations_http_deadline(self):
+        """From `use --timeout` on disk to the deadline urlopen is handed —
+        the whole claim in one test, through a real process."""
+        with tempfile.TemporaryDirectory() as tmp:
+            cog = create_tmp(tmp)
+            run_use(cog, "local", "--timeout", "450")
+            seen = self._invocation(cog)
+            self.assertTrue(seen["ok"], seen)
+            self.assertEqual(seen["binding"], 450)
+            self.assertEqual(seen["seen"][0], 450)     # the record's deadline
+            self.assertEqual(seen["seen"][-1], 1200)   # the one-call override
+            self.assertTrue(seen["override_ok"], seen)
+
     def test_the_cli_refuses_an_impossible_one_call_override(self):
         with tempfile.TemporaryDirectory() as tmp:
             cog = create_tmp(tmp)
@@ -197,6 +246,73 @@ class TestInvokeReadsTheBinding(unittest.TestCase):
                 cwd=str(cog), capture_output=True, text=True)
             self.assertEqual(r.returncode, 2)
             self.assertIn("request_timeout_s", r.stderr)
+
+
+class TestDeepHealthHonorsTheOverride(unittest.TestCase):
+    """Context-cog machinery 0.4.1 (Codex review 9): `--check --deep
+    --timeout 600` was parsed, bounds-checked and then dropped — `health`
+    was called with no deadline at all and `cog_core` used 30 s, so a
+    completion probe taking 40 s reported DOWN despite the explicit
+    override. The SHALLOW liveness probe keeps its own short deadline."""
+
+    PROBE = (
+        "import json, sys, io\n"
+        "from unittest import mock\n"
+        "sys.path.insert(0, 'src')\n"
+        "import cog_core\n"
+        "seen = []\n"
+        "class R(io.BytesIO):\n"
+        "    status = 200\n"
+        "    def __enter__(self): return self\n"
+        "    def __exit__(self, *e): return False\n"
+        "def _urlopen(request, timeout=None):\n"
+        "    seen.append(timeout)\n"
+        "    return R(json.dumps({'model': cog_core.MODEL, 'choices': ["
+        "{'message': {'content': '{}'}}]}).encode())\n"
+        "with mock.patch.object(cog_core.urllib.request, 'urlopen', _urlopen):\n"
+        "    cog_core.health(deep=True)\n"
+        "    cog_core.health(deep=True, deep_timeout=600)\n"
+        "    cog_core.health(deep=False)\n"
+        "print(json.dumps(seen))\n"
+    )
+
+    def test_the_deep_probe_uses_the_override_and_liveness_does_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cog = create_tmp(tmp)
+            run_use(cog, "local")
+            r = subprocess.run([sys.executable, "-c", self.PROBE], cwd=str(cog),
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            seen = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual(seen[0], 30)     # deep, no override: its own floor
+            self.assertEqual(seen[1], 600)    # deep, explicit override
+            self.assertEqual(seen[2], 3)      # shallow liveness, unchanged
+
+    def test_the_cli_passes_check_deep_timeout_through(self):
+        """The CLI is where the value was dropped, so the wiring is asserted
+        at the CLI: `--check --deep --timeout N` reaches `deep_timeout`."""
+        probe = (
+            "import sys\n"
+            "from unittest import mock\n"
+            "sys.path.insert(0, 'src')\n"
+            "import cog_core, cog_cli\n"
+            "seen = {}\n"
+            "def _health(timeout=3, deep=False, deep_timeout=None):\n"
+            "    seen.update(timeout=timeout, deep=deep, deep_timeout=deep_timeout)\n"
+            "    return True, 'canned'\n"
+            "with mock.patch.object(cog_core, 'health', _health):\n"
+            "    sys.argv = ['ask', '--check', '--deep', '--timeout', '600']\n"
+            "    cog_cli.main()\n"
+            "print(seen)\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cog = create_tmp(tmp)
+            run_use(cog, "local")
+            r = subprocess.run([sys.executable, "-c", probe], cwd=str(cog),
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("'deep_timeout': 600", r.stdout)
+            self.assertIn("'deep': True", r.stdout)
 
 
 if __name__ == "__main__":

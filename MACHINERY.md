@@ -99,6 +99,45 @@ cog-smith coverage: `tests/test_context_cog_timeout.py` (17 tests, including
 Rolled out by re-copying the masters into the three judgment Cogs and every
 other sibling carrying this lineage; each re-verified by `smith check`.
 
+## 0.4.1 (2026-09-19): `--check --deep --timeout N` is honored
+
+Contract §11b, from Codex review 9. 0.4.0 taught `cog_cli` a `--timeout`, and
+`--check` ignored it: `health(deep=True)` was called with no deadline and
+`cog_core` used its own `max(timeout, 30)`, so a deep completion probe that
+needed 40 s reported DOWN despite an explicit 600. The value was parsed and
+bounds-checked and then dropped, which is the worst of the three.
+
+`cog_core.health(timeout=3, deep=False, deep_timeout=None)`: the DEEP probe
+performs a real completion — the same kind of call `invoke` makes, taking the
+same kind of time — so `deep_timeout`, when given, is used as stated; without
+one it keeps its 30 s floor. The SHALLOW liveness probe keeps `timeout`
+unchanged: a socket that has not answered in three seconds is not alive, and
+waiting longer tells nobody anything. `cog_cli` passes `--timeout` as
+`deep_timeout` only when `--deep` is given, and its help text says so.
+
+Additive signature change: every existing `health()` and `health(deep=True)`
+caller is unaffected (`cog_api`, `cog_core.invoke`, the created suites).
+Starter test: `templates/context-cog/tests/test_cog.py.tmpl::
+test_the_deep_probe_honors_an_explicit_deadline`. cog-smith coverage:
+`tests/test_context_cog_timeout.py::TestDeepHealthHonorsTheOverride` (2 —
+the core, and the CLI wiring where the value was actually dropped), plus
+`test_a_written_record_reaches_the_invocations_http_deadline`, which replaces
+the 0.4.0 test that imported the module and printed `REQUEST_TIMEOUT_S`
+(review 9, nit 2: that would have passed had `invoke` ignored the constant).
+It now runs a full invocation in the created Cog's own process with the model
+replaced and asserts the deadline `urlopen` was handed.
+
+The code-starter's `test_a_full_run_carries_no_schema_problem` asserts `ok`
+and a payload in the SAME test (review 9, nit 1): a `task-failed` envelope
+carries no schema problem either, so the schema claim alone passed vacuously
+on an early failure.
+
+Rolled out by re-copying the masters into the nine carriers: the three
+judgment Cogs (cog-issue-classifier, cog-dependency-detector,
+cog-overlap-duplicate-detector), cog-author, cog-build-evaluator,
+cog-explicit-action-extractor, cog-meeting-highlights, cog-op-designer and
+testcog; each re-verified by `smith check`.
+
 ## Code-cog machinery (0.1.0, 2026-09-17): `templates/code-cog/src/`
 
 A third lineage, on the same terms. `templates/code-cog/src/cog_core.py` and
@@ -232,6 +271,29 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (§1–§4, §6). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.5.7 — every pending-sheet cell is literal text (2026-09-19)
+
+Contract §11b, from Codex review 9 (blocker 3). `render_pending` interpolated
+proposal fields into a Markdown table unescaped, and only the summary had its
+whitespace collapsed. A valid `content_sha256` says nothing about how a
+proposal READS: a target of `[owner/repo#1](https://example.invalid)` hid the
+real target behind link text, a pipe shifted the columns, a newline in
+`change_id` invented a row, backticks reformatted a cell, and `<!--` could
+swallow everything after it in an HTML-capable renderer. The sheet is what the
+human decides from, so a misleading render is a mis-approval.
+
+`op_runner.cell(value)` is the one renderer for every cell (`change_id`, kind,
+target, summary — and the step, run id and timestamp in the header): collapse
+every run of whitespace, newlines included, to one space; HTML-escape `&`,
+`<`, `>`; then backslash-escape the Markdown metacharacters
+`\ ` `` ` `` `* _ [ ] ( ) # ! ~ | < >`. The order matters — escaping `<` to
+`\<` and then HTML-escaping would leave a visible backslash. Presentation
+only: the pending JSON, the hashes, the decision vocabulary and the change
+shape are untouched, so a decision file made against 0.5.6 still applies.
+Tests: `tests/test_op_authority.py::PendingSheetLiteralTextTests` (8), one per
+hostile string the review listed, splitting the rendered row on UNESCAPED
+pipes the way a table parser does.
 
 ### 0.5.6 — the pending sheet names what it shows (2026-09-19)
 

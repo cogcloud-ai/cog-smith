@@ -179,10 +179,22 @@ def validate_output(parsed, bundle):
 
 # ------------------------------------------------------------------ health --
 
-def health(timeout=3, deep=False):
-    """Is the model dependency reachable? Returns (ok, detail)."""
+def health(timeout=3, deep=False, deep_timeout=None):
+    """Is the model dependency reachable? Returns (ok, detail).
+
+    Two probes with two deadlines (machinery 0.4.1). The SHALLOW liveness
+    probe keeps `timeout` — a socket that has not answered in three seconds
+    is not alive, and waiting longer tells nobody anything. The DEEP probe
+    performs a real completion, so it is the same kind of call `invoke`
+    makes and takes the same kind of time: `deep_timeout`, when given, is an
+    explicit override (`cog_cli --check --deep --timeout N`) and is used as
+    stated. Without one the deep probe keeps its own floor of 30 s. Before
+    0.4.1 the override was accepted and silently dropped, so a completion
+    probe that needed 40 s reported DOWN (Codex review 9).
+    """
     base = ENDPOINT.rstrip("/")
     if deep:
+        deadline = deep_timeout if deep_timeout is not None else max(timeout, 30)
         body = {"model": MODEL, "max_tokens": 1,
                 "messages": [{"role": "user", "content": "ping"}]}
         req = urllib.request.Request(
@@ -191,7 +203,7 @@ def health(timeout=3, deep=False):
         if API_KEY:
             req.add_header("Authorization", f"Bearer {API_KEY}")
         try:
-            with urllib.request.urlopen(req, timeout=max(timeout, 30)) as resp:
+            with urllib.request.urlopen(req, timeout=deadline) as resp:
                 payload = json.loads(resp.read().decode())
             echoed = payload.get("model")
             if not echoed:

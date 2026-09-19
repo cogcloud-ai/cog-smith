@@ -27,6 +27,8 @@ def sample_bundle():
 class _FakeResponse(io.BytesIO):
     """Just enough of an http.client.HTTPResponse for urlopen's caller."""
 
+    status = 200
+
     def __enter__(self):
         return self
 
@@ -114,6 +116,7 @@ class TestSampleInvocation(unittest.TestCase):
         with canned_model(example):
             env = cog_core.invoke(sample_bundle())
         self.assertTrue(env["ok"], env.get("error"))
+        self.assertIsInstance(env.get("payload"), dict)
         self.assertEqual([p for p in env["problems"] if p["check"] == "schema"],
                          [], env["problems"])
 
@@ -138,6 +141,25 @@ class TestSampleInvocation(unittest.TestCase):
         env = cog_core.invoke(sample_bundle(), timeout=1)
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "invalid-timeout")
+
+    def test_the_deep_probe_honors_an_explicit_deadline(self):
+        """`--check --deep --timeout 600` used to be accepted and dropped, so
+        a completion probe needing 40 s reported DOWN (machinery 0.4.1)."""
+        seen = []
+
+        def _urlopen(request, timeout=None):
+            seen.append(timeout)
+            return _FakeResponse(json.dumps(
+                {"model": cog_core.MODEL,
+                 "choices": [{"message": {"content": "{}"}}]}).encode())
+
+        with mock.patch.object(cog_core.urllib.request, "urlopen", _urlopen):
+            cog_core.health(deep=True)
+            self.assertEqual(seen[-1], 30)          # the deep probe's own floor
+            cog_core.health(deep=True, deep_timeout=600)
+            self.assertEqual(seen[-1], 600)
+            cog_core.health(deep=False)
+            self.assertEqual(seen[-1], 3)           # liveness keeps its short one
 
 
 class TestEnvelopeMechanics(unittest.TestCase):

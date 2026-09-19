@@ -77,8 +77,15 @@ class TestInvoke(unittest.TestCase):
     def test_a_full_run_carries_no_schema_problem(self):
         """The contract, not `ok`: a Cog whose tests assert only `ok` can emit
         a payload its own output schema refuses — the first live triage sweep
-        found exactly that on first contact with real data."""
+        found exactly that on first contact with real data.
+
+        `ok` and the payload are asserted in the SAME test as the schema
+        claim: a `task-failed` envelope carries no schema problem either, so
+        the schema assertion alone passes vacuously on an early failure
+        (Codex review 9, nit 1)."""
         env = cog_core.invoke(sample_bundle())
+        self.assertTrue(env["ok"], env)
+        self.assertIsInstance(env.get("payload"), dict)
         self.assertEqual([p for p in env["problems"] if p["check"] == "schema"],
                          [], env["problems"])
 

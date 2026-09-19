@@ -63,6 +63,7 @@ import argparse
 import errno
 import fcntl
 import hashlib
+import html
 import json
 import os
 import re
@@ -910,17 +911,41 @@ def change_target(change):
     return str(target or "")
 
 
+# Every Markdown metacharacter that can change how a cell READS. `<` and `>`
+# are in the list for completeness; the HTML escape below has already removed
+# them by the time the backslashes go on (machinery 0.5.7).
+CELL_ESCAPES = "\\`*_[]()#!~|<>"
+
+
+def cell(value):
+    """A pending-sheet cell as LITERAL TEXT (Op machinery 0.5.7).
+
+    The sheet is what the human decides from, and a valid `content_sha256`
+    says nothing about how a proposal RENDERS: a target of
+    `[owner/repo#1](https://example.invalid)` hides the real target behind
+    link text, a pipe shifts the columns, a newline invents a row, and `<!--`
+    can swallow everything after it in an HTML-capable renderer (Codex review
+    9, blocker 3). So: collapse every run of whitespace (newlines included) to
+    one space, HTML-escape `&`, `<`, `>`, then backslash-escape the Markdown
+    metacharacters. Order matters — escaping `<` to `\\<` first and then to
+    HTML would leave a visible backslash.
+    """
+    text = " ".join(str("" if value is None else value).split())
+    text = html.escape(text, quote=False)
+    return "".join("\\" + ch if ch in CELL_ESCAPES else ch for ch in text)
+
+
 def render_pending(doc):
-    """The human's copy: one line per change."""
-    lines = [f"# Decision needed: {doc['step']}", "",
-             f"Run: {doc['run_id']}", f"Asked: {doc['asked_at']}", "",
+    """The human's copy: one line per change, every cell literal text."""
+    lines = [f"# Decision needed: {cell(doc['step'])}", "",
+             f"Run: {cell(doc['run_id'])}", f"Asked: {cell(doc['asked_at'])}", "",
              f"Decide with: `{doc['decide_with']}`", "",
              "| change_id | kind | target | summary |",
              "|---|---|---|---|"]
     for change in pending_changes(doc["payload"], doc["step"]):
         lines.append("| {} | {} | {} | {} |".format(
-            change.get("change_id"), change_kind(change), change_target(change),
-            " ".join(str(change.get("summary", "")).split())))
+            cell(change.get("change_id")), cell(change_kind(change)),
+            cell(change_target(change)), cell(change.get("summary", ""))))
     return "\n".join(lines) + "\n"
 
 
