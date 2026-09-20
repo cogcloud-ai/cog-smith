@@ -29,6 +29,14 @@ the ordinary envelope Gate: the proposed changes are written to
 the process exits 3. `--resume RUN_DIR --decision FILE` applies the human's
 answer and carries on; steps that already passed are never re-run.
 
+A step may declare `repeat: {count, require}` (machinery 0.6.0): the SAME
+request is invoked `count` times in sequence, each repeat gets its own Gate
+decision, and the step's payload is the LIST of the repeat payloads (`null`
+where a repeat's Gate failed). The step's Gate fails when fewer than
+`require` repeats passed. Repetition is for steps that only read and only
+propose: a step with `authority`, a human Gate, or a Cog that declares
+`reaches` is refused at load.
+
 A FAILED run resumes too (contract §9e): the step that stopped it — the one
 the Track names in `failed_step` — is the resume point, so a Cog that
 reports unfinished work (a write left uncertain, say) is re-run and finishes
@@ -339,6 +347,35 @@ def combine_gates(gates):
         status = "pass"
     reasons = [f"element {i}: {reason}"
                for i, gate in enumerate(gates) for reason in gate["reasons"]]
+    return {
+        "policy": op_spec.GATE_POLICY,
+        "status": status,
+        "reasons": reasons,
+        "decided_at": op_track.utc_now(),
+        "guards": [],
+    }
+
+
+def combine_repeat_gates(gates, require):
+    """One Gate decision over the repeats of a step, or of one `foreach`
+    element (narrowing contract §2).
+
+    `fail` when fewer than `require` repeats passed — the step did not get
+    the evidence it asked for; otherwise `pass-with-problems` when any repeat
+    failed or carried problems, because a run that needed three answers and
+    got two is a result with a caveat, not a clean pass; otherwise `pass`."""
+    passed = [g for g in gates if g["status"] != "fail"]
+    reasons = [f"repeat {i}: {reason}"
+               for i, gate in enumerate(gates) for reason in gate["reasons"]]
+    if len(passed) < require:
+        status = "fail"
+        reasons.insert(0, f"{len(passed)} of {len(gates)} repeats passed; "
+                          f"{require} required.")
+    elif len(passed) < len(gates) or any(g["status"] == "pass-with-problems"
+                                         for g in passed):
+        status = "pass-with-problems"
+    else:
+        status = "pass"
     return {
         "policy": op_spec.GATE_POLICY,
         "status": status,
@@ -1225,6 +1262,80 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None):
     return envelope, gate, attempts, round(time.monotonic() - started, 3)
 
 
+def repeat_envelope_path(base, index):
+    """Where repeat INDEX of a step (or of a `foreach` element) writes its
+    envelope: `<step>.r<j>.json`, `<step>/<index>.r<j>.json`. The REQUEST
+    beside it is written once and invoked k times — the repeats are of the
+    same request, which is what makes agreeing answers evidence."""
+    return Path(str(base) + f".r{index}.json")
+
+
+def _reusable_repeat(prior, index):
+    """The record of a repeat an earlier attempt already PASSED, or None.
+
+    A resume re-runs only the repeats that failed (narrowing contract §2): a
+    passed repeat's envelope is on disk and is read back rather than paid for
+    again. The record is only reused when its envelope is still there."""
+    entries = (prior or {}).get("repeats")
+    if not isinstance(entries, list) or index >= len(entries):
+        return None
+    entry = entries[index]
+    if not isinstance(entry, dict) or not entry.get("envelope"):
+        return None
+    if (entry.get("gate") or {}).get("status") == "fail":
+        return None
+    return entry if Path(entry["envelope"]).exists() else None
+
+
+def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
+                 prior=None):
+    """Invoke ONE request `count` times, sequentially, and gate each repeat
+    on its own (narrowing contract §2).
+
+    Returns `(records, gate, payloads, envelopes, elapsed)`. A repeat whose
+    Gate failed contributes `None` to the payloads and to the envelopes, so
+    what a later step reads is the same list a resumed run restores."""
+    count, require = repeat["count"], repeat["require"]
+    records, gates, payloads, envelopes = [], [], [], []
+    elapsed = 0.0
+    for index in range(count):
+        reused = _reusable_repeat(prior, index)
+        if reused is not None:
+            envelope = json.loads(Path(reused["envelope"]).read_text())
+            gate = reused["gate"]
+            record = reused
+        else:
+            envelope_path = repeat_envelope_path(base, index)
+            envelope, gate, attempts, seconds = _attempt(
+                cog_dir, task, request_path, envelope_path, on_fail, seam)
+            elapsed += seconds
+            record = {"index": index,
+                      "envelope": str(envelope_path.resolve()),
+                      "gate": gate,
+                      "binding": envelope.get("binding"),
+                      "elapsed_s": seconds,
+                      "attempts": attempts}
+        failed = gate["status"] == "fail"
+        records.append(record)
+        gates.append(gate)
+        payloads.append(None if failed else envelope.get("payload"))
+        envelopes.append(None if failed else envelope)
+    return (records, combine_repeat_gates(gates, require), payloads,
+            envelopes, round(elapsed, 3))
+
+
+def _repeat_fields(records, envelopes):
+    """What the repeats of a step (or element) contribute to its Track
+    record: the binding of the first repeat that carried one, and every
+    problem every repeat reported, in repeat order."""
+    return {
+        "binding": next((r.get("binding") for r in records if r.get("binding")),
+                        None),
+        "problems": [p for e in envelopes if e
+                     for p in (e.get("problems") or [])],
+    }
+
+
 def _plan(spec, track, run_dir, context):
     """A dry run: resolve the order and every request that depends only on
     the inputs; list the rest with request: null."""
@@ -1239,8 +1350,12 @@ def _plan(spec, track, run_dir, context):
             path = Path(run_dir) / "requests" / f"{step['id']}.json"
             op_track.write_json(path, request)
             request_path = str(path.resolve())
+        # The plan says how many times each step will run: a step that
+        # repeats is a step that costs k invocations, and a dry run is where
+        # that is read (narrowing contract §2).
         track["steps"].append(
-            op_track.step_record(step, "planned", request=request_path))
+            op_track.step_record(step, "planned", request=request_path,
+                                 repeat=op_spec.repeat_spec(step)))
     track["status"] = "planned"
     track["ended_at"] = op_track.utc_now()
     track_path = op_track.save(track, run_dir)
@@ -1248,8 +1363,13 @@ def _plan(spec, track, run_dir, context):
                "run_dir": str(Path(run_dir).resolve()), "track": track_path}
 
 
-def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None):
-    """Run one step once per element; returns (record fields, payload list)."""
+def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None, prior=None):
+    """Run one step once per element; returns (record fields, payload list).
+
+    With `repeat`, each ELEMENT is repeated: the element's request is written
+    once and invoked k times, the element's payload is the list of its repeat
+    payloads, and its Gate is the repeat Gate — so the step's payload is a
+    list of lists (narrowing contract §2)."""
     foreach = step["foreach"]
     items = op_spec.evaluate(foreach["items"], context)
     if not isinstance(items, list):
@@ -1258,7 +1378,13 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None):
             f"not a list.")
     task = step["cog"]["task"]
     on_fail = step.get("on_fail", "stop")
+    repeat = op_spec.repeat_spec(step)
+    prior_elements = (prior or {}).get("elements") or []
     elements, gates, payloads, envelopes = [], [], [], []
+    # Every envelope any element produced, flattened: what the step's own
+    # binding and problems are read from. `envelopes` stays one entry per
+    # ELEMENT — the list a later step sees as `steps.<id>.envelope`.
+    flat = []
     elapsed = 0.0
     for index, item in enumerate(items):
         element_context = dict(context)
@@ -1267,49 +1393,92 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None):
         request_path = Path(run_dir) / "requests" / step["id"] / f"{index}.json"
         op_track.write_json(request_path, request)
         envelope_path = Path(run_dir) / "envelopes" / step["id"] / f"{index}.json"
-        envelope, gate, attempts, seconds = _attempt(
-            cog_dir, task, request_path, envelope_path, on_fail, seam)
-        elapsed += seconds
+        element = {"index": index, "request": str(request_path.resolve())}
+        if repeat is None:
+            envelope, gate, attempts, seconds = _attempt(
+                cog_dir, task, request_path, envelope_path, on_fail, seam)
+            elapsed += seconds
+            element_envelopes = [envelope]
+            element.update({"envelope": str(envelope_path.resolve()),
+                            "gate": gate, "attempts": attempts,
+                            "problems": envelope.get("problems") or []})
+            payloads.append(None if gate["status"] == "fail"
+                            else envelope.get("payload"))
+            envelopes.append(envelope)
+            flat.append(envelope)
+        else:
+            prior_element = (prior_elements[index]
+                             if index < len(prior_elements) else None)
+            records, gate, element_payloads, element_envelopes, seconds = \
+                _run_repeats(cog_dir, task, request_path,
+                             envelope_path.with_suffix(""), on_fail, seam,
+                             repeat, prior=prior_element)
+            elapsed += seconds
+            element.update({"envelope": None, "gate": gate, "attempts": [],
+                            "repeats": records,
+                            **_repeat_fields(records, element_envelopes)})
+            payloads.append(None if gate["status"] == "fail"
+                            else element_payloads)
+            envelopes.append(None if gate["status"] == "fail"
+                             else element_envelopes)
+            flat.extend(e for e in element_envelopes if e)
         gates.append(gate)
-        envelopes.append(envelope)
-        payloads.append(None if gate["status"] == "fail"
-                        else envelope.get("payload"))
-        elements.append({
-            "index": index,
-            "request": str(request_path.resolve()),
-            "envelope": str(envelope_path.resolve()),
-            "gate": gate,
-            "attempts": attempts,
-            "problems": envelope.get("problems") or [],
-        })
+        elements.append(element)
     gate = combine_gates(gates) if gates else combine_gates([])
     fields = {
         "request": str((Path(run_dir) / "requests" / step["id"]).resolve()),
         "envelope": str((Path(run_dir) / "envelopes" / step["id"]).resolve()),
-        "binding": next((e.get("binding") for e in envelopes
-                         if e.get("binding")), None),
-        "problems": [p for e in envelopes for p in (e.get("problems") or [])],
+        "binding": next((e.get("binding") for e in flat if e.get("binding")),
+                        None),
+        "problems": [p for e in flat for p in (e.get("problems") or [])],
         "gate": gate,
         "elapsed_s": round(elapsed, 3),
         "elements": elements,
+        "repeat": repeat,
     }
-    if envelopes:
-        fields["cog"] = envelopes[0].get("cog") or fields.get("cog")
+    if flat:
+        fields["cog"] = flat[0].get("cog") or fields.get("cog")
     return fields, payloads, envelopes
 
 
-def _run_single(step, cog_dir, run_dir, context, seam=None):
+def _run_single(step, cog_dir, run_dir, context, seam=None, prior=None):
+    """Run one step once — or, with `repeat`, k times over the SAME request.
+
+    Returns `(record fields, payload, envelope)`, where a repeated step's
+    payload is the LIST of its repeat payloads and its `envelope` for later
+    mappings is the list of repeat envelopes (`None` for a failed one)."""
     task = step["cog"]["task"]
     request = op_spec.evaluate(step.get("input") or {}, context)
     request_path = Path(run_dir) / "requests" / f"{step['id']}.json"
     op_track.write_json(request_path, request)
     envelope_path = Path(run_dir) / "envelopes" / f"{step['id']}.json"
+    identity = {"id": step["cog"].get("id"),
+                "version": step["cog"].get("version")}
+    repeat = op_spec.repeat_spec(step)
+    on_fail = step.get("on_fail", "stop")
+    if repeat is not None:
+        records, gate, payloads, envelopes, seconds = _run_repeats(
+            cog_dir, task, request_path, envelope_path.with_suffix(""),
+            on_fail, seam, repeat, prior=prior)
+        fields = {
+            "cog": next((e.get("cog") for e in envelopes if e), None)
+            or identity,
+            "request": str(request_path.resolve()),
+            # The step has no single envelope: `repeats` names one file per
+            # repeat, and that is where a reader goes.
+            "envelope": None,
+            "gate": gate,
+            "elapsed_s": seconds,
+            "attempts": [],
+            "repeat": repeat,
+            "repeats": records,
+            **_repeat_fields(records, envelopes),
+        }
+        return fields, payloads, envelopes
     envelope, gate, attempts, seconds = _attempt(
-        cog_dir, task, request_path, envelope_path,
-        step.get("on_fail", "stop"), seam)
+        cog_dir, task, request_path, envelope_path, on_fail, seam)
     fields = {
-        "cog": envelope.get("cog") or {"id": step["cog"].get("id"),
-                                       "version": step["cog"].get("version")},
+        "cog": envelope.get("cog") or identity,
         "request": str(request_path.resolve()),
         "envelope": str(envelope_path.resolve()),
         "binding": envelope.get("binding"),
@@ -1318,7 +1487,7 @@ def _run_single(step, cog_dir, run_dir, context, seam=None):
         "elapsed_s": seconds,
         "attempts": attempts,
     }
-    return fields, envelope
+    return fields, envelope.get("payload"), envelope
 
 
 def _element_envelopes(record):
@@ -1330,8 +1499,40 @@ def _element_envelopes(record):
         if (element.get("gate") or {}).get("status") == "fail":
             envelopes.append(None)
             continue
+        if element.get("repeats") is not None:
+            envelopes.append(_repeat_envelopes(element))
+            continue
         envelopes.append(json.loads(Path(element["envelope"]).read_text()))
     return envelopes
+
+
+def _repeat_envelopes(record):
+    """The envelopes of one repeated step or element, in repeat order. A
+    repeat whose Gate failed restores as None — exactly what the live run put
+    in the context (narrowing contract §2)."""
+    envelopes = []
+    for entry in record["repeats"]:
+        if (entry.get("gate") or {}).get("status") == "fail" \
+                or not entry.get("envelope"):
+            envelopes.append(None)
+            continue
+        envelopes.append(json.loads(Path(entry["envelope"]).read_text()))
+    return envelopes
+
+
+def _payloads_of(envelopes):
+    """The payload each restored envelope contributes. An entry that is
+    itself a LIST is one element's repeats, so its payloads are a list too:
+    a `foreach` step that repeats exposes a list of lists."""
+    out = []
+    for envelope in envelopes:
+        if envelope is None:
+            out.append(None)
+        elif isinstance(envelope, list):
+            out.append(_payloads_of(envelope))
+        else:
+            out.append(envelope.get("payload"))
+    return out
 
 
 def _results_of(record):
@@ -1343,9 +1544,13 @@ def _results_of(record):
         return None, None
     if record.get("elements") is not None:
         envelopes = _element_envelopes(record)
-        payloads = [None if e is None else e.get("payload") for e in envelopes]
-        return payloads, envelopes
-    if record["status"] == "skipped" or not record.get("envelope"):
+        return _payloads_of(envelopes), envelopes
+    if record["status"] == "skipped":
+        return None, None
+    if record.get("repeats") is not None:
+        envelopes = _repeat_envelopes(record)
+        return _payloads_of(envelopes), envelopes
+    if not record.get("envelope"):
         return None, None
     envelope = json.loads(Path(record["envelope"]).read_text())
     return envelope.get("payload"), envelope
@@ -1379,13 +1584,18 @@ def _paused_output(run_dir, track, sid, pending_path, track_path):
 
 
 def _execute(spec, track, context, run_dir, package_root, authority, run_id,
-             done=None, decisions=None):
+             done=None, decisions=None, previous=None):
     """The step loop, shared by a fresh run and a resume.
 
     `done` holds the records of steps this run already finished — they are
     never re-run. A step recorded `running` (a crash mid-step) is absent
-    from `done` and runs again."""
+    from `done` and runs again.
+
+    `previous` holds the records an earlier attempt left for the steps that DO
+    run again, so a repeated step re-runs only the repeats that failed
+    (narrowing contract §2)."""
     done = done or {}
+    previous = previous or {}
     decisions = dict(decisions or {})
     dependents = spec.dependents()
     blocked = set()
@@ -1475,7 +1685,7 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         # describe (contract §9, review B1).
         position_in_track = len(track["steps"])
         track["steps"].append(op_track.step_record(
-            step, "running",
+            step, "running", repeat=op_spec.repeat_spec(step),
             grant=str(Path(grant_path).resolve()) if grant_path else None,
             journal=str(journal_path) if journal_path else None))
         op_track.save(track, run_dir)
@@ -1483,14 +1693,14 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         cog_dir = (package_root / step["cog"]["source"]).resolve()
         if step.get("foreach") is not None:
             fields, payload, envelopes = _run_foreach(
-                spec, step, cog_dir, run_dir, context, seam)
+                spec, step, cog_dir, run_dir, context, seam,
+                prior=previous.get(sid))
             envelope_for_context = envelopes
             authority_use = None
         else:
-            fields, envelope = _run_single(step, cog_dir, run_dir, context,
-                                           seam)
-            payload = envelope.get("payload")
-            envelope_for_context = envelope
+            fields, payload, envelope_for_context = _run_single(
+                step, cog_dir, run_dir, context, seam,
+                prior=previous.get(sid))
             authority_use = (payload or {}).get("authority_use") \
                 if isinstance(payload, dict) else None
         fields["grant"] = str(Path(grant_path).resolve()) if grant_path else None
@@ -1639,7 +1849,9 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
 
     Steps already `passed` are never re-run; a step left `running` by a
     crash runs again (a Cog with a journal reconciles first), and the step
-    that STOPPED a failed run runs again too (contract §9e)."""
+    that STOPPED a failed run runs again too (contract §9e). A repeat that
+    passed is never re-run either: only the failed repeats of that step are
+    invoked again (narrowing contract §2)."""
     package_root = Path(package_root).resolve()
     run_dir = Path(run_dir).resolve()
     track_path = run_dir / "track.json"
@@ -1776,8 +1988,13 @@ def _resume(package_root, run_dir, track_path, decision_path,
     # Durability order (contract §9): the accepted decision and the resume are
     # on disk BEFORE any grant is issued or any Cog is invoked.
     op_track.save(track, run_dir)
+    # What the earlier attempt left for the steps that run again: a repeated
+    # step re-runs only the repeats that FAILED, and reads the rest back from
+    # the envelopes already on disk (narrowing contract §2).
+    previous = {r["id"]: r for r in track.get("steps") or [] if r.get("id")}
     return _execute(spec, track, context, run_dir, package_root, authority,
-                    track["run_id"], done=done, decisions=decisions)
+                    track["run_id"], done=done, decisions=decisions,
+                    previous=previous)
 
 
 def main(argv=None):

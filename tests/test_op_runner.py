@@ -379,6 +379,283 @@ class ForeachTests(RunnerCase):
         self.assertEqual(len(fake.calls), 3)
 
 
+class RepeatTests(RunnerCase):
+    """`repeat: {count, require}` — narrowing contract §2 (machinery 0.6.0).
+
+    The same request, invoked k times; a Gate per repeat; the step's payload
+    is the LIST of them; the step's Gate needs n of them to have passed."""
+
+    def doc(self, count=3, require=1, on_fail="stop", with_consumer=False,
+            **extra):
+        step = fx.cog_step("draft", task="draft", on_fail=on_fail,
+                           repeat={"count": count, "require": require},
+                           **extra)
+        steps = [step]
+        if with_consumer:
+            after = fx.cog_step("merge", task="merge", depends_on=["draft"])
+            after["input"] = {"results": {"$from": "steps.draft.payload"}}
+            steps.append(after)
+        return fx.spec_doc(steps)
+
+    def test_the_same_request_is_invoked_count_times(self):
+        answers = {"draft": lambda n, req: fx.envelope(payload={"n": n})}
+        code, _, track, fake = self.go(self.doc(), answers=answers)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.calls), 3)
+        # ONE request, invoked three times: agreeing answers are only
+        # evidence when they answered the same question.
+        self.assertEqual([c["request"] for c in fake.calls],
+                         [{"note": "hi"}] * 3)
+        self.assertEqual({c["request_path"] for c in fake.calls},
+                         {self.step(track, "draft")["request"]})
+
+    def test_each_repeat_writes_its_own_envelope_file(self):
+        answers = {"draft": lambda n, req: fx.envelope(payload={"n": n})}
+        _, _, track, _ = self.go(self.doc(), answers=answers)
+        record = self.step(track, "draft")
+        self.assertEqual([Path(r["envelope"]).name for r in record["repeats"]],
+                         ["draft.r0.json", "draft.r1.json", "draft.r2.json"])
+        for entry in record["repeats"]:
+            self.assertTrue(Path(entry["envelope"]).exists())
+        # The step has no single envelope: the repeats name one file each.
+        self.assertIsNone(record["envelope"])
+
+    def test_the_step_payload_is_the_list_of_repeat_payloads(self):
+        answers = {"draft": lambda n, req: fx.envelope(payload={"n": n}),
+                   "merge": fx.envelope(payload={"text": "merged"})}
+        code, _, _, fake = self.go(self.doc(with_consumer=True),
+                                   answers=answers)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake.calls[-1]["request"],
+                         {"results": [{"n": 1}, {"n": 2}, {"n": 3}]})
+
+    def test_a_failed_repeat_contributes_null_and_the_step_passes_with_problems(self):
+        answers = {"draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False),
+                             fx.envelope(payload={"n": 3})],
+                   "merge": fx.envelope(payload={})}
+        code, _, track, fake = self.go(self.doc(require=2, with_consumer=True),
+                                       answers=answers)
+        self.assertEqual(code, 0)
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "passed-with-problems")
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["pass", "fail", "pass"])
+        self.assertEqual(fake.calls[-1]["request"],
+                         {"results": [{"n": 1}, None, {"n": 3}]})
+
+    def test_the_step_fails_when_fewer_than_require_repeats_passed(self):
+        answers = {"draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False),
+                             fx.envelope(ok=False)]}
+        code, output, track, fake = self.go(self.doc(require=2),
+                                            answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "draft")
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("1 of 3 repeats passed; 2 required.",
+                      record["gate"]["reasons"])
+        # every repeat still ran: the Gate decides after the evidence is in.
+        self.assertEqual(len(fake.calls), 3)
+
+    def test_all_passing_repeats_with_no_problems_pass_cleanly(self):
+        answers = {"draft": fx.envelope(payload={"n": 1})}
+        code, _, track, _ = self.go(self.doc(count=2, require=1),
+                                    answers=answers)
+        self.assertEqual(code, 0)
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["gate"]["status"], "pass")
+
+    def test_a_repeat_with_problems_makes_the_step_pass_with_problems(self):
+        answers = {"draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(payload={"n": 2},
+                                         problems=[{"severity": "warn",
+                                                    "detail": "unsure"}])]}
+        code, _, track, _ = self.go(self.doc(count=2, require=2),
+                                    answers=answers)
+        self.assertEqual(code, 0)
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "passed-with-problems")
+        self.assertEqual([p["detail"] for p in record["problems"]], ["unsure"])
+
+    def test_retry_once_applies_per_repeat(self):
+        answers = {"draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False),
+                             fx.envelope(payload={"n": 2})]}
+        code, _, track, fake = self.go(
+            self.doc(count=2, require=2, on_fail="retry-once"),
+            answers=answers)
+        self.assertEqual(code, 0)
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["repeats"][0]["attempts"], [])
+        self.assertEqual(len(record["repeats"][1]["attempts"]), 2)
+        self.assertEqual(len(fake.calls), 3)
+
+    def test_the_track_records_every_repeat(self):
+        answers = {"draft": lambda n, req: fx.envelope(payload={"n": n})}
+        _, _, track, _ = self.go(self.doc(count=2, require=1), answers=answers)
+        record = self.step(track, "draft")
+        self.assertEqual(record["repeat"], {"count": 2, "require": 1})
+        self.assertEqual(len(record["repeats"]), 2)
+        for index, entry in enumerate(record["repeats"]):
+            self.assertEqual(entry["index"], index)
+            for key in ("index", "envelope", "gate", "binding", "elapsed_s"):
+                self.assertIn(key, entry)
+            self.assertEqual(entry["binding"], {"model": "test-model"})
+            self.assertIsInstance(entry["elapsed_s"], float)
+        self.assertEqual(record["binding"], {"model": "test-model"})
+
+    def test_a_step_that_does_not_repeat_keeps_the_old_shape(self):
+        answers = {"ask": fx.envelope(payload={"text": "a"})}
+        _, _, track, _ = self.go(fx.spec_doc(), answers=answers)
+        record = self.step(track, "first")
+        self.assertIsNone(record["repeat"])
+        self.assertIsNone(record["repeats"])
+        self.assertTrue(record["envelope"].endswith("first.json"))
+
+    def test_the_dry_run_shows_the_repeat_count(self):
+        code, _, track, fake = self.go(self.doc(count=3, require=2),
+                                       answers={}, dry_run=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.step(track, "draft")["repeat"],
+                         {"count": 3, "require": 2})
+
+
+class RepeatForeachTests(RunnerCase):
+    """`repeat` inside a `foreach`: each ELEMENT is repeated, so the step's
+    payload is a list of lists (narrowing contract §2)."""
+
+    def doc(self, count=2, require=1, with_consumer=False):
+        step = fx.cog_step("detect", task="detect",
+                           repeat={"count": count, "require": require})
+        step["foreach"] = {"items": {"$from": "inputs.batches"}, "as": "batch"}
+        step["input"] = {"batch": {"$from": "batch.id"}}
+        steps = [step]
+        if with_consumer:
+            after = fx.cog_step("merge", task="merge", depends_on=["detect"])
+            after["input"] = {"results": {"$from": "steps.detect.payload"}}
+            steps.append(after)
+        return fx.spec_doc(steps, inputs=[{"name": "batches"}])
+
+    def request(self):
+        return {"batches": [{"id": "b1"}, {"id": "b2"}]}
+
+    def test_every_element_is_repeated_over_one_request(self):
+        answers = {"detect": lambda n, req: fx.envelope(
+            payload={"batch": req["batch"], "n": n}),
+            "merge": fx.envelope(payload={})}
+        code, _, track, fake = self.go(self.doc(with_consumer=True),
+                                       request=self.request(), answers=answers)
+        self.assertEqual(code, 0)
+        self.assertEqual([c["request"] for c in fake.calls[:4]],
+                         [{"batch": "b1"}, {"batch": "b1"},
+                          {"batch": "b2"}, {"batch": "b2"}])
+        record = self.step(track, "detect")
+        self.assertEqual(record["repeat"], {"count": 2, "require": 1})
+        self.assertIsNone(record["repeats"])
+        for index, element in enumerate(record["elements"]):
+            self.assertEqual([Path(r["envelope"]).name
+                              for r in element["repeats"]],
+                             [f"{index}.r0.json", f"{index}.r1.json"])
+        # a list of lists, in element order then repeat order
+        self.assertEqual(fake.calls[-1]["request"],
+                         {"results": [[{"batch": "b1", "n": 1},
+                                       {"batch": "b1", "n": 2}],
+                                      [{"batch": "b2", "n": 3},
+                                       {"batch": "b2", "n": 4}]]})
+
+    def test_a_failed_repeat_is_null_inside_its_elements_list(self):
+        answers = {"detect": [fx.envelope(payload={"a": 1}),
+                              fx.envelope(ok=False),
+                              fx.envelope(payload={"b": 1}),
+                              fx.envelope(payload={"b": 2})],
+                   "merge": fx.envelope(payload={})}
+        code, _, track, fake = self.go(self.doc(with_consumer=True),
+                                       request=self.request(), answers=answers)
+        self.assertEqual(code, 0)
+        record = self.step(track, "detect")
+        self.assertEqual([e["gate"]["status"] for e in record["elements"]],
+                         ["pass-with-problems", "pass"])
+        self.assertEqual(record["status"], "passed-with-problems")
+        self.assertEqual(fake.calls[-1]["request"],
+                         {"results": [[{"a": 1}, None],
+                                      [{"b": 1}, {"b": 2}]]})
+
+    def test_an_element_that_misses_require_fails_the_step(self):
+        answers = {"detect": [fx.envelope(ok=False), fx.envelope(ok=False),
+                              fx.envelope(payload={"b": 1}),
+                              fx.envelope(payload={"b": 2})]}
+        code, output, track, _ = self.go(self.doc(require=1),
+                                         request=self.request(),
+                                         answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "detect")
+        element = self.step(track, "detect")["elements"][0]
+        self.assertEqual(element["gate"]["status"], "fail")
+
+
+class RepeatResumeTests(RunnerCase):
+    """A resume never re-runs a repeat that passed; it re-runs the failed
+    repeats of the step that stopped the run (narrowing contract §2)."""
+
+    def doc(self):
+        draft = fx.cog_step("draft", task="draft",
+                            repeat={"count": 3, "require": 3})
+        after = fx.cog_step("merge", task="merge", depends_on=["draft"])
+        after["input"] = {"results": {"$from": "steps.draft.payload"}}
+        return fx.spec_doc([draft, after])
+
+    def test_only_the_failed_repeats_run_again(self):
+        answers = {"draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False),
+                             fx.envelope(payload={"n": 3})],
+                   "merge": fx.envelope(payload={})}
+        code, output, track, fake = self.go(self.doc(), answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(track["failed_step"], "draft")
+        failed = self.step(track, "draft")
+        kept = [Path(r["envelope"]) for r in failed["repeats"]]
+        stamps = {p: p.stat().st_mtime_ns for p in (kept[0], kept[2])}
+
+        # ---- the resume: one new invocation, for repeat 1 alone.
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 2}),
+                            "merge": fx.envelope(payload={"text": "ok"})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual(code, 0)
+        self.assertEqual(resumed["status"], "completed")
+        self.assertEqual([c["task"] for c in again.calls], ["draft", "merge"])
+        record = self.step(resumed, "draft")
+        self.assertEqual(record["status"], "passed")
+        # the two that passed were read back, not paid for again
+        for path, stamp in stamps.items():
+            self.assertEqual(path.stat().st_mtime_ns, stamp)
+        self.assertEqual(again.calls[-1]["request"],
+                         {"results": [{"n": 1}, {"n": 2}, {"n": 3}]})
+
+    def test_a_resumed_repeat_keeps_the_earlier_records(self):
+        answers = {"draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False),
+                             fx.envelope(payload={"n": 3})],
+                   "merge": fx.envelope(payload={})}
+        _, output, track, _ = self.go(self.doc(), answers=answers)
+        before = self.step(track, "draft")["repeats"][0]
+        op_runner.invoke_cog = fx.FakeCog(
+            {"draft": fx.envelope(payload={"n": 2}),
+             "merge": fx.envelope(payload={})})
+        _, output = op_runner.resume(self.package, output["run_dir"])
+        resumed = json.loads(Path(output["track"]).read_text())
+        after = self.step(resumed, "draft")["repeats"]
+        self.assertEqual(after[0], before)
+        self.assertEqual([r["gate"]["status"] for r in after],
+                         ["pass", "pass", "pass"])
+
+
 class DryRunTests(RunnerCase):
     def test_dry_run_plans_without_invoking_anything(self):
         first = fx.cog_step("first", task="ask")

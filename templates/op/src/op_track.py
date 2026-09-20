@@ -8,7 +8,7 @@ envelopes carried, and the output artifacts. It is rewritten after every
 step, so a crash leaves a readable partial Track.
 
 Shape lifted from op-video-transcription's track.json and extended with
-step status, attempts, and foreach elements.
+step status, attempts, foreach elements, and repeats.
 """
 from __future__ import annotations
 
@@ -228,6 +228,12 @@ def step_record(step, status, **fields):
         "elapsed_s": None,
         "attempts": [],
         "elements": None,
+        # Repetition (machinery 0.6.0): what the step DECLARED
+        # (`{count, require}`, null when it runs once) and what each repeat
+        # of it actually did. On a `foreach` step the per-repeat records live
+        # on each ELEMENT, and `repeats` here stays null.
+        "repeat": None,
+        "repeats": None,
         # Authority (phase 3 §5): the grant this step was issued, the
         # journal it recorded its external effects in, what it reported
         # attempting, and — for a human Gate — the decision it carries.

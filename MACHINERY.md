@@ -295,6 +295,67 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.6.0 — `repeat` in the runner (2026-09-20)
+
+Narrowing contract §2 (`planning/current/narrowing-contract.md`), sitting on
+phase 2 §2–§4 and phase 3 §9e. A MINOR bump, not a patch: the spec
+vocabulary gains a key, the Track gains two fields, and a step can now cost
+more than one invocation.
+
+A step may declare `repeat: {count: k, require: n}`, `1 <= n <= k <= 5`.
+Absent, a step runs once and every record reads exactly as it did in 0.5.9
+(`repeat` and `repeats` are null). Declared:
+
+- the SAME request is invoked `k` times, sequentially. The request is
+  written once — `requests/<step>.json`, or `requests/<step>/<index>.json`
+  inside a `foreach` — and the envelopes are `<step>.r<j>.json` /
+  `<step>/<index>.r<j>.json`. Repeats of the same question are what makes
+  agreement evidence; repeats of different questions are noise.
+- each repeat gets its own Gate decision under the step's policy, and a
+  repeat whose Gate failed contributes `null` to the payload LIST the step
+  (or, inside a `foreach`, the element) exposes. `on_fail: retry-once`
+  applies per repeat, under the unchanged rule (only when `ok` was false).
+- the step's Gate (`combine_repeat_gates`) is `fail` when fewer than `n`
+  repeats passed — with the reason `"<p> of <k> repeats passed; <n>
+  required."` first — else `pass-with-problems` when any repeat failed or
+  carried problems, else `pass`. A run that needed three answers and got two
+  is a result with a caveat, never a clean pass.
+- `require` DEFAULTS to `count`. Silence never loosens a Gate: a step that
+  states no tolerance requires every repeat to pass.
+- inside a `foreach`, each ELEMENT is repeated, so `steps.<id>.payload` is a
+  list of lists. `cog-merge-findings` (narrowing §3) reads exactly that.
+
+Refused at LOAD, by name: an unknown key under `repeat:`; a non-integer or
+out-of-bounds `count`/`require`; `repeat` on a step that carries
+`authority:`; `repeat` with `gate.policy: human` (a human decides about ONE
+set of proposals); and — in `cog_step_findings`, where the manifest is
+readable, so `smith op check` and the runner's preflight refuse it alike —
+`repeat` on a step whose Cog declares a non-empty `reaches`. Effectful steps
+are never repeated, which is the `retry-once` rule from 0.5.0 applied to the
+other way of invoking a Cog twice.
+
+Track: `repeat` (what was DECLARED, `{count, require}` or null) and
+`repeats` (`[{index, envelope, gate, binding, elapsed_s, attempts}]`) on the
+step record, or on each element of a `foreach` step. A repeated single step's
+own `envelope` is null — the repeats name one file each. A `--dry-run` plan
+carries `repeat`, so the invocation cost of a run is readable before it
+starts.
+
+Resume (phase 3 §9e, extended): the step that stopped a failed run is still
+the resume point, and now only its FAILED repeats are invoked again. A repeat
+that passed is read back from the envelope on disk, its record kept
+byte-for-byte, and no Cog is launched for it — `_reusable_repeat` requires a
+non-failing recorded Gate and an envelope that is still there.
+
+Tests: `test_op_spec.py::RepeatTests` and `::RepeatDeclarationTests` (every
+refusal, the bounds, the `require` default, the reaching-Cog refusal);
+`test_op_runner.py::RepeatTests`, `::RepeatForeachTests` and
+`::RepeatResumeTests` (one request k times, per-repeat envelopes and Gates,
+the list payload for single and `foreach` steps, the `require` combination,
+retry-once per repeat, the Track shape, the dry-run count, and a resume that
+re-runs only the failed repeat); `test_smith_op.py::CheckTests` (`op check`
+accepts the key, refuses the bounds, refuses a reaching Cog).
+
 ### 0.5.9 — the sheet claims only what it does (2026-09-19)
 
 Contract §11d, from Codex review 11 (finding 4). WORDING ONLY: `cell()` is

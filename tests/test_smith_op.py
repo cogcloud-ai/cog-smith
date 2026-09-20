@@ -237,6 +237,48 @@ class CheckTests(SmithOpCase):
         self.assertEqual(self.errors(findings), [])
         self.assertNotIn("cog-first", self.details(findings, "warn"))
 
+    def usage_cog(self, **manifest_extra):
+        """cog-first, declaring `ask` for the usage audience."""
+        path = write_cog(self.root / "cog-first", "openteams/cog-first",
+                         [{"name": "ask", "kind": "command", "task": "ask",
+                           "audience": "usage", "default": True}])
+        if manifest_extra:
+            manifest = yaml.safe_load((path / "cog.yaml").read_text())
+            manifest.update(manifest_extra)
+            (path / "cog.yaml").write_text(yaml.safe_dump(manifest,
+                                                          sort_keys=False))
+        return path
+
+    def with_repeat(self, repeat):
+        doc = self.spec_doc()
+        doc["steps"][0]["repeat"] = repeat
+        (self.dest / "op.yaml").write_text(yaml.safe_dump(doc,
+                                                          sort_keys=False))
+        return doc
+
+    def test_a_repeat_key_checks_clean(self):
+        """Machinery 0.6.0: `op check` accepts `repeat` (narrowing §2)."""
+        self.usage_cog()
+        self.with_repeat({"count": 3, "require": 1})
+        findings = smith_op.check(self.dest)
+        self.assertEqual(self.errors(findings), [])
+        spec = op_spec.load(self.dest / "op.yaml")
+        self.assertEqual(op_spec.repeat_spec(spec.steps[0]),
+                         {"count": 3, "require": 1})
+
+    def test_a_repeat_out_of_bounds_is_an_invalid_spec(self):
+        self.with_repeat({"count": 9, "require": 1})
+        findings = smith_op.check(self.dest)
+        self.assertIn("between 1 and 5 times", self.details(findings))
+        self.assertTrue(smith_op.invalid_spec(findings))
+
+    def test_repeat_on_a_reaching_cog_is_an_error(self):
+        self.usage_cog(kind="code",
+                       reaches=[{"resource": "github", "actions": ["read"]}])
+        self.with_repeat({"count": 2, "require": 1})
+        self.assertIn("reaches outside the run, and declares repeat",
+                      self.details(smith_op.check(self.dest)))
+
     def test_an_undeclared_task_is_an_error(self):
         write_cog(self.root / "cog-first", "openteams/cog-first",
                   [{"name": "chat", "kind": "command", "task": "chat",

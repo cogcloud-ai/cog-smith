@@ -43,10 +43,15 @@ ON_FAIL = ("stop", "skip", "retry-once")
 TOP_KEYS = {"schema", "id", "version", "name", "description", "inputs",
             "steps", "outputs", "track", "authority"}
 STEP_KEYS = {"id", "name", "depends_on", "cog", "foreach", "input",
-             "expected_outcome", "gate", "on_fail", "authority"}
+             "expected_outcome", "gate", "on_fail", "authority", "repeat"}
 COG_KEYS = {"id", "version", "source", "task"}
 INPUT_KEYS = {"name", "description", "required", "default", "schema"}
 FOREACH_KEYS = {"items", "as"}
+#: `repeat: {count, require}` — the same request invoked `count` times, of
+#: which `require` must pass (machinery 0.6.0, narrowing contract §2). The
+#: ceiling is small on purpose: repetition is evidence, not a budget.
+REPEAT_KEYS = {"count", "require"}
+MAX_REPEAT = 5
 GATE_KEYS = {"policy", "guards"}
 TRACK_KEYS = {"records"}
 #: Authority vocabulary (phase 3 contract §2). Top level: how long a grant
@@ -420,6 +425,72 @@ def human_gate_steps(steps):
             if _has_id(s) and gate_policy(s) == HUMAN_GATE_POLICY}
 
 
+def repeat_spec(step):
+    """The normalized `{count, require}` of a step that repeats, or None when
+    it runs once (machinery 0.6.0).
+
+    `require` defaults to `count`: a step that states no tolerance requires
+    EVERY repeat to pass. Silence never loosens a Gate. A malformed `repeat`
+    reads as None here — `validate` refuses it by name at load, so the runner
+    never sees one."""
+    declared = (step or {}).get("repeat")
+    if not isinstance(declared, dict):
+        return None
+    count = declared.get("count")
+    if isinstance(count, bool) or not isinstance(count, int):
+        return None
+    require = declared.get("require", count)
+    if isinstance(require, bool) or not isinstance(require, int):
+        require = count
+    return {"count": count, "require": require}
+
+
+def _repeat_problems(step, sid, problems):
+    """Every problem with one step's `repeat:` block (narrowing contract §2).
+
+    Repetition is for steps that only READ and only propose: a step that
+    carries `authority`, or whose Gate is a human one, is refused here, and a
+    step whose COG declares `reaches` is refused by `cog_step_findings`,
+    where the manifest is readable."""
+    declared = step.get("repeat")
+    if declared is None:
+        return
+    if not isinstance(declared, dict):
+        problems.append(f"Op step {sid!r} declares repeat {declared!r}; a "
+                        f"repeat is an object with count and require.")
+        return
+    for key in sorted(str(k) for k in set(declared) - REPEAT_KEYS):
+        problems.append(f"unknown key {key!r} under Op step {sid!r}'s "
+                        f"repeat:; the step vocabulary is closed.")
+    count = declared.get("count")
+    counted = isinstance(count, int) and not isinstance(count, bool)
+    if count is None:
+        problems.append(f"Op step {sid!r}'s repeat declares no count; a "
+                        f"repeated step says how many times it runs.")
+    elif not counted:
+        problems.append(f"Op step {sid!r} declares repeat.count {count!r}; a "
+                        f"repeat count is an integer.")
+    elif not 1 <= count <= MAX_REPEAT:
+        problems.append(f"Op step {sid!r} declares repeat.count {count!r}; a "
+                        f"step repeats between 1 and {MAX_REPEAT} times.")
+    require = declared.get("require", count)
+    required = isinstance(require, int) and not isinstance(require, bool)
+    if require is not None and not required:
+        problems.append(f"Op step {sid!r} declares repeat.require {require!r}; "
+                        f"a repeat requirement is an integer.")
+    elif counted and required and not 1 <= require <= count:
+        problems.append(f"Op step {sid!r} declares repeat.require {require!r} "
+                        f"with repeat.count {count!r}; a step requires between "
+                        f"1 and count passing repeats.")
+    if step.get("authority") is not None:
+        problems.append(f"Op step {sid!r} declares repeat and authority; an "
+                        f"effectful step is never repeated.")
+    if gate_policy(step) == HUMAN_GATE_POLICY:
+        problems.append(f"Op step {sid!r} declares repeat and gate.policy: "
+                        f"human; a human decides about ONE set of proposals, "
+                        f"so a gated step is never repeated.")
+
+
 def requirements(step):
     """What a step DECLARES it requires. A step never grants itself
     anything: the runner issues the grant, or the step is denied."""
@@ -790,6 +861,7 @@ def validate(doc):
 
         _authority_problems(step, sid, step_ids, human_gate_steps(steps),
                             problems)
+        _repeat_problems(step, sid, problems)
 
         on_fail = step.get("on_fail", "stop")
         if on_fail not in ON_FAIL:
@@ -1107,6 +1179,15 @@ def cog_step_findings(step, source_dir):
                                  f"{cog.get('source')!r} is at "
                                  f"{manifest.get('version')!r}."))
     findings.extend(_authority_findings(step, sid, cog, manifest))
+    if step.get("repeat") is not None and (manifest.get("reaches") or []):
+        # The same rule as the `authority` refusal in `_repeat_problems`,
+        # from the other side: the Cog's OWN declaration says it reaches
+        # outside the run, so running it k times could repeat an effect
+        # (narrowing contract §2).
+        findings.append(("error", f"Op step {sid!r} names "
+                                  f"{manifest.get('id')!r}, which reaches "
+                                  f"outside the run, and declares repeat; an "
+                                  f"effectful step is never repeated."))
     interfaces = [i for i in manifest.get("interfaces") or []
                   if isinstance(i, dict) and i.get("task") == cog.get("task")]
     if not interfaces:

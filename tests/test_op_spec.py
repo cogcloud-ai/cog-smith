@@ -536,5 +536,121 @@ class FinalRoundTests(unittest.TestCase):
         self.assertEqual(problems(fx.spec_doc([step])), [])
 
 
+class RepeatTests(unittest.TestCase):
+    """`repeat: {count, require}` — narrowing contract §2 (machinery 0.6.0).
+
+    Everything a repeated step may NOT be is refused at LOAD, by name: the
+    bounds, the types, the unknown keys, and the three shapes of step that
+    are never repeated (effectful, reaching, human-gated)."""
+
+    def step(self, repeat, **extra):
+        return fx.cog_step("first", repeat=repeat, **extra)
+
+    def test_a_declared_repeat_loads(self):
+        self.assertEqual(
+            problems(fx.spec_doc([self.step({"count": 3, "require": 1})])), [])
+
+    def test_the_normalized_spec_defaults_require_to_count(self):
+        # Silence never loosens a Gate: a step that states no tolerance
+        # requires every repeat to pass.
+        self.assertEqual(op_spec.repeat_spec(self.step({"count": 3})),
+                         {"count": 3, "require": 3})
+        self.assertEqual(op_spec.repeat_spec(self.step({"count": 3,
+                                                        "require": 2})),
+                         {"count": 3, "require": 2})
+        self.assertIsNone(op_spec.repeat_spec(fx.cog_step("first")))
+
+    def test_an_unknown_repeat_key_is_refused_by_name(self):
+        text = one(fx.spec_doc([self.step({"count": 2, "until": "agreement"})]))
+        self.assertIn("'until'", text)
+        self.assertIn("the step vocabulary is closed", text)
+
+    def test_a_repeat_that_is_not_an_object_is_refused(self):
+        text = one(fx.spec_doc([self.step(3)]))
+        self.assertIn("declares repeat 3", text)
+        self.assertIn("count and require", text)
+
+    def test_a_repeat_with_no_count_is_refused(self):
+        text = one(fx.spec_doc([self.step({"require": 1})]))
+        self.assertIn("declares no count", text)
+
+    def test_a_non_integer_count_is_refused_by_type(self):
+        # `True` is an int in Python; a boolean count is a wrong type here.
+        for value in ("3", 2.5, True):
+            text = one(fx.spec_doc([self.step({"count": value})]))
+            self.assertIn("a repeat count is an integer", text, repr(value))
+
+    def test_an_explicit_null_count_reads_as_no_count(self):
+        text = one(fx.spec_doc([self.step({"count": None})]))
+        self.assertIn("declares no count", text)
+
+    def test_a_non_integer_require_is_refused_by_type(self):
+        text = one(fx.spec_doc([self.step({"count": 3, "require": "one"})]))
+        self.assertIn("a repeat requirement is an integer", text)
+
+    def test_the_count_bounds_are_one_to_five(self):
+        for value in (0, -1, 6, 50):
+            text = one(fx.spec_doc([self.step({"count": value})]))
+            self.assertIn(f"declares repeat.count {value}", text)
+            self.assertIn("between 1 and 5 times", text)
+        self.assertEqual(problems(fx.spec_doc([self.step({"count": 5})])), [])
+        self.assertEqual(problems(fx.spec_doc([self.step({"count": 1})])), [])
+
+    def test_require_is_between_one_and_count(self):
+        for value in (0, 4):
+            text = one(fx.spec_doc([self.step({"count": 3, "require": value})]))
+            self.assertIn(f"declares repeat.require {value}", text)
+            self.assertIn("between 1 and count", text)
+
+    def test_repeat_on_a_step_with_authority_is_refused(self):
+        step = self.step({"count": 2, "require": 1})
+        step["authority"] = {"requires": [{"resource": "github",
+                                           "action": "read",
+                                           "repositories": ["a/b"]}]}
+        text = one(fx.spec_doc([step]))
+        self.assertIn("declares repeat and authority", text)
+        self.assertIn("never repeated", text)
+
+    def test_repeat_with_a_human_gate_is_refused(self):
+        step = self.step({"count": 2, "require": 1})
+        step["gate"] = {"policy": "human", "guards": []}
+        text = one(fx.spec_doc([step]))
+        self.assertIn("gate.policy: human", text)
+        self.assertIn("never repeated", text)
+
+    def test_repeat_inside_a_foreach_loads(self):
+        step = self.step({"count": 3, "require": 2})
+        step["foreach"] = {"items": {"$from": "inputs.note"}, "as": "item"}
+        step["input"] = {"title": {"$from": "item"}}
+        self.assertEqual(problems(fx.spec_doc([step])), [])
+
+
+class RepeatDeclarationTests(unittest.TestCase):
+    """The refusal that needs the COG's manifest: a Cog that declares
+    `reaches` is never repeated (narrowing contract §2)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def findings(self, reaches):
+        fx.write_cog(self.root, "first", reaches=reaches)
+        step = fx.cog_step("first", repeat={"count": 2, "require": 1})
+        return op_spec.cog_step_findings(step, self.root / "cog-first")
+
+    def test_a_reaching_cog_refuses_repeat(self):
+        findings = self.findings([{"resource": "github", "actions": ["read"]}])
+        detail = " ".join(d for level, d in findings if level == "error")
+        self.assertIn("reaches outside the run, and declares repeat", detail)
+        self.assertIn("never repeated", detail)
+
+    def test_a_cog_that_reaches_nothing_may_repeat(self):
+        findings = self.findings([])
+        self.assertEqual([d for level, d in findings if level == "error"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

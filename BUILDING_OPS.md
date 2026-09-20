@@ -209,6 +209,56 @@ decision. The step's payload is the LIST of element payloads (null where an
 element failed); the step's Gate fails if any element failed, and is
 `pass-with-problems` if any element carried problems.
 
+### Steps that repeat the SAME request
+
+A model asked the same question twice does not always answer the same way.
+`repeat` turns that into evidence instead of a coin flip: the same request is
+invoked `count` times, in sequence, and the step's payload is the LIST of
+what came back.
+
+```yaml
+  - id: detect-overlaps
+    cog: {id: openteams/cog-overlap-detector, version: "0.1.0",
+          source: ../cog-overlap-detector, task: detect}
+    foreach:
+      items: {$from: inputs.github_items}
+      as: batch
+    input:
+      items: {$from: batch.items}
+    repeat: {count: 3, require: 1}
+```
+
+* `count` is 1 to 5. `require` is 1 to `count`, and DEFAULTS to `count`:
+  a step that states no tolerance requires every repeat to pass.
+* The request is written ONCE (`requests/<step>.json`, or
+  `requests/<step>/<index>.json` inside a `foreach`) and invoked `count`
+  times. The envelopes are `envelopes/<step>.r<j>.json`, or
+  `envelopes/<step>/<index>.r<j>.json`.
+* Each repeat gets its OWN Gate decision under the step's policy. A repeat
+  whose Gate failed contributes `null` to the list. `on_fail: retry-once`
+  applies per repeat, under the same rule as anywhere else (only when the
+  Cog reported `ok: false`).
+* The step's Gate is `fail` when fewer than `require` repeats passed, else
+  `pass-with-problems` when any repeat failed or carried problems, else
+  `pass`.
+* Inside a `foreach`, each ELEMENT is repeated, so `steps.<id>.payload` is a
+  list of lists — one list of repeat payloads per element. A Cog that merges
+  them (`cog-merge-findings`) reads exactly that shape.
+* The Track records what each repeat did: `repeats: [{index, envelope, gate,
+  binding, elapsed_s, attempts}]` on the step record, or on each element of
+  a `foreach` step. `repeat: {count, require}` says what was DECLARED, and a
+  `--dry-run` plan carries it, so the cost of a run is readable before it
+  starts.
+* A resume never re-runs a repeat that passed: only the failed repeats of
+  the step that stopped the run are invoked again, and the rest are read
+  back from their envelopes.
+
+**`repeat` is refused at load on an EFFECTFUL step** — one that carries
+`authority:`, one whose Cog declares a non-empty `reaches`, and one whose
+Gate is `{policy: human}`. Repetition is for steps that only read and only
+propose: a step that acts outside the run is never run twice, and a human
+decides about ONE set of proposals.
+
 ### When a step fails
 
 `on_fail: stop` (the default) ends the run `failed` and names the step; every
@@ -493,6 +543,8 @@ construct and the phase that adds it — never discovered mid-run:
 | `state:` | phase 4 |
 | `authority` on a `foreach` step | phase 3 issues no per-element grants |
 | `on_fail: retry-once` on a step with `authority` or a reaching Cog | a reaching Cog recovers by resume and journal reconciliation |
+| `repeat` on a step with `authority`, a reaching Cog, or `gate.policy: human` | an effectful step is never repeated; a human decides about one set of proposals |
+| `repeat.count` outside 1–5, or `repeat.require` outside 1–`count` | the bounds, by name |
 | a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
 | two write requirements reading different human gates | one gate per writing step |
 | `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `run.lock` or `track.json` | the runner's control entries are reserved |
