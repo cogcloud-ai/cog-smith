@@ -295,6 +295,56 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.6.1 — a repeat answers a REQUEST (2026-09-20)
+
+The fix round on 0.6.0, from Codex review 1
+(`planning/current/narrowing-codex-review-1.md`, findings 2, 5, 6 and 11;
+decided in narrowing contract §8, "Runner"). A PATCH bump: no vocabulary
+changes, no shape changes a reader has to learn — the repeat record gains
+one field and three behaviours become what they were always described as.
+
+- **Finding 2 — a repeat result belongs to a request.** Each repeat record
+  now carries `request_sha256`, the canonical-JSON hash of the request
+  document it answered (per ELEMENT inside a `foreach`). A resume reuses a
+  passed repeat only when the request it rebuilds hashes the SAME, and
+  otherwise invokes it again. Spec equality never established request
+  equality: between a failed run and its resume an upstream envelope can
+  change on disk, and reuse by position alone would count an answer to the
+  old question beside a fresh answer to the new one, toward the same
+  `require`. Inside a `foreach` this is also what makes a changed element
+  ORDER safe: element 0 of the resume may be a different batch. A record
+  written before 0.6.1 carries no hash and is re-run — silence is not a
+  match.
+- **Finding 5 — a completed repeat is durable before the next one starts.**
+  `_run_repeats` takes a `progress` callback; the step loop rewrites the
+  `running` record after EVERY repeat (and, inside a `foreach`, after every
+  repeat of the element being worked on, keeping the finished elements).
+  A crash during repeat 1 used to leave a Track holding only the initial
+  `running` record, so the resume paid for repeat 0 all over again although
+  its envelope was on disk. And a step marked `running` AGAIN now keeps the
+  repeat and element records an earlier attempt left, instead of being
+  rewritten as a bare `running` record: a checkpoint never shortens the
+  element list either.
+- **Finding 6 — the step's `problems` aggregate every repeat's envelope.**
+  `_run_repeats` returns the envelopes as they came back beside the
+  null-masked list; the masking is a decision about what a later step
+  READS, and it never silences what a Cog reported. A step with
+  `{count: 2, require: 1}` whose first repeat failed with an error problem
+  now carries that problem in its record (and in its element's), where the
+  audit expects it.
+- **Finding 11 — `require: null` is refused.** Only OMISSION defaults to
+  `count`. A declared `require` is an integer or it is refused by name, like
+  any other malformed declaration.
+
+Tests: `test_op_runner.py::RepeatRequestIdentityTests` (the recorded hash, a
+changed upstream payload re-running the passed repeat, an unchanged one
+still reused with its envelope untouched, a changed `foreach` element order
+reusing nothing), `::RepeatDurabilityTests` (a crash between repeats, a
+crash between elements, and a step marked `running` again keeping its
+records — the interruption is driven by raising from the invocation),
+`::RepeatProblemsTests` (a failed repeat's problems on the step and on the
+element); `test_op_spec.py::RepeatTests` (`require: null`).
+
 ### 0.6.0 — `repeat` in the runner (2026-09-20)
 
 Narrowing contract §2 (`planning/current/narrowing-contract.md`), sitting on

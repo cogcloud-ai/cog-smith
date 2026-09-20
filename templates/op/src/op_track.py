@@ -231,7 +231,10 @@ def step_record(step, status, **fields):
         # Repetition (machinery 0.6.0): what the step DECLARED
         # (`{count, require}`, null when it runs once) and what each repeat
         # of it actually did. On a `foreach` step the per-repeat records live
-        # on each ELEMENT, and `repeats` here stays null.
+        # on each ELEMENT, and `repeats` here stays null. Since 0.6.1 a
+        # repeat record names the request it answered (`request_sha256`) and
+        # is written here as soon as it completes, before the next repeat is
+        # invoked — a partial `running` record already lists them.
         "repeat": None,
         "repeats": None,
         # Authority (phase 3 §5): the grant this step was issued, the

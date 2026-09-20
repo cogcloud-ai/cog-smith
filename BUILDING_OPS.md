@@ -228,8 +228,10 @@ what came back.
     repeat: {count: 3, require: 1}
 ```
 
-* `count` is 1 to 5. `require` is 1 to `count`, and DEFAULTS to `count`:
-  a step that states no tolerance requires every repeat to pass.
+* `count` is 1 to 5. `require` is 1 to `count`, and defaults to `count` when
+  it is OMITTED: a step that states no tolerance requires every repeat to
+  pass. Only omission defaults — `require: null` is refused like any other
+  non-integer.
 * The request is written ONCE (`requests/<step>.json`, or
   `requests/<step>/<index>.json` inside a `foreach`) and invoked `count`
   times. The envelopes are `envelopes/<step>.r<j>.json`, or
@@ -240,18 +242,27 @@ what came back.
   Cog reported `ok: false`).
 * The step's Gate is `fail` when fewer than `require` repeats passed, else
   `pass-with-problems` when any repeat failed or carried problems, else
-  `pass`.
+  `pass`. The step's `problems` are EVERY repeat's, the failed ones
+  included: the `null` a failed repeat contributes is about what the next
+  step reads, not about what the Cog said.
 * Inside a `foreach`, each ELEMENT is repeated, so `steps.<id>.payload` is a
   list of lists — one list of repeat payloads per element. A Cog that merges
   them (`cog-merge-findings`) reads exactly that shape.
-* The Track records what each repeat did: `repeats: [{index, envelope, gate,
-  binding, elapsed_s, attempts}]` on the step record, or on each element of
-  a `foreach` step. `repeat: {count, require}` says what was DECLARED, and a
-  `--dry-run` plan carries it, so the cost of a run is readable before it
-  starts.
-* A resume never re-runs a repeat that passed: only the failed repeats of
-  the step that stopped the run are invoked again, and the rest are read
-  back from their envelopes.
+* The Track records what each repeat did: `repeats: [{index, envelope,
+  request_sha256, gate, binding, elapsed_s, attempts}]` on the step record,
+  or on each element of a `foreach` step. `repeat: {count, require}` says
+  what was DECLARED, and a `--dry-run` plan carries it, so the cost of a run
+  is readable before it starts. Each completed repeat is written to the
+  Track BEFORE the next one is invoked, so a crash mid-step never loses a
+  repeat that was already paid for.
+* A resume never re-runs a repeat that passed **over the same request**:
+  only the failed repeats of the step that stopped the run are invoked
+  again, and the rest are read back from their envelopes. `request_sha256`
+  is what makes that safe — an answer belongs to the question it answered.
+  If an upstream envelope changed on disk between the attempts (or a
+  `foreach` step's elements come back in another order), the request the
+  step rebuilds hashes differently and every repeat of it runs again rather
+  than mixing answers to two different questions under one `require`.
 
 **`repeat` is refused at load on an EFFECTFUL step** — one that carries
 `authority:`, one whose Cog declares a non-empty `reaches`, and one whose

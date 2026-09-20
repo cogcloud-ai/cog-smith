@@ -588,6 +588,16 @@ class RepeatTests(unittest.TestCase):
         text = one(fx.spec_doc([self.step({"count": 3, "require": "one"})]))
         self.assertIn("a repeat requirement is an integer", text)
 
+    def test_an_explicit_null_require_is_refused_by_name(self):
+        """Machinery 0.6.1, finding 11: only OMISSION defaults to `count`.
+
+        `require: null` used to load and normalize to "all of them" — a
+        fail-closed reading of a malformed declaration, but a malformed one
+        all the same. It is refused like any other non-integer."""
+        text = one(fx.spec_doc([self.step({"count": 3, "require": None})]))
+        self.assertIn("declares repeat.require None", text)
+        self.assertIn("a repeat requirement is an integer", text)
+
     def test_the_count_bounds_are_one_to_five(self):
         for value in (0, -1, 6, 50):
             text = one(fx.spec_doc([self.step({"count": value})]))

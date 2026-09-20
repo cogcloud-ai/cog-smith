@@ -473,9 +473,12 @@ def _repeat_problems(step, sid, problems):
     elif not 1 <= count <= MAX_REPEAT:
         problems.append(f"Op step {sid!r} declares repeat.count {count!r}; a "
                         f"step repeats between 1 and {MAX_REPEAT} times.")
+    # Only OMISSION defaults (`require` reads as `count`). A declared
+    # `require` is an integer or it is refused — `require: null` is a
+    # malformed declaration, not a way to spell "all of them" (finding 11).
     require = declared.get("require", count)
     required = isinstance(require, int) and not isinstance(require, bool)
-    if require is not None and not required:
+    if "require" in declared and not required:
         problems.append(f"Op step {sid!r} declares repeat.require {require!r}; "
                         f"a repeat requirement is an integer.")
     elif counted and required and not 1 <= require <= count:
