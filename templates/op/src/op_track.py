@@ -226,6 +226,12 @@ def step_record(step, status, **fields):
         # resume reuses a passed repeat or element only when this matches too,
         # and a resume whose passed steps used another version says so in its
         # `changed_cogs`.
+        #
+        # Since 0.6.3 the digest is taken immediately before EVERY invocation
+        # and recorded on the record that invocation produced: the repeat,
+        # the element, and the entry in `attempts`. The step's own value here
+        # summarises them — the Cog its LAST invocation ran under — and the
+        # finer records are what a reader compares.
         "cog_sha256": None,
         "task": cog.get("task"),
         "request": None,
@@ -234,6 +240,10 @@ def step_record(step, status, **fields):
         "problems": [],
         "gate": None,
         "elapsed_s": None,
+        # Empty unless `on_fail: retry-once` actually retried. Then one entry
+        # per invocation, in order: `{envelope, cog_sha256}` — the envelope
+        # that attempt produced and the digest of the Cog it ran under
+        # (0.6.3; before that, a bare list of envelope paths).
         "attempts": [],
         # One record per `foreach` element, in element order. Each carries an
         # element-level `status`; since 0.6.2 a `foreach` stops at its first

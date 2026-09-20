@@ -295,6 +295,55 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.6.3 — the digest is taken per invocation (2026-09-20)
+
+The fix round on 0.6.2, from the Codex go/no-go review
+(`planning/current/narrowing-codex-review-4-go-no-go.md`, residual 5
+(Partial) and section (c), "Digest coverage, cost, and timing"; decided in
+narrowing contract §11). A PATCH bump: no new field, one shape change inside
+`attempts`, and a digest taken at a different MOMENT.
+
+- **Residual 5 — a step is many invocations.** 0.6.2 hashed the Cog once per
+  step and stamped that one digest on every element, repeat and attempt of
+  it. Every Cog subprocess loads its binding at its own startup, so a model
+  re-bound between repeat 0 and repeat 1, or a package edited in the middle
+  of a 140-element sweep, mixed two Cogs under one recorded digest — and a
+  resume could not repair a completed mixed step. `cog_package_sha256` is now
+  called immediately before EVERY invocation: `_run_repeats` takes it per
+  repeat, `_run_foreach` per element, and `_attempt` again before a retry.
+  The digest is recorded on the record that invocation produced, so
+  `attempts` became `[{envelope, cog_sha256}]` instead of a bare list of
+  envelope paths. A step's or element's own `cog_sha256` now SUMMARISES the
+  records under it — the Cog its last invocation ran under (`_last_digest`)
+  — and reuse compares the prior record's OWN digest against the Cog as it is
+  right now, immediately before that repeat or element would be invoked. The
+  Track shape is otherwise unchanged and the `changed_cogs` resume entry is
+  untouched.
+- **Section (c) — the walk is bounded and the read is streamed.** The digest
+  walk (`_digest_entries`, `os.walk(followlinks=False)`) skips symlinks —
+  file AND directory — and never descends into one: a link points outside
+  what the package is, its target would otherwise decide a Cog's identity,
+  and a directory link can make the walk unbounded or cyclic. `.pixi` joins
+  `__pycache__` as a pruned directory name: an installed environment is not
+  the Cog, and hashing one would make a Cog's identity depend on whether
+  anyone had run `pixi install` in that package yet. `sha256_file` reads in
+  `DIGEST_CHUNK_BYTES` (1 MiB) blocks rather than whole, so a large context
+  fixture costs time and not memory; the digest is hashlib over the same
+  bytes, and the chunking is never about what is hashed.
+
+Tests: `test_op_runner.py::PerInvocationDigestTests` (a model re-bound
+between two repeats and between two `foreach` elements leaving two different
+digests; a retry recording the digest its own attempt ran under; a
+`task_logic.py` edited mid-step seen the same way; an unchanged Cog still
+recording one digest everywhere; a resume comparing each record's own digest
+and re-running only the repeat that ran on the old Cog),
+`::CogPackageDigestTests` (a file and a directory symlink inside `src/`
+changing nothing, including when the target changes; a self-referential
+directory symlink terminating; a `.pixi` directory inside `src/` and
+`context/` changing nothing; a 400 KB file hashed through a read spy with a
+4 KB chunk size, equal to `hashlib` over the same bytes and never read
+whole; a large file still being part of the digest).
+
 ### 0.6.2 — bounded failure, kept records, and the Cog behind a result (2026-09-20)
 
 The fix round on 0.6.1, from the Codex review-3 confirmation

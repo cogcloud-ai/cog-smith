@@ -48,12 +48,16 @@ resume continues from the element that failed. This is the rule for every
 `foreach`, whatever `on_fail` says — `on_fail` decides what a failed step
 does to the run, not how many elements a failing step buys.
 
-A result belongs to a Cog as well as to a request (0.6.2). Every step
-records the digest of the Cog it invoked — its manifest, `context/`, `src/`,
-and the `model` and `response_format` of an installed `model.json`, never the
-endpoint and never a credential — and a passed repeat or element is reused
-only when BOTH that digest and the request hash match, so one union never
-mixes two versions of a Cog or two models. A step that already PASSED is
+A result belongs to a Cog as well as to a request (0.6.2), and the digest
+that says so is taken PER INVOCATION (0.6.3). Immediately before every
+invocation — every element, every repeat, every retry attempt — the runner
+digests the Cog it is about to invoke — its manifest, `context/`, `src/`, and
+the `model` and `response_format` of an installed `model.json`, never the
+endpoint and never a credential — and records that digest on the record the
+invocation produced, so a binding or a code change mid-step can never sit
+under one digest. A passed repeat or element is reused only when BOTH the
+record's OWN digest and the request hash match what the step is asking now,
+so one union never mixes two versions of a Cog or two models. A step that already PASSED is
 never re-run for a changed Cog: the resume entry's `changed_cogs` records
 which version produced what, and fix-and-resume keeps working.
 
@@ -558,8 +562,22 @@ class RunLock:
         return False
 
 
-def sha256_file(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+#: How much of a file is held in memory while it is hashed (machinery
+#: 0.6.3). A digest must not depend on a file fitting in RAM: a Cog's
+#: `context/` can carry a fixture of any size, and a whole-file read made
+#: the cost of an invocation a function of the largest file in the package.
+DIGEST_CHUNK_BYTES = 1 << 20
+
+
+def sha256_file(path, chunk_bytes=DIGEST_CHUNK_BYTES):
+    """The digest of a file, read in chunks rather than whole. The result is
+    hashlib over the same bytes — the chunking is about memory, never about
+    what is hashed."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(chunk_bytes), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def canonical_sha256(value):
@@ -586,10 +604,42 @@ COG_DIGEST_DIRS = ("context", "src")
 #: response format it was asked for, are (narrowing contract §10).
 BINDING_DIGEST_KEYS = ("model", "response_format")
 
+#: Directory names the digest walk never descends into (machinery 0.6.3).
+#: `__pycache__` holds build products of files already hashed; `.pixi` holds
+#: an INSTALLED ENVIRONMENT — gigabytes of third-party files that are not the
+#: Cog, and whose presence would make the digest a function of whether
+#: anyone had run `pixi install` in that package yet.
+COG_DIGEST_SKIP_DIRS = ("__pycache__", ".pixi")
+
+
+def _digest_entries(base, cog_dir):
+    """`[relative path, file digest]` for every file under BASE that belongs
+    to the package (machinery 0.6.3).
+
+    The walk NEVER follows a symlink — not a file symlink, not a directory
+    symlink. A symlink points outside what this package is; following one
+    would let a link's target decide a Cog's identity, and a directory
+    symlink can also make the walk unbounded or cyclic. A link is skipped
+    rather than hashed by name, so what the digest covers stays "the files
+    this package carries"."""
+    entries = []
+    for root, dirnames, filenames in os.walk(base, followlinks=False):
+        here = Path(root)
+        dirnames[:] = sorted(name for name in dirnames
+                             if name not in COG_DIGEST_SKIP_DIRS
+                             and not (here / name).is_symlink())
+        for name in sorted(filenames):
+            path = here / name
+            if path.is_symlink() or path.suffix == ".pyc" or not path.is_file():
+                continue
+            entries.append([path.relative_to(cog_dir).as_posix(),
+                            sha256_file(path)])
+    return entries
+
 
 def cog_package_sha256(cog_dir):
-    """The digest of the Cog a step invokes, at invocation (machinery 0.6.2,
-    narrowing contract §10).
+    """The digest of the Cog a step invokes, taken immediately before THAT
+    invocation (machinery 0.6.3, narrowing contract §10 and §11).
 
     A result belongs to a Cog as well as to a request: two answers are
     evidence of the same thing only when the same Cog produced them. The
@@ -599,8 +649,9 @@ def cog_package_sha256(cog_dir):
 
     It never covers the endpoint or `api_key_env`: relocating a served model
     does not change what answered, and a credential's name has no business in
-    a Track. `__pycache__` and `.pyc` are excluded: they are build products of
-    the very files already hashed.
+    a Track. `__pycache__`, `.pyc` and `.pixi` are excluded and symlinks are
+    skipped (`_digest_entries`); files are read in chunks, never whole, so a
+    large fixture costs time and not memory.
 
     A Cog that is not present on this machine digests as the empty package —
     deterministically, so a run and its resume agree about it."""
@@ -608,18 +659,13 @@ def cog_package_sha256(cog_dir):
     files = []
     for name in COG_MANIFESTS:
         path = cog_dir / name
-        if path.is_file():
+        if path.is_file() and not path.is_symlink():
             files.append([name, sha256_file(path)])
     for folder in COG_DIGEST_DIRS:
         base = cog_dir / folder
-        if not base.is_dir():
+        if not base.is_dir() or base.is_symlink():
             continue
-        for path in sorted(base.rglob("*"), key=lambda p: p.as_posix()):
-            if not path.is_file() or path.suffix == ".pyc" \
-                    or "__pycache__" in path.parts:
-                continue
-            files.append([path.relative_to(cog_dir).as_posix(),
-                          sha256_file(path)])
+        files.extend(_digest_entries(base, cog_dir))
     files.sort()
     binding = None
     model_json = cog_dir / "model.json"
@@ -1320,17 +1366,28 @@ def apply_decision(pending, decision):
 
 # ------------------------------------------------------------- the run ---
 
-def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None):
+def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
+             cog_sha256=None):
     """Invoke once, gate, and retry exactly once when the failure was a
     transport/model failure (ok:false) and the step asked for retry-once.
     An error-severity problem in an ok envelope is never retried.
 
     `seam` carries the invocation context a granted step gets: the grant
     path, the run id, and the journal. It is EMPTY for a step with no
-    authority, so an ordinary Cog is invoked exactly as before."""
+    authority, so an ordinary Cog is invoked exactly as before.
+
+    Returns `(envelope, gate, attempts, cog_sha256, elapsed_s)`. The Cog is
+    digested immediately before EACH invocation (machinery 0.6.3): a retry is
+    a second invocation and can land on a different Cog — a package edited or
+    a model re-bound while the first attempt was failing — so each entry of
+    `attempts` carries the digest ITS invocation ran under, and the returned
+    `cog_sha256` is the one the winning envelope came from. `cog_sha256` may
+    be passed in when the caller has just taken it for its reuse check; it is
+    then the digest of the first attempt, taken immediately before it."""
     seam = seam or {}
     envelope_path = Path(envelope_path)
     started = time.monotonic()
+    digest = cog_sha256 or cog_package_sha256(cog_dir)
     envelope = invoke_cog(cog_dir, task, request_path, **seam)
     op_track.write_json(envelope_path, envelope)
     gate = gate_envelope(envelope)
@@ -1339,11 +1396,15 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None):
             and not envelope.get("ok")):
         first = envelope_path.with_name(envelope_path.stem + ".attempt-1.json")
         op_track.write_json(first, envelope)
+        attempts.append({"envelope": str(first.resolve()),
+                         "cog_sha256": digest})
+        digest = cog_package_sha256(cog_dir)
         envelope = invoke_cog(cog_dir, task, request_path, **seam)
         op_track.write_json(envelope_path, envelope)
         gate = gate_envelope(envelope)
-        attempts = [str(first.resolve()), str(envelope_path.resolve())]
-    return envelope, gate, attempts, round(time.monotonic() - started, 3)
+        attempts.append({"envelope": str(envelope_path.resolve()),
+                         "cog_sha256": digest})
+    return envelope, gate, attempts, digest, round(time.monotonic() - started, 3)
 
 
 def repeat_envelope_path(base, index):
@@ -1357,6 +1418,11 @@ def repeat_envelope_path(base, index):
 def _same_question(entry, request_sha256, cog_sha256):
     """Whether a recorded answer answers the question about to be asked:
     the same REQUEST, put to the same COG (machinery 0.6.2).
+
+    The comparison is between the record's OWN digest and the digest of the
+    Cog as it is right now, taken immediately before this repeat or element
+    would be invoked (0.6.3) — never a digest taken once for the step, which
+    could be neither what the record ran under nor what is about to run.
 
     A record written before 0.6.1 carries no request hash and one written
     before 0.6.2 carries no Cog digest; both are re-run, because silence is
@@ -1394,8 +1460,22 @@ def _reusable_repeat(prior, index, request_sha256, cog_sha256):
     return _reusable(entries[index], request_sha256, cog_sha256)
 
 
+def _last_digest(records):
+    """The Cog digest of the LAST record that carries one, or None.
+
+    A step or element record's own `cog_sha256` summarises records that each
+    carry their own (machinery 0.6.3): the finer records are the evidence,
+    and the summary names the Cog the last invocation of this record ran
+    under. A reader who needs the rest reads `repeats`/`elements`."""
+    for record in reversed(records or []):
+        digest = (record or {}).get("cog_sha256")
+        if digest:
+            return digest
+    return None
+
+
 def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
-                 request_sha256, cog_sha256, prior=None, progress=None):
+                 request_sha256, prior=None, progress=None):
     """Invoke ONE request `count` times, sequentially, and gate each repeat
     on its own (narrowing contract §2).
 
@@ -1407,12 +1487,20 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
 
     `progress`, when given, is called with the records so far after EVERY
     completed repeat, before the next one is invoked: a repeat that finished
-    is durable before anything else is paid for (finding 5)."""
+    is durable before anything else is paid for (finding 5).
+
+    The Cog is digested afresh for EVERY repeat (machinery 0.6.3): the
+    digest is taken immediately before the repeat's first invocation, is what
+    that repeat's reuse check compares the prior record's own digest against,
+    and is recorded on the repeat it ran under. A model re-bound between
+    repeat 0 and repeat 1 therefore leaves two different digests on the two
+    records instead of one digest covering both."""
     count, require = repeat["count"], repeat["require"]
     records, gates, payloads, envelopes = [], [], [], []
     all_envelopes = []
     elapsed = 0.0
     for index in range(count):
+        cog_sha256 = cog_package_sha256(cog_dir)
         reused = _reusable_repeat(prior, index, request_sha256, cog_sha256)
         if reused is not None:
             envelope = json.loads(Path(reused["envelope"]).read_text())
@@ -1420,14 +1508,16 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
             record = reused
         else:
             envelope_path = repeat_envelope_path(base, index)
-            envelope, gate, attempts, seconds = _attempt(
-                cog_dir, task, request_path, envelope_path, on_fail, seam)
+            envelope, gate, attempts, cog_sha256, seconds = _attempt(
+                cog_dir, task, request_path, envelope_path, on_fail, seam,
+                cog_sha256=cog_sha256)
             elapsed += seconds
             record = {"index": index,
                       "envelope": str(envelope_path.resolve()),
                       # The request this answer answers (0.6.1) and the Cog
-                      # that answered it (0.6.2): a resume reuses the repeat
-                      # only when both hash the same.
+                      # that answered THIS repeat (0.6.2, per invocation
+                      # since 0.6.3): a resume reuses the repeat only when
+                      # both hash the same.
                       "request_sha256": request_sha256,
                       "cog_sha256": cog_sha256,
                       "gate": gate,
@@ -1501,7 +1591,7 @@ def not_reached_element(index):
             "repeats": None}
 
 
-def _run_foreach(spec, step, cog_dir, run_dir, context, cog_sha256,
+def _run_foreach(spec, step, cog_dir, run_dir, context,
                  seam=None, prior=None, progress=None):
     """Run one step once per element; returns (record fields, payload list).
 
@@ -1518,7 +1608,14 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, cog_sha256,
     ones and their repeats stay on the Track, and a resume continues from the
     element that failed. This is the rule for every `foreach`, whatever
     `on_fail` says: `on_fail` decides what the failed STEP does to the run,
-    not how many elements a failing step buys."""
+    not how many elements a failing step buys.
+
+    The Cog is digested afresh for EVERY element (machinery 0.6.3), taken
+    immediately before that element's first invocation and recorded on its
+    record: a 140-element sweep is long enough for a package to be edited or
+    a model to be re-bound in the middle of it, and one digest over the whole
+    step would say the elements all came from the same Cog when they did
+    not."""
     foreach = step["foreach"]
     items = op_spec.evaluate(foreach["items"], context)
     if not isinstance(items, list):
@@ -1551,6 +1648,9 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, cog_sha256,
         envelope_path = Path(run_dir) / "envelopes" / step["id"] / f"{index}.json"
         prior_element = (prior_elements[index]
                          if index < len(prior_elements) else None)
+        # The Cog as it is right now, immediately before THIS element is
+        # invoked — not as it was when the step started (0.6.3).
+        cog_sha256 = cog_package_sha256(cog_dir)
         element = {"index": index, "request": str(request_path.resolve()),
                    "request_sha256": request_sha256,
                    "cog_sha256": cog_sha256}
@@ -1563,9 +1663,13 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, cog_sha256,
                 envelope = json.loads(Path(reused["envelope"]).read_text())
                 gate, attempts = reused["gate"], reused.get("attempts") or []
             else:
-                envelope, gate, attempts, seconds = _attempt(
-                    cog_dir, task, request_path, envelope_path, on_fail, seam)
+                envelope, gate, attempts, cog_sha256, seconds = _attempt(
+                    cog_dir, task, request_path, envelope_path, on_fail, seam,
+                    cog_sha256=cog_sha256)
                 elapsed += seconds
+                # A retry may have run under a different Cog: the element
+                # keeps the digest its winning envelope came from (0.6.3).
+                element["cog_sha256"] = cog_sha256
             element_envelopes = [envelope]
             element.update({"envelope": str(envelope_path.resolve()),
                             "status": STEP_STATUS[gate["status"]],
@@ -1593,13 +1697,16 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, cog_sha256,
                 element_all, seconds = \
                 _run_repeats(cog_dir, task, request_path,
                              envelope_path.with_suffix(""), on_fail, seam,
-                             repeat, request_sha256, cog_sha256,
+                             repeat, request_sha256,
                              prior=prior_element, progress=element_progress)
             elapsed += seconds
             element.update({"envelope": None,
                             "status": STEP_STATUS[gate["status"]],
                             "gate": gate, "attempts": [],
                             "repeats": records,
+                            # Each repeat carries the digest IT ran under;
+                            # the element names the last of them (0.6.3).
+                            "cog_sha256": _last_digest(records) or cog_sha256,
                             **_repeat_fields(records, element_all)})
             payloads.append(None if gate["status"] == "fail"
                             else element_payloads)
@@ -1626,20 +1733,27 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, cog_sha256,
         "elapsed_s": round(elapsed, 3),
         "elements": elements,
         "repeat": repeat,
-        "cog_sha256": cog_sha256,
+        # Every element carries the digest its own invocations ran under; the
+        # step names the last one that ran, and a step with no elements at
+        # all names the Cog it would have invoked (0.6.3).
+        "cog_sha256": _last_digest(elements) or cog_package_sha256(cog_dir),
     }
     if flat:
         fields["cog"] = flat[0].get("cog") or fields.get("cog")
     return fields, payloads, envelopes
 
 
-def _run_single(step, cog_dir, run_dir, context, cog_sha256, seam=None,
+def _run_single(step, cog_dir, run_dir, context, seam=None,
                 prior=None, progress=None):
     """Run one step once — or, with `repeat`, k times over the SAME request.
 
     Returns `(record fields, payload, envelope)`, where a repeated step's
     payload is the LIST of its repeat payloads and its `envelope` for later
-    mappings is the list of repeat envelopes (`None` for a failed one)."""
+    mappings is the list of repeat envelopes (`None` for a failed one).
+
+    The Cog digest is taken per invocation (0.6.3): a repeated step's
+    repeats each carry their own and the step names the last, and a step that
+    runs once carries the digest of the attempt whose envelope it kept."""
     task = step["cog"]["task"]
     request = op_spec.evaluate(step.get("input") or {}, context)
     request_path = Path(run_dir) / "requests" / f"{step['id']}.json"
@@ -1653,14 +1767,14 @@ def _run_single(step, cog_dir, run_dir, context, cog_sha256, seam=None,
         records, gate, payloads, envelopes, all_envelopes, seconds = \
             _run_repeats(
                 cog_dir, task, request_path, envelope_path.with_suffix(""),
-                on_fail, seam, repeat, canonical_sha256(request), cog_sha256,
+                on_fail, seam, repeat, canonical_sha256(request),
                 prior=prior,
                 progress=(None if progress is None
                           else lambda rs: progress({"repeats": list(rs)})))
         fields = {
             "cog": next((e.get("cog") for e in all_envelopes if e), None)
             or identity,
-            "cog_sha256": cog_sha256,
+            "cog_sha256": _last_digest(records) or cog_package_sha256(cog_dir),
             "request": str(request_path.resolve()),
             # The step has no single envelope: `repeats` names one file per
             # repeat, and that is where a reader goes.
@@ -1673,7 +1787,7 @@ def _run_single(step, cog_dir, run_dir, context, cog_sha256, seam=None,
             **_repeat_fields(records, all_envelopes),
         }
         return fields, payloads, envelopes
-    envelope, gate, attempts, seconds = _attempt(
+    envelope, gate, attempts, cog_sha256, seconds = _attempt(
         cog_dir, task, request_path, envelope_path, on_fail, seam)
     fields = {
         "cog": envelope.get("cog") or identity,
@@ -1949,17 +2063,18 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         cog_dir = (package_root / step["cog"]["source"]).resolve()
         # The Cog as it is AT INVOCATION: what answers belongs to the version
         # that answered, and a resume reuses an answer only from the same one
-        # (machinery 0.6.2, narrowing contract §10).
-        cog_sha256 = cog_package_sha256(cog_dir)
+        # (machinery 0.6.2, narrowing contract §10). The digest is taken
+        # inside the runners, immediately before each invocation, never once
+        # for the step — a step is many invocations (0.6.3, contract §11).
         if step.get("foreach") is not None:
             fields, payload, envelopes = _run_foreach(
-                spec, step, cog_dir, run_dir, context, cog_sha256, seam,
+                spec, step, cog_dir, run_dir, context, seam,
                 prior=previous.get(sid), progress=checkpoint)
             envelope_for_context = envelopes
             authority_use = None
         else:
             fields, payload, envelope_for_context = _run_single(
-                step, cog_dir, run_dir, context, cog_sha256, seam,
+                step, cog_dir, run_dir, context, seam,
                 prior=previous.get(sid),
                 progress=checkpoint if repeat_spec else None)
             authority_use = (payload or {}).get("authority_use") \

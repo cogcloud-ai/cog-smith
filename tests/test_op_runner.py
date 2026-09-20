@@ -5,6 +5,7 @@ seam is faked (`invoke_cog` is monkeypatched) — these tests are about the Op
 layer's decisions, not about any Cog.
 """
 import contextlib
+import hashlib
 import io
 import json
 import tempfile
@@ -262,9 +263,14 @@ class OnFailTests(RunnerCase):
         first = self.step(track, "first")
         self.assertEqual(first["status"], "passed")
         self.assertEqual(len(first["attempts"]), 2)
-        self.assertTrue(all(Path(p).exists() for p in first["attempts"]))
+        self.assertTrue(all(Path(a["envelope"]).exists()
+                            for a in first["attempts"]))
         self.assertEqual(
-            json.loads(Path(first["attempts"][0]).read_text())["ok"], False)
+            json.loads(Path(first["attempts"][0]["envelope"]).read_text())["ok"],
+            False)
+        # Each attempt names the Cog IT ran under (machinery 0.6.3).
+        self.assertEqual([a["cog_sha256"] for a in first["attempts"]],
+                         [first["cog_sha256"]] * 2)
         self.assertEqual(len([c for c in fake.calls if c["task"] == "ask"]), 2)
 
     def test_retry_once_never_retries_an_error_problem(self):
@@ -1857,6 +1863,235 @@ class CogPackageDigestTests(unittest.TestCase):
         self.assertEqual(absent,
                          op_runner.cog_package_sha256(self.root / "cog-else"))
         self.assertNotEqual(absent, self.digest)
+
+    # -- what the walk refuses to follow (machinery 0.6.3) ----------------
+
+    def test_a_symlink_inside_src_does_not_affect_the_digest(self):
+        """A link points outside what this package IS: following one would
+        let a link's target decide a Cog's identity, and a directory link can
+        make the walk unbounded or cyclic."""
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "elsewhere.py").write_text("print('not mine')\n")
+        (self.cog / "src" / "linked.py").symlink_to(outside / "elsewhere.py")
+        (self.cog / "src" / "linked_dir").symlink_to(
+            outside, target_is_directory=True)
+        self.assertEqual(op_runner.cog_package_sha256(self.cog), self.digest)
+        # And the link's TARGET changing changes nothing either.
+        (outside / "elsewhere.py").write_text("print('still not mine')\n")
+        self.assertEqual(op_runner.cog_package_sha256(self.cog), self.digest)
+
+    def test_a_self_referential_directory_symlink_terminates(self):
+        (self.cog / "src" / "loop").symlink_to(self.cog / "src",
+                                               target_is_directory=True)
+        self.assertEqual(op_runner.cog_package_sha256(self.cog), self.digest)
+
+    def test_a_pixi_directory_inside_src_does_not_affect_the_digest(self):
+        """`.pixi` is an INSTALLED ENVIRONMENT, not the Cog: hashing it would
+        make a Cog's identity depend on whether anyone had run `pixi install`
+        in that package yet."""
+        env = self.cog / "src" / ".pixi" / "envs" / "default"
+        env.mkdir(parents=True)
+        (env / "big.so").write_bytes(b"\x7fELF" + b"\x00" * 4096)
+        (self.cog / "context" / ".pixi").mkdir()
+        (self.cog / "context" / ".pixi" / "manifest").write_text("junk\n")
+        self.assertEqual(op_runner.cog_package_sha256(self.cog), self.digest)
+
+    def test_a_large_file_is_hashed_without_being_read_whole(self):
+        """The digest is hashlib over the same bytes; the chunking is about
+        memory, never about what is hashed."""
+        payload = b"abcdefgh" * 50_000          # 400 KB
+        blob = self.cog / "context" / "fixture.bin"
+        blob.write_bytes(payload)
+        want = hashlib.sha256(payload).hexdigest()
+        self.assertEqual(op_runner.sha256_file(blob), want)
+
+        reads = []
+        real_open = open
+
+        class Spy:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def read(self, size=-1):
+                block = self.handle.read(size)
+                reads.append(len(block))
+                return block
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return self.handle.__exit__(*exc)
+
+        op_runner.open = lambda path, *a, **kw: Spy(real_open(path, *a, **kw))
+        try:
+            got = op_runner.sha256_file(blob, chunk_bytes=4096)
+        finally:
+            del op_runner.open
+        self.assertEqual(got, want)
+        # Many bounded reads, never one read of the whole file.
+        self.assertGreater(len(reads), 1)
+        self.assertLessEqual(max(reads), 4096)
+        self.assertEqual(sum(reads), len(payload))
+
+    def test_a_large_file_is_part_of_the_digest(self):
+        """Streamed, not skipped: chunking must not quietly drop content."""
+        (self.cog / "context" / "fixture.bin").write_bytes(b"x" * 300_000)
+        streamed = op_runner.cog_package_sha256(self.cog)
+        self.assertNotEqual(streamed, self.digest)
+        (self.cog / "context" / "fixture.bin").write_bytes(
+            b"x" * 299_999 + b"y")
+        self.assertNotEqual(op_runner.cog_package_sha256(self.cog), streamed)
+
+
+class PerInvocationDigestTests(RunnerCase):
+    """The Cog digest is taken immediately before EVERY invocation — every
+    element, every repeat, every retry attempt — and recorded on the record
+    that invocation produced (machinery 0.6.3, narrowing contract §11).
+
+    0.6.2 hashed once per STEP, so a binding changed between two repeats, or
+    between two elements of a 140-batch sweep, sat under one digest: the
+    Track said the answers came from the same Cog when they did not."""
+
+    def rebind_after(self, cog, call_number, model="qwen3-8b"):
+        """A watcher that re-binds the Cog's model once the Nth invocation
+        has been made — the mid-step change 0.6.2 could not see."""
+        def watcher(fake, _request_path):
+            if len(fake.calls) == call_number:
+                (cog / "model.json").write_text(json.dumps({"model": model}))
+        return watcher
+
+    def test_a_model_rebound_between_repeats_leaves_two_digests(self):
+        cog = write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
+                             "draft", model={"model": "qwen3-4b"})
+        before = op_runner.cog_package_sha256(cog)
+        draft = fx.cog_step("draft", task="draft",
+                            repeat={"count": 2, "require": 2})
+        code, _, track, fake = self.go(
+            fx.spec_doc([draft]),
+            answers={"draft": fx.envelope(payload={"n": 1})},
+            watcher=self.rebind_after(cog, 1))
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.calls), 2)
+        after = op_runner.cog_package_sha256(cog)
+        record = self.step(track, "draft")
+        digests = [r["cog_sha256"] for r in record["repeats"]]
+        self.assertEqual(digests, [before, after])
+        self.assertNotEqual(before, after)
+        # The step summarises the LAST invocation; the repeats are the
+        # evidence, and neither repeat is filed under a Cog it never ran on.
+        self.assertEqual(record["cog_sha256"], after)
+
+    def test_a_model_rebound_between_elements_leaves_two_digests(self):
+        cog = write_code_cog(self.root / "cog-classify",
+                             "openteams/cog-classify", "classify",
+                             model={"model": "qwen3-4b"})
+        before = op_runner.cog_package_sha256(cog)
+        step = fx.cog_step("classify", task="classify")
+        step["foreach"] = {"items": {"$from": "inputs.items"}, "as": "item"}
+        step["input"] = {"title": {"$from": "item.title"}}
+        code, _, track, fake = self.go(
+            fx.spec_doc([step], inputs=[{"name": "items"}]),
+            request={"items": [{"title": "one"}, {"title": "two"}]},
+            answers={"classify": fx.envelope(payload={"label": "a"})},
+            watcher=self.rebind_after(cog, 1))
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.calls), 2)
+        after = op_runner.cog_package_sha256(cog)
+        elements = self.step(track, "classify")["elements"]
+        self.assertEqual([e["cog_sha256"] for e in elements], [before, after])
+        self.assertNotEqual(before, after)
+        self.assertEqual(self.step(track, "classify")["cog_sha256"], after)
+
+    def test_a_retry_records_the_digest_its_own_attempt_ran_under(self):
+        """A retry is a second invocation and can land on a different Cog:
+        each attempt names the digest ITS invocation ran under, and the
+        record keeps the one its winning envelope came from."""
+        cog = write_code_cog(self.root / "cog-first", "openteams/cog-first",
+                             "ask", model={"model": "qwen3-4b"})
+        before = op_runner.cog_package_sha256(cog)
+        step = fx.cog_step("first", task="ask", on_fail="retry-once")
+        answers = {"ask": [fx.envelope(ok=False),
+                           fx.envelope(payload={"text": "second try"})]}
+        code, _, track, fake = self.go(fx.spec_doc([step]), answers=answers,
+                                       watcher=self.rebind_after(cog, 1))
+        self.assertEqual(code, 0)
+        after = op_runner.cog_package_sha256(cog)
+        record = self.step(track, "first")
+        self.assertEqual([a["cog_sha256"] for a in record["attempts"]],
+                         [before, after])
+        self.assertNotEqual(before, after)
+        self.assertEqual(record["cog_sha256"], after)
+
+    def test_a_code_change_mid_step_is_seen_the_same_way(self):
+        """Not only a binding: a package edited between two repeats."""
+        cog = write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
+                             "draft")
+        before = op_runner.cog_package_sha256(cog)
+
+        def edit(fake, _request_path):
+            if len(fake.calls) == 1:
+                (cog / "src" / "task_logic.py").write_text("print('fixed')\n")
+
+        draft = fx.cog_step("draft", task="draft",
+                            repeat={"count": 2, "require": 2})
+        _, _, track, _ = self.go(
+            fx.spec_doc([draft]),
+            answers={"draft": fx.envelope(payload={"n": 1})}, watcher=edit)
+        digests = [r["cog_sha256"]
+                   for r in self.step(track, "draft")["repeats"]]
+        self.assertEqual(digests,
+                         [before, op_runner.cog_package_sha256(cog)])
+        self.assertNotEqual(digests[0], digests[1])
+
+    def test_an_unchanged_cog_still_records_one_digest_everywhere(self):
+        """The per-invocation digest is not a per-invocation VALUE: nothing
+        changed, so every record names the same Cog, exactly as before."""
+        cog = write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
+                             "draft", model={"model": "qwen3-4b"})
+        draft = fx.cog_step("draft", task="draft",
+                            repeat={"count": 3, "require": 3})
+        _, _, track, _ = self.go(
+            fx.spec_doc([draft]),
+            answers={"draft": fx.envelope(payload={"n": 1})})
+        record = self.step(track, "draft")
+        digest = op_runner.cog_package_sha256(cog)
+        self.assertEqual({r["cog_sha256"] for r in record["repeats"]},
+                         {digest})
+        self.assertEqual(record["cog_sha256"], digest)
+
+    def test_a_resume_compares_the_records_own_digest(self):
+        """Reuse is decided per record: the repeat that ran under the OLD
+        Cog is re-run, and the one that ran under the current Cog is read
+        back — 0.6.2 compared one step-wide digest and re-ran both."""
+        cog = write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
+                             "draft", model={"model": "qwen3-4b"})
+        draft = fx.cog_step("draft", task="draft",
+                            repeat={"count": 3, "require": 3})
+        answers = {"draft": [fx.envelope(payload={"n": 0}),
+                             fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False)]}
+        code, output, track, _ = self.go(
+            fx.spec_doc([draft]), answers=answers,
+            watcher=self.rebind_after(cog, 1))
+        self.assertEqual(code, 1)
+        record = self.step(track, "draft")
+        old, new = record["repeats"][0]["cog_sha256"], \
+            record["repeats"][1]["cog_sha256"]
+        self.assertNotEqual(old, new)
+
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 2})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 0)
+        # Repeat 0 ran under the old Cog and is paid for again; repeat 1 ran
+        # under the current one and is read back; repeat 2 never passed.
+        self.assertEqual(len(again.calls), 2)
+        resumed = json.loads(Path(output["track"]).read_text())
+        digests = [r["cog_sha256"]
+                   for r in self.step(resumed, "draft")["repeats"]]
+        self.assertEqual(digests, [new, new, new])
 
 
 class CogIdentityTests(RunnerCase):

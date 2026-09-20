@@ -266,7 +266,9 @@ what came back.
   list of lists — one list of repeat payloads per element. A Cog that merges
   them (`cog-merge-findings`) reads exactly that shape.
 * The Track records what each repeat did: `repeats: [{index, envelope,
-  request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]` on the step record,
+  request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]` on the
+  step record — each repeat's `cog_sha256` taken immediately before ITS own
+  invocation —
   or on each element of a `foreach` step. `repeat: {count, require}` says
   what was DECLARED, and a `--dry-run` plan carries it, so the cost of a run
   is readable before it starts. Each completed repeat is written to the
@@ -286,24 +288,40 @@ what came back.
 
 ### The Cog behind a result
 
-An answer belongs to a Cog as well as to a request. Every step records
-`cog_sha256`, the digest of the Cog package **at invocation**:
+An answer belongs to a Cog as well as to a request. The runner digests the
+Cog package **immediately before every invocation** — every element, every
+repeat, and every retry attempt — and records that digest as `cog_sha256` on
+the record that invocation produced. What it covers:
 
 * its manifest (`pixi.toml` or `cog.yaml`);
-* every file under `context/` and `src/`, by sorted relative path
-  (`__pycache__` directories and `.pyc` files are excluded — they are build
-  products of files already hashed);
+* every file under `context/` and `src/`, by sorted relative path, except:
+  `__pycache__` directories and `.pyc` files (build products of files
+  already hashed), `.pixi` directories (an installed environment is not the
+  Cog — hashing one would make a Cog's identity depend on whether anyone had
+  run `pixi install` there yet), and **symlinks**, file or directory, which
+  are skipped and never followed: a link points outside what the package is,
+  and a directory link can make the walk unbounded. Files are read in
+  chunks, never whole, so a large fixture costs time and not memory;
 * and, when an installation left a `model.json`, **only** its `model` and
   `response_format`. Never the endpoint, never `api_key_env`, never anything
   credential-like: relocating a served model does not change what answered,
   and a credential's name has no business in a Track.
 
-The digest is on every repeat and element record too, and a resume reuses a
-passed repeat or element only when BOTH `request_sha256` and `cog_sha256`
-match — so one union never mixes two versions of a Cog or two models. Edit a
-Cog's `task_logic.py`, or bind it to a different model, and the failed step's
-passed repeats are paid for again against the new version; move its endpoint
-and the reuse stands.
+Per invocation, not per step: a step is many invocations, and a 140-element
+sweep is long enough for a package to be edited or a model re-bound in the
+middle of it. Re-bind between repeat 0 and repeat 1 and the two repeat
+records carry two different digests, so no answer is ever filed under a Cog
+it did not run on. A step's own `cog_sha256` summarises — the Cog its last
+invocation ran under — and the repeat, element and `attempts` records are the
+evidence a reader compares. An `attempts` entry is
+`{envelope, cog_sha256}`.
+
+A resume reuses a passed repeat or element only when BOTH `request_sha256`
+and the record's OWN `cog_sha256` match the request it rebuilds and the Cog
+as it is right now — so one union never mixes two versions of a Cog or two
+models, and reuse is decided record by record. Edit a Cog's `task_logic.py`,
+or bind it to a different model, and the repeats that ran on the old version
+are paid for again; move its endpoint and the reuse stands.
 
 A step that already **passed** is never re-run for a changed Cog:
 fix-and-resume is how a run is finished. The change is recorded instead — the
