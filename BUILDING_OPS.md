@@ -209,6 +209,23 @@ decision. The step's payload is the LIST of element payloads (null where an
 element failed); the step's Gate fails if any element failed, and is
 `pass-with-problems` if any element carried problems.
 
+**The loop stops at the first finally-failed element.** When an element's
+Gate is `fail` after its repeats and its `retry-once` are exhausted, the loop
+ends: the step fails, and the elements after it are recorded with the
+element-level status `not-reached` — a null request and a null envelope,
+because nothing was built for them and nothing was paid for. They are null in
+the step's payload too, so what a later step reads still lines up index for
+index with the items. The completed elements stay on the Track, and a resume
+continues from the element that failed, re-running only what failed and
+reading the passed elements back from their envelopes.
+
+This is the rule for **every** `foreach`, whatever `on_fail` says: the step
+had already failed, so every later element could only buy invocations for a
+settled verdict. `on_fail` still decides what the failed STEP does to the run
+(`stop` ends it, `skip` blocks the dependents). With 140 batches and a
+gateway down, a step costs at most one element's attempts instead of the
+whole list's.
+
 ### Steps that repeat the SAME request
 
 A model asked the same question twice does not always answer the same way.
@@ -249,12 +266,15 @@ what came back.
   list of lists — one list of repeat payloads per element. A Cog that merges
   them (`cog-merge-findings`) reads exactly that shape.
 * The Track records what each repeat did: `repeats: [{index, envelope,
-  request_sha256, gate, binding, elapsed_s, attempts}]` on the step record,
+  request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]` on the step record,
   or on each element of a `foreach` step. `repeat: {count, require}` says
   what was DECLARED, and a `--dry-run` plan carries it, so the cost of a run
   is readable before it starts. Each completed repeat is written to the
   Track BEFORE the next one is invoked, so a crash mid-step never loses a
-  repeat that was already paid for.
+  repeat that was already paid for. A checkpoint says what has happened so
+  far, not what the step will end up with: the repeats and elements a pass
+  has not revisited are kept by INDEX, with their original hashes, so a
+  second crash cannot discard one that passed.
 * A resume never re-runs a repeat that passed **over the same request**:
   only the failed repeats of the step that stopped the run are invoked
   again, and the rest are read back from their envelopes. `request_sha256`
@@ -263,6 +283,32 @@ what came back.
   `foreach` step's elements come back in another order), the request the
   step rebuilds hashes differently and every repeat of it runs again rather
   than mixing answers to two different questions under one `require`.
+
+### The Cog behind a result
+
+An answer belongs to a Cog as well as to a request. Every step records
+`cog_sha256`, the digest of the Cog package **at invocation**:
+
+* its manifest (`pixi.toml` or `cog.yaml`);
+* every file under `context/` and `src/`, by sorted relative path
+  (`__pycache__` directories and `.pyc` files are excluded — they are build
+  products of files already hashed);
+* and, when an installation left a `model.json`, **only** its `model` and
+  `response_format`. Never the endpoint, never `api_key_env`, never anything
+  credential-like: relocating a served model does not change what answered,
+  and a credential's name has no business in a Track.
+
+The digest is on every repeat and element record too, and a resume reuses a
+passed repeat or element only when BOTH `request_sha256` and `cog_sha256`
+match — so one union never mixes two versions of a Cog or two models. Edit a
+Cog's `task_logic.py`, or bind it to a different model, and the failed step's
+passed repeats are paid for again against the new version; move its endpoint
+and the reuse stands.
+
+A step that already **passed** is never re-run for a changed Cog:
+fix-and-resume is how a run is finished. The change is recorded instead — the
+Track's resume entry carries `changed_cogs: [{step, cog, was, now}]`, so the
+evidence says which version produced what.
 
 **`repeat` is refused at load on an EFFECTFUL step** — one that carries
 `authority:`, one whose Cog declares a non-empty `reaches`, and one whose
@@ -336,8 +382,9 @@ A step that is `skipped` or `blocked` still has a result in the Track, and a
 mapping over it always resolves. What it resolves TO depends on the step's
 shape: a skipped or blocked SINGLE step has a **null payload** downstream
 (its result failed the Gate, so it is not evidence), while a skipped FOREACH
-step keeps its **aggregate list** — one entry per element, null only where
-that element failed — because the elements that passed are still evidence. A Cog reports; **the Gate decides, never the Cog**. Guards —
+step keeps its **aggregate list** — one entry per element, null where that
+element failed and null where the loop stopped before reaching it — because
+the elements that passed are still evidence. A Cog reports; **the Gate decides, never the Cog**. Guards —
 independent, system-side verifiers of the system's requirements — are not in
 this subset, and the Track records `guards: []` rather than pretending.
 

@@ -219,6 +219,14 @@ def step_record(step, status, **fields):
         "id": step["id"],
         "status": status,
         "cog": {"id": cog.get("id"), "version": cog.get("version")},
+        # The Cog's PACKAGE DIGEST at invocation (machinery 0.6.2): its
+        # manifest, `context/`, `src/`, and the `model` and `response_format`
+        # of an installed `model.json` — never the endpoint, never a
+        # credential. A result belongs to a Cog as well as to a request, so a
+        # resume reuses a passed repeat or element only when this matches too,
+        # and a resume whose passed steps used another version says so in its
+        # `changed_cogs`.
+        "cog_sha256": None,
         "task": cog.get("task"),
         "request": None,
         "envelope": None,
@@ -227,6 +235,11 @@ def step_record(step, status, **fields):
         "gate": None,
         "elapsed_s": None,
         "attempts": [],
+        # One record per `foreach` element, in element order. Each carries an
+        # element-level `status`; since 0.6.2 a `foreach` stops at its first
+        # finally-failed element, so the elements after it are `not-reached`:
+        # nothing was built for them and nothing was paid for, and a resume
+        # runs them for the first time.
         "elements": None,
         # Repetition (machinery 0.6.0): what the step DECLARED
         # (`{count, require}`, null when it runs once) and what each repeat

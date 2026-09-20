@@ -40,6 +40,23 @@ propose: a step with `authority`, a human Gate, or a Cog that declares
 before the next one is invoked (0.6.1), so a resume reuses a passed repeat
 only when it answered the question the step is asking now.
 
+A `foreach` STOPS at its first finally-failed element (0.6.2): when an
+element's Gate is `fail` after its repeats and its retries are exhausted,
+the loop ends, the step fails, and the remaining elements are recorded
+`not-reached`. The completed elements and repeats stay on the Track and a
+resume continues from the element that failed. This is the rule for every
+`foreach`, whatever `on_fail` says — `on_fail` decides what a failed step
+does to the run, not how many elements a failing step buys.
+
+A result belongs to a Cog as well as to a request (0.6.2). Every step
+records the digest of the Cog it invoked — its manifest, `context/`, `src/`,
+and the `model` and `response_format` of an installed `model.json`, never the
+endpoint and never a credential — and a passed repeat or element is reused
+only when BOTH that digest and the request hash match, so one union never
+mixes two versions of a Cog or two models. A step that already PASSED is
+never re-run for a changed Cog: the resume entry's `changed_cogs` records
+which version produced what, and fix-and-resume keeps working.
+
 A FAILED run resumes too (contract §9e): the step that stopped it — the one
 the Track names in `failed_step` — is the resume point, so a Cog that
 reports unfinished work (a write left uncertain, say) is re-run and finishes
@@ -551,6 +568,70 @@ def canonical_sha256(value):
     text = json.dumps(value, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+#: The manifest a Cog package may carry, in the order they are read. Both
+#: are hashed when both are there: which one a Cog declares in is a profile
+#: matter, and the digest is about what changed, not about which file.
+COG_MANIFESTS = ("pixi.toml", "cog.yaml")
+
+#: The directories whose every file is part of a Cog's package digest: its
+#: context (prompts, schemas, fixtures the Cog reads) and its source.
+COG_DIGEST_DIRS = ("context", "src")
+
+#: What of an installed binding belongs to a RESULT's identity. `model.json`
+#: is gitignored installation state and carries the endpoint and the name of
+#: the credential's environment variable; neither is part of what produced an
+#: answer, and neither is ever hashed here. The model that answered, and the
+#: response format it was asked for, are (narrowing contract §10).
+BINDING_DIGEST_KEYS = ("model", "response_format")
+
+
+def cog_package_sha256(cog_dir):
+    """The digest of the Cog a step invokes, at invocation (machinery 0.6.2,
+    narrowing contract §10).
+
+    A result belongs to a Cog as well as to a request: two answers are
+    evidence of the same thing only when the same Cog produced them. The
+    digest covers the Cog's manifest, every file under `context/` and `src/`
+    by sorted relative path, and — when an installation left a `model.json` —
+    ONLY the `model` and `response_format` it names.
+
+    It never covers the endpoint or `api_key_env`: relocating a served model
+    does not change what answered, and a credential's name has no business in
+    a Track. `__pycache__` and `.pyc` are excluded: they are build products of
+    the very files already hashed.
+
+    A Cog that is not present on this machine digests as the empty package —
+    deterministically, so a run and its resume agree about it."""
+    cog_dir = Path(cog_dir)
+    files = []
+    for name in COG_MANIFESTS:
+        path = cog_dir / name
+        if path.is_file():
+            files.append([name, sha256_file(path)])
+    for folder in COG_DIGEST_DIRS:
+        base = cog_dir / folder
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*"), key=lambda p: p.as_posix()):
+            if not path.is_file() or path.suffix == ".pyc" \
+                    or "__pycache__" in path.parts:
+                continue
+            files.append([path.relative_to(cog_dir).as_posix(),
+                          sha256_file(path)])
+    files.sort()
+    binding = None
+    model_json = cog_dir / "model.json"
+    if model_json.is_file():
+        try:
+            installed = json.loads(model_json.read_text())
+        except (OSError, ValueError):
+            installed = None
+        if not isinstance(installed, dict):
+            installed = {}
+        binding = {key: installed.get(key) for key in BINDING_DIGEST_KEYS}
+    return canonical_sha256({"files": files, "binding": binding})
 
 
 #: A change carries TWO hashes, and they answer different questions
@@ -1273,34 +1354,48 @@ def repeat_envelope_path(base, index):
     return Path(str(base) + f".r{index}.json")
 
 
-def _reusable_repeat(prior, index, request_sha256):
-    """The record of a repeat an earlier attempt already PASSED **over this
-    same request**, or None (machinery 0.6.1, narrowing contract §8).
+def _same_question(entry, request_sha256, cog_sha256):
+    """Whether a recorded answer answers the question about to be asked:
+    the same REQUEST, put to the same COG (machinery 0.6.2).
 
-    A resume re-runs only the repeats that failed (narrowing contract §2): a
-    passed repeat's envelope is on disk and is read back rather than paid for
-    again. But an answer belongs to the question it answered — between the
-    failed run and the resume an upstream envelope may have changed, and the
-    request this step rebuilds from it may no longer be the one the passed
-    repeat saw. So the record is reused only when its envelope is still there
-    AND its recorded `request_sha256` equals the hash of the request about to
-    be invoked. A record written before 0.6.1 carries no hash and is re-run:
-    silence is not a match."""
-    entries = (prior or {}).get("repeats")
-    if not isinstance(entries, list) or index >= len(entries):
-        return None
-    entry = entries[index]
+    A record written before 0.6.1 carries no request hash and one written
+    before 0.6.2 carries no Cog digest; both are re-run, because silence is
+    not a match."""
+    if not request_sha256 or entry.get("request_sha256") != request_sha256:
+        return False
+    return bool(cog_sha256) and entry.get("cog_sha256") == cog_sha256
+
+
+def _reusable(entry, request_sha256, cog_sha256):
+    """The record of a repeat or element an earlier attempt already PASSED
+    over this same request and this same Cog, or None.
+
+    A resume re-runs only what failed (narrowing contract §2): a passed
+    answer's envelope is on disk and is read back rather than paid for again.
+    But an answer belongs to the question it answered AND to the Cog that
+    answered it — between the failed run and the resume an upstream envelope
+    may have changed, and so may the Cog's own code, context or model. So the
+    record is reused only when its envelope is still there and both digests
+    match (machinery 0.6.1 and 0.6.2, narrowing contract §8 and §10)."""
     if not isinstance(entry, dict) or not entry.get("envelope"):
         return None
     if (entry.get("gate") or {}).get("status") == "fail":
         return None
-    if not request_sha256 or entry.get("request_sha256") != request_sha256:
+    if not _same_question(entry, request_sha256, cog_sha256):
         return None
     return entry if Path(entry["envelope"]).exists() else None
 
 
+def _reusable_repeat(prior, index, request_sha256, cog_sha256):
+    """`_reusable` over the repeat at INDEX of an earlier record."""
+    entries = (prior or {}).get("repeats")
+    if not isinstance(entries, list) or index >= len(entries):
+        return None
+    return _reusable(entries[index], request_sha256, cog_sha256)
+
+
 def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
-                 request_sha256, prior=None, progress=None):
+                 request_sha256, cog_sha256, prior=None, progress=None):
     """Invoke ONE request `count` times, sequentially, and gate each repeat
     on its own (narrowing contract §2).
 
@@ -1318,7 +1413,7 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
     all_envelopes = []
     elapsed = 0.0
     for index in range(count):
-        reused = _reusable_repeat(prior, index, request_sha256)
+        reused = _reusable_repeat(prior, index, request_sha256, cog_sha256)
         if reused is not None:
             envelope = json.loads(Path(reused["envelope"]).read_text())
             gate = reused["gate"]
@@ -1330,10 +1425,11 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
             elapsed += seconds
             record = {"index": index,
                       "envelope": str(envelope_path.resolve()),
-                      # The request this answer answers (0.6.1): a resume
-                      # reuses the repeat only when the request it rebuilds
-                      # hashes the same.
+                      # The request this answer answers (0.6.1) and the Cog
+                      # that answered it (0.6.2): a resume reuses the repeat
+                      # only when both hash the same.
                       "request_sha256": request_sha256,
+                      "cog_sha256": cog_sha256,
                       "gate": gate,
                       "binding": envelope.get("binding"),
                       "elapsed_s": seconds,
@@ -1394,14 +1490,35 @@ def _plan(spec, track, run_dir, context):
                "run_dir": str(Path(run_dir).resolve()), "track": track_path}
 
 
-def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None, prior=None,
-                 progress=None):
+def not_reached_element(index):
+    """An element the loop never got to, because an earlier one finally
+    failed (machinery 0.6.2, narrowing contract §10). It has no request and
+    no envelope: nothing was built for it and nothing was paid for. A resume
+    runs it for the first time."""
+    return {"index": index, "status": "not-reached", "request": None,
+            "envelope": None, "request_sha256": None, "cog_sha256": None,
+            "gate": None, "attempts": [], "problems": [], "binding": None,
+            "repeats": None}
+
+
+def _run_foreach(spec, step, cog_dir, run_dir, context, cog_sha256,
+                 seam=None, prior=None, progress=None):
     """Run one step once per element; returns (record fields, payload list).
 
     With `repeat`, each ELEMENT is repeated: the element's request is written
     once and invoked k times, the element's payload is the list of its repeat
     payloads, and its Gate is the repeat Gate — so the step's payload is a
-    list of lists (narrowing contract §2)."""
+    list of lists (narrowing contract §2).
+
+    **The loop stops at the first finally-failed element** (machinery 0.6.2,
+    narrowing contract §10): when an element's Gate is `fail` after its
+    repeats and its retries are exhausted, the step has already failed —
+    every later element could only ever be work bought for a verdict that is
+    settled. The remaining elements are recorded `not-reached`, the completed
+    ones and their repeats stay on the Track, and a resume continues from the
+    element that failed. This is the rule for every `foreach`, whatever
+    `on_fail` says: `on_fail` decides what the failed STEP does to the run,
+    not how many elements a failing step buys."""
     foreach = step["foreach"]
     items = op_spec.evaluate(foreach["items"], context)
     if not isinstance(items, list):
@@ -1418,20 +1535,40 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None, prior=None,
     # ELEMENT — the list a later step sees as `steps.<id>.envelope`.
     flat = []
     elapsed = 0.0
+    stopped = False
     for index, item in enumerate(items):
+        if stopped:
+            elements.append(not_reached_element(index))
+            payloads.append(None)
+            envelopes.append(None)
+            continue
         element_context = dict(context)
         element_context[foreach["as"]] = item
         request = op_spec.evaluate(step.get("input") or {}, element_context)
+        request_sha256 = canonical_sha256(request)
         request_path = Path(run_dir) / "requests" / step["id"] / f"{index}.json"
         op_track.write_json(request_path, request)
         envelope_path = Path(run_dir) / "envelopes" / step["id"] / f"{index}.json"
-        element = {"index": index, "request": str(request_path.resolve())}
+        prior_element = (prior_elements[index]
+                         if index < len(prior_elements) else None)
+        element = {"index": index, "request": str(request_path.resolve()),
+                   "request_sha256": request_sha256,
+                   "cog_sha256": cog_sha256}
         if repeat is None:
-            envelope, gate, attempts, seconds = _attempt(
-                cog_dir, task, request_path, envelope_path, on_fail, seam)
-            elapsed += seconds
+            # An element that already passed over this same request and this
+            # same Cog is read back, not paid for again — the same reuse rule
+            # a repeat has had since 0.6.1 (narrowing contract §10).
+            reused = _reusable(prior_element or {}, request_sha256, cog_sha256)
+            if reused is not None:
+                envelope = json.loads(Path(reused["envelope"]).read_text())
+                gate, attempts = reused["gate"], reused.get("attempts") or []
+            else:
+                envelope, gate, attempts, seconds = _attempt(
+                    cog_dir, task, request_path, envelope_path, on_fail, seam)
+                elapsed += seconds
             element_envelopes = [envelope]
             element.update({"envelope": str(envelope_path.resolve()),
+                            "status": STEP_STATUS[gate["status"]],
                             "gate": gate, "attempts": attempts,
                             "problems": envelope.get("problems") or []})
             payloads.append(None if gate["status"] == "fail"
@@ -1439,8 +1576,6 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None, prior=None,
             envelopes.append(envelope)
             flat.append(envelope)
         else:
-            prior_element = (prior_elements[index]
-                             if index < len(prior_elements) else None)
             # Each completed repeat of THIS element joins the elements this
             # step has already finished, and the Track is rewritten before
             # the next repeat is invoked (finding 5).
@@ -1458,10 +1593,12 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None, prior=None,
                 element_all, seconds = \
                 _run_repeats(cog_dir, task, request_path,
                              envelope_path.with_suffix(""), on_fail, seam,
-                             repeat, canonical_sha256(request),
+                             repeat, request_sha256, cog_sha256,
                              prior=prior_element, progress=element_progress)
             elapsed += seconds
-            element.update({"envelope": None, "gate": gate, "attempts": [],
+            element.update({"envelope": None,
+                            "status": STEP_STATUS[gate["status"]],
+                            "gate": gate, "attempts": [],
                             "repeats": records,
                             **_repeat_fields(records, element_all)})
             payloads.append(None if gate["status"] == "fail"
@@ -1471,6 +1608,13 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None, prior=None,
             flat.extend(e for e in element_all if e)
         gates.append(gate)
         elements.append(element)
+        if progress is not None:
+            # An element that finished is durable before the next one is
+            # invoked, repeated or not (narrowing contract §10).
+            progress({"elements": list(elements)})
+        # The breaker: this element's repeats and retries are exhausted and
+        # its Gate says fail, so the step fails whatever the rest would say.
+        stopped = gate["status"] == "fail"
     gate = combine_gates(gates) if gates else combine_gates([])
     fields = {
         "request": str((Path(run_dir) / "requests" / step["id"]).resolve()),
@@ -1482,14 +1626,15 @@ def _run_foreach(spec, step, cog_dir, run_dir, context, seam=None, prior=None,
         "elapsed_s": round(elapsed, 3),
         "elements": elements,
         "repeat": repeat,
+        "cog_sha256": cog_sha256,
     }
     if flat:
         fields["cog"] = flat[0].get("cog") or fields.get("cog")
     return fields, payloads, envelopes
 
 
-def _run_single(step, cog_dir, run_dir, context, seam=None, prior=None,
-                progress=None):
+def _run_single(step, cog_dir, run_dir, context, cog_sha256, seam=None,
+                prior=None, progress=None):
     """Run one step once — or, with `repeat`, k times over the SAME request.
 
     Returns `(record fields, payload, envelope)`, where a repeated step's
@@ -1508,12 +1653,14 @@ def _run_single(step, cog_dir, run_dir, context, seam=None, prior=None,
         records, gate, payloads, envelopes, all_envelopes, seconds = \
             _run_repeats(
                 cog_dir, task, request_path, envelope_path.with_suffix(""),
-                on_fail, seam, repeat, canonical_sha256(request), prior=prior,
+                on_fail, seam, repeat, canonical_sha256(request), cog_sha256,
+                prior=prior,
                 progress=(None if progress is None
                           else lambda rs: progress({"repeats": list(rs)})))
         fields = {
             "cog": next((e.get("cog") for e in all_envelopes if e), None)
             or identity,
+            "cog_sha256": cog_sha256,
             "request": str(request_path.resolve()),
             # The step has no single envelope: `repeats` names one file per
             # repeat, and that is where a reader goes.
@@ -1530,6 +1677,7 @@ def _run_single(step, cog_dir, run_dir, context, seam=None, prior=None,
         cog_dir, task, request_path, envelope_path, on_fail, seam)
     fields = {
         "cog": envelope.get("cog") or identity,
+        "cog_sha256": cog_sha256,
         "request": str(request_path.resolve()),
         "envelope": str(envelope_path.resolve()),
         "binding": envelope.get("binding"),
@@ -1547,7 +1695,10 @@ def _element_envelopes(record):
     read the step's envelope DIRECTORY as a file (review S4)."""
     envelopes = []
     for element in record["elements"]:
-        if (element.get("gate") or {}).get("status") == "fail":
+        if element.get("status") == "not-reached" \
+                or (element.get("gate") or {}).get("status") == "fail":
+            # An element the loop stopped before, or one whose Gate failed:
+            # null, exactly as the live run put it in the context.
             envelopes.append(None)
             continue
         if element.get("repeats") is not None:
@@ -1624,6 +1775,32 @@ def _restore_context(track, context):
             decisions[record["id"]] = record["decision"]
         context["steps"][record["id"]] = entry
     return decisions
+
+
+def _kept_by_index(key, existing, value):
+    """What a checkpoint writes for one field: for `repeats` and `elements`,
+    the records this attempt has produced followed by every record at a LATER
+    index it has not revisited (machinery 0.6.2, narrowing contract §10).
+
+    A checkpoint says what has happened so far, not what the step will end up
+    with. Shortening these lists threw away durable evidence — a repeat that
+    passed before the crash, or an element that finished — and the next
+    resume paid for it again. The element in flight keeps its own repeat tail
+    the same way. Every kept record carries its original `request_sha256` and
+    Cog digest, so reuse is still validated when the loop reaches it."""
+    if key not in ("repeats", "elements") or not isinstance(existing, list) \
+            or not isinstance(value, list):
+        return value
+    kept = list(value)
+    if key == "elements" and kept and len(kept) - 1 < len(existing):
+        last = len(kept) - 1
+        if isinstance(existing[last], dict) and isinstance(kept[last], dict):
+            kept[last] = dict(kept[last], repeats=_kept_by_index(
+                "repeats", existing[last].get("repeats"),
+                kept[last].get("repeats")))
+    if len(existing) > len(kept):
+        kept += existing[len(kept):]
+    return kept
 
 
 def _paused_output(run_dir, track, sid, pending_path, track_path):
@@ -1740,9 +1917,10 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         # is marked `running` again: rewriting it as a bare `running` record
         # would throw away work a crash left durable, and the resume would
         # pay for it a second time (finding 5).
+        earlier = previous.get(sid) or {}
         carried = {}
-        if repeat_spec is not None:
-            earlier = previous.get(sid) or {}
+        if earlier.get("repeats") is not None \
+                or earlier.get("elements") is not None:
             carried = {"repeats": earlier.get("repeats"),
                        "elements": earlier.get("elements")}
         track["steps"].append(op_track.step_record(
@@ -1756,30 +1934,32 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             far. Called between repeats, so a completed repeat is on disk
             before the next one is invoked (finding 5).
 
-            A checkpoint never SHORTENS the element list: the elements a
-            `foreach` has not reached again this attempt are still the
-            earlier attempt's, and their passed repeats are reusable
-            evidence."""
+            A checkpoint never DISCARDS a record it has not revisited: the
+            repeats and elements this attempt has not yet replaced are still
+            the earlier attempt's, each with its original `request_sha256` and
+            Cog digest, so a second crash cannot lose a repeat that passed
+            (machinery 0.6.2, narrowing contract §10). Normal reuse validation
+            still applies to what is kept: a preserved record whose request or
+            Cog has changed is re-run when the loop reaches it."""
             record = track["steps"][_at]
             for key, value in partial.items():
-                existing = record.get(key)
-                if key == "elements" and isinstance(existing, list) \
-                        and len(existing) > len(value):
-                    value = list(value) + existing[len(value):]
-                record[key] = value
+                record[key] = _kept_by_index(key, record.get(key), value)
             op_track.save(track, run_dir)
 
         cog_dir = (package_root / step["cog"]["source"]).resolve()
+        # The Cog as it is AT INVOCATION: what answers belongs to the version
+        # that answered, and a resume reuses an answer only from the same one
+        # (machinery 0.6.2, narrowing contract §10).
+        cog_sha256 = cog_package_sha256(cog_dir)
         if step.get("foreach") is not None:
             fields, payload, envelopes = _run_foreach(
-                spec, step, cog_dir, run_dir, context, seam,
-                prior=previous.get(sid),
-                progress=checkpoint if repeat_spec else None)
+                spec, step, cog_dir, run_dir, context, cog_sha256, seam,
+                prior=previous.get(sid), progress=checkpoint)
             envelope_for_context = envelopes
             authority_use = None
         else:
             fields, payload, envelope_for_context = _run_single(
-                step, cog_dir, run_dir, context, seam,
+                step, cog_dir, run_dir, context, cog_sha256, seam,
                 prior=previous.get(sid),
                 progress=checkpoint if repeat_spec else None)
             authority_use = (payload or {}).get("authority_use") \
@@ -1959,6 +2139,33 @@ def _stopping_step(track):
     return None
 
 
+def _changed_cogs(spec, package_root, done):
+    """`[{step, cog, was, now}]` for every step this resume will NOT re-run
+    whose Cog has changed since it ran (machinery 0.6.2, §10).
+
+    A step that passed keeps its result: re-running it would throw away work
+    the run already paid for, and a resume exists to finish a run, not to
+    start a new one. What the Track owes its reader is the fact — that the
+    Cog at that source is no longer the one whose answer is in evidence."""
+    declared = {step["id"]: (step.get("cog") or {}) for step in spec.ordered}
+    changed = []
+    for sid, record in done.items():
+        was = record.get("cog_sha256")
+        source = declared.get(sid, {}).get("source")
+        if not was or not source:
+            continue
+        now = cog_package_sha256((Path(package_root) / source).resolve())
+        if now != was:
+            # The SPEC's declared id: it names the Cog at that source, which
+            # is what changed, whatever the envelope of the run happened to
+            # identify itself as.
+            changed.append({"step": sid,
+                            "cog": declared[sid].get("id")
+                            or (record.get("cog") or {}).get("id"),
+                            "was": was, "now": now})
+    return sorted(changed, key=lambda c: c["step"])
+
+
 def _resume(package_root, run_dir, track_path, decision_path,
             authority_path):
     track = json.loads(track_path.read_text())
@@ -2062,7 +2269,13 @@ def _resume(package_root, run_dir, track_path, decision_path,
                                  "decision": value}
 
     entry = {"at": op_track.utc_now(),
-             "decision": str(decision_copy.resolve()) if decision_copy else None}
+             "decision": str(decision_copy.resolve()) if decision_copy else None,
+             # Which Cogs are not the ones that produced this run's kept
+             # results (machinery 0.6.2, narrowing contract §10). A step that
+             # PASSED is never re-run — fix-and-resume is how a run is
+             # finished — so the change is recorded instead, and the evidence
+             # says which version produced what.
+             "changed_cogs": _changed_cogs(spec, package_root, done)}
     track.setdefault("resumes", []).append(entry)
     track["status"] = "running"
     track["ended_at"] = None

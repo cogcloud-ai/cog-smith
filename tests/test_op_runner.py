@@ -1249,7 +1249,8 @@ class ProcessBoundaryTests(unittest.TestCase):
 
 
 class ForeachBoundaryTests(RunnerCase):
-    """Finding 16: the foreach boundaries §6's tests did not assert."""
+    """Finding 16: the foreach boundaries §6's tests did not assert — and,
+    since machinery 0.6.2, where the loop stops."""
 
     def doc(self, on_fail="stop"):
         step = fx.cog_step("classify", task="classify", on_fail=on_fail)
@@ -1273,13 +1274,21 @@ class ForeachBoundaryTests(RunnerCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.step(track, "classify")["status"], "skipped")
         self.assertEqual(self.step(track, "report")["status"], "blocked")
-        self.assertEqual(
-            [e["gate"]["status"] for e in self.step(track, "classify")["elements"]],
-            ["pass", "fail", "pass"])
+        elements = self.step(track, "classify")["elements"]
+        # The stop rule applies whatever `on_fail` says: element 2 is never
+        # reached, and its payload is null exactly as a failed one's is.
+        self.assertEqual([e["status"] for e in elements],
+                         ["passed", "failed", "not-reached"])
+        self.assertEqual([(e["gate"] or {}).get("status") for e in elements],
+                         ["pass", "fail", None])
+        self.assertEqual(len([c for c in fake.calls
+                              if c["task"] == "classify"]), 2)
 
-    def test_a_failed_element_does_not_stop_the_later_elements(self):
-        """`on_fail` applies to the whole step for stop/skip (contract §3), so
-        the loop completes and the Gate decides once, over every element."""
+    def test_a_failed_element_stops_the_later_elements(self):
+        """Machinery 0.6.2 (narrowing contract §10): a `foreach` stops at its
+        first finally-failed element. The step has already failed, so every
+        later element could only buy invocations for a settled verdict — a
+        systematic outage used to exhaust the whole list."""
         answers = {"classify": [fx.envelope(payload={"label": "a"}),
                                 fx.envelope(ok=False),
                                 fx.envelope(payload={"label": "c"})],
@@ -1289,7 +1298,12 @@ class ForeachBoundaryTests(RunnerCase):
         self.assertEqual(code, 1)
         self.assertEqual(output["failed_step"], "classify")
         self.assertEqual(len([c for c in fake.calls
-                              if c["task"] == "classify"]), 3)
+                              if c["task"] == "classify"]), 2)
+        element = self.step(track, "classify")["elements"][2]
+        self.assertEqual(element["status"], "not-reached")
+        # Nothing was built for it and nothing was paid for.
+        self.assertIsNone(element["request"])
+        self.assertIsNone(element["envelope"])
         self.assertEqual(self.step(track, "report")["status"], "not-reached")
 
 
@@ -1524,6 +1538,449 @@ class RunDirContainmentTests(RunnerCase):
         self.assertEqual(written, run_dir / "artifacts")
         self.assertIn(run_dir, written.parents)
         self.assertFalse(Path("/outside-the-real-run").exists())
+
+
+class Interrupted(Exception):
+    """Stands in for the process dying mid-step."""
+
+
+def interrupting(answers, calls, task_name):
+    """A fake Cog that answers from `answers` and raises on the invocation of
+    `task_name` numbered `calls` (1-based)."""
+    script = fx.FakeCog(answers)
+
+    def fake(cog_dir, task, request_path, **seam):
+        if task == task_name and len([c for c in script.calls
+                                      if c["task"] == task_name]) + 1 == calls:
+            script.calls.append({"task": task, "raised": True})
+            raise Interrupted("power loss")
+        return script(cog_dir, task, request_path, **seam)
+    fake.script = script
+    return fake
+
+
+class ForeachStopTests(RunnerCase):
+    """A `foreach` stops at its first finally-failed element (machinery
+    0.6.2, narrowing contract §10; Codex review 3, residual 3).
+
+    Retry is per element and the Gate used to be combined only after every
+    element had run, so a systematic outage exhausted the whole batch list —
+    hundreds of invocations bought for a verdict that was settled at the
+    first one. The step fails either way; what the loop owes the run is to
+    stop paying for it."""
+
+    def doc(self, on_fail="stop", repeat=None, items="items"):
+        step = fx.cog_step("detect", task="detect", on_fail=on_fail)
+        if repeat is not None:
+            step["repeat"] = repeat
+        step["foreach"] = {"items": {"$from": f"inputs.{items}"}, "as": "batch"}
+        step["input"] = {"batch": {"$from": "batch.id"}}
+        return fx.spec_doc([step], inputs=[{"name": items}])
+
+    def request(self, n=4):
+        return {"items": [{"id": f"b{i}"} for i in range(n)]}
+
+    def test_retry_once_is_exhausted_before_the_loop_stops(self):
+        """The breaker is the FINALLY failed element: a retry-once element
+        gets its second attempt, and only then does the loop end."""
+        answers = {"detect": [fx.envelope(payload={"b": 0}),
+                              fx.envelope(ok=False), fx.envelope(ok=False),
+                              fx.envelope(payload={"b": 2})]}
+        code, output, track, fake = self.go(self.doc(on_fail="retry-once"),
+                                            request=self.request(),
+                                            answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "detect")
+        # three invocations: element 0, then element 1 twice.
+        self.assertEqual(len(fake.calls), 3)
+        elements = self.step(track, "detect")["elements"]
+        self.assertEqual([e["status"] for e in elements],
+                         ["passed", "failed", "not-reached", "not-reached"])
+        self.assertEqual(len(elements[1]["attempts"]), 2)
+
+    def test_an_element_that_misses_require_stops_the_loop(self):
+        """With `repeat`, the element is finally failed when its repeats are
+        exhausted and fewer than `require` of them passed."""
+        answers = {"detect": [fx.envelope(payload={"b": 0}),
+                              fx.envelope(ok=False),
+                              fx.envelope(payload={"b": 1})]}
+        code, _, track, fake = self.go(
+            self.doc(repeat={"count": 2, "require": 2}),
+            request=self.request(), answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(fake.calls), 2)
+        elements = self.step(track, "detect")["elements"]
+        self.assertEqual([e["status"] for e in elements],
+                         ["failed", "not-reached", "not-reached",
+                          "not-reached"])
+        self.assertIsNone(elements[1]["repeats"])
+
+    def test_the_unreached_elements_are_null_in_the_payload(self):
+        """The payload a later step reads still lines up index for index with
+        the items: an unreached element is null, like a failed one."""
+        after = fx.cog_step("merge", task="merge", depends_on=["detect"])
+        after["input"] = {"results": {"$from": "steps.detect.payload"}}
+        doc = self.doc(on_fail="skip")
+        doc["steps"].append(after)
+        answers = {"detect": [fx.envelope(payload={"b": 0}),
+                              fx.envelope(ok=False)],
+                   "merge": fx.envelope(payload={})}
+        code, _, track, _ = self.go(doc, request=self.request(n=3),
+                                    answers=answers)
+        self.assertEqual(code, 0)
+        record = self.step(track, "detect")
+        self.assertEqual(record["status"], "skipped")
+        self.assertEqual(
+            op_runner._payloads_of(op_runner._element_envelopes(record)),
+            [{"b": 0}, None, None])
+
+    def test_a_resume_continues_from_the_failed_element(self):
+        """The completed elements stay on the Track and are read back; the
+        failed one runs again, and the unreached ones run for the first
+        time."""
+        answers = {"detect": [fx.envelope(payload={"b": 0}),
+                              fx.envelope(ok=False)]}
+        code, output, track, _ = self.go(self.doc(), request=self.request(n=3),
+                                         answers=answers)
+        self.assertEqual(code, 1)
+        kept = Path(self.step(track, "detect")["elements"][0]["envelope"])
+        stamp = kept.stat().st_mtime_ns
+
+        again = fx.FakeCog({"detect": lambda n, req: fx.envelope(
+            payload={"b": req["batch"]})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual(code, 0)
+        # element 0 was not paid for again; elements 1 and 2 were.
+        self.assertEqual([c["request"]["batch"] for c in again.calls],
+                         ["b1", "b2"])
+        self.assertEqual(kept.stat().st_mtime_ns, stamp)
+        record = self.step(resumed, "detect")
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(
+            op_runner._payloads_of(op_runner._element_envelopes(record)),
+            [{"b": 0}, {"b": "b1"}, {"b": "b2"}])
+
+    def test_a_changed_element_is_not_reused(self):
+        """Element reuse is the repeats' rule: the same request, put to the
+        same Cog. A resume whose element 0 is a different batch re-runs it."""
+        read = fx.cog_step("read", task="read")
+        detect = fx.cog_step("detect", task="detect", depends_on=["read"])
+        detect["foreach"] = {"items": {"$from": "steps.read.payload.batches"},
+                             "as": "batch"}
+        detect["input"] = {"batch": {"$from": "batch.id"}}
+        code, output, _, _ = self.go(
+            fx.spec_doc([read, detect]),
+            answers={"read": fx.envelope(payload={"batches": [{"id": "b1"},
+                                                              {"id": "b2"}]}),
+                     "detect": [fx.envelope(payload={"b": "b1"}),
+                                fx.envelope(ok=False)]})
+        self.assertEqual(code, 1)
+        upstream = Path(output["run_dir"]) / "envelopes" / "read.json"
+        changed = json.loads(upstream.read_text())
+        changed["payload"] = {"batches": [{"id": "b9"}, {"id": "b2"}]}
+        upstream.write_text(json.dumps(changed, indent=2))
+
+        again = fx.FakeCog({"detect": lambda n, req: fx.envelope(
+            payload={"b": req["batch"]})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 0)
+        self.assertEqual([c["request"]["batch"] for c in again.calls],
+                         ["b9", "b2"])
+
+
+class RepeatTailDurabilityTests(RunnerCase):
+    """A checkpoint keeps the records it has not revisited (machinery 0.6.2,
+    narrowing contract §10; Codex review 3, residual 4).
+
+    A checkpoint says what has happened so far, not what the step will end up
+    with. Rewriting the repeat list with a prefix threw away a repeat that
+    had already passed, and the next resume paid for it again."""
+
+    def doc(self, count=3, require=3):
+        draft = fx.cog_step("draft", task="draft",
+                            repeat={"count": count, "require": require})
+        after = fx.cog_step("merge", task="merge", depends_on=["draft"])
+        after["input"] = {"results": {"$from": "steps.draft.payload"}}
+        return fx.spec_doc([draft, after])
+
+    def track_of(self, run_dir):
+        return json.loads((Path(run_dir) / "track.json").read_text())
+
+    def test_a_crash_after_a_reused_prefix_keeps_the_passed_repeat(self):
+        """[pass, fail, pass]: the resume reuses repeat 0 and crashes
+        retrying repeat 1 — repeat 2's durable record must still be there,
+        with the request it answered."""
+        answers = {"draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False),
+                             fx.envelope(payload={"n": 3})],
+                   "merge": fx.envelope(payload={})}
+        code, output, track, _ = self.go(self.doc(), answers=answers)
+        self.assertEqual(code, 1)
+        run_dir = Path(output["run_dir"])
+        before = self.step(track, "draft")["repeats"][2]
+
+        op_runner.invoke_cog = interrupting({"draft": fx.envelope()}, 1,
+                                            "draft")
+        with self.assertRaises(Interrupted):
+            op_runner.resume(self.package, run_dir)
+        record = self.step(self.track_of(run_dir), "draft")
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["pass", "fail", "pass"])
+        self.assertEqual(record["repeats"][2], before)
+
+        # ---- the second resume pays for repeat 1 alone.
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 2}),
+                            "merge": fx.envelope(payload={})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 0)
+        self.assertEqual([c["task"] for c in again.calls], ["draft", "merge"])
+        self.assertEqual(again.calls[-1]["request"],
+                         {"results": [{"n": 1}, {"n": 2}, {"n": 3}]})
+
+    def test_the_same_holds_inside_a_foreach_element(self):
+        detect = fx.cog_step("detect", task="detect",
+                             repeat={"count": 3, "require": 3})
+        detect["foreach"] = {"items": {"$from": "inputs.batches"},
+                             "as": "batch"}
+        detect["input"] = {"batch": {"$from": "batch.id"}}
+        doc = fx.spec_doc([detect], inputs=[{"name": "batches"}])
+        request = {"batches": [{"id": "b1"}, {"id": "b2"}]}
+        answers = {"detect": [fx.envelope(payload={"n": 1}),
+                              fx.envelope(ok=False),
+                              fx.envelope(payload={"n": 3})]}
+        code, output, track, _ = self.go(doc, request=request, answers=answers)
+        self.assertEqual(code, 1)
+        run_dir = Path(output["run_dir"])
+        # the loop stopped at element 0, which missed `require`.
+        self.assertEqual([e["status"]
+                          for e in self.step(track, "detect")["elements"]],
+                         ["failed", "not-reached"])
+        before = self.step(track, "detect")["elements"][0]["repeats"][2]
+
+        op_runner.invoke_cog = interrupting({"detect": fx.envelope()}, 1,
+                                            "detect")
+        with self.assertRaises(Interrupted):
+            op_runner.resume(self.package, run_dir)
+        element = self.step(self.track_of(run_dir), "detect")["elements"][0]
+        self.assertEqual([r["gate"]["status"] for r in element["repeats"]],
+                         ["pass", "fail", "pass"])
+        self.assertEqual(element["repeats"][2], before)
+
+
+def write_code_cog(root, cog_id, task, logic="print('hi')\n", context=None,
+                   model=None):
+    """A Cog package with the files the package digest covers: a manifest,
+    `src/`, `context/`, and optionally the gitignored `model.json` an
+    installation leaves."""
+    root = Path(root)
+    write_cog(root, cog_id, [{"name": task, "kind": "command", "task": task,
+                              "audience": "usage", "default": True}])
+    (root / "src").mkdir(exist_ok=True)
+    (root / "src" / "task_logic.py").write_text(logic)
+    (root / "context").mkdir(exist_ok=True)
+    (root / "context" / "prompt.md").write_text(context or "Answer well.\n")
+    if model is not None:
+        (root / "model.json").write_text(json.dumps(model, indent=2))
+    return root
+
+
+class CogPackageDigestTests(unittest.TestCase):
+    """What a Cog's package digest covers, and what it must never cover
+    (machinery 0.6.2, narrowing contract §10)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.cog = write_code_cog(self.root / "cog-a", "openteams/cog-a",
+                                  "ask")
+        self.digest = op_runner.cog_package_sha256(self.cog)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_a_changed_src_file_changes_the_digest(self):
+        (self.cog / "src" / "task_logic.py").write_text("print('bye')\n")
+        self.assertNotEqual(op_runner.cog_package_sha256(self.cog),
+                            self.digest)
+
+    def test_a_changed_context_file_changes_the_digest(self):
+        (self.cog / "context" / "prompt.md").write_text("Answer badly.\n")
+        self.assertNotEqual(op_runner.cog_package_sha256(self.cog),
+                            self.digest)
+
+    def test_a_changed_manifest_changes_the_digest(self):
+        (self.cog / "cog.yaml").write_text(
+            (self.cog / "cog.yaml").read_text() + "\n")
+        self.assertNotEqual(op_runner.cog_package_sha256(self.cog),
+                            self.digest)
+
+    def test_build_products_are_not_part_of_it(self):
+        cache = self.cog / "src" / "__pycache__"
+        cache.mkdir()
+        (cache / "task_logic.cpython-311.pyc").write_bytes(b"\x00compiled")
+        self.assertEqual(op_runner.cog_package_sha256(self.cog), self.digest)
+
+    def test_the_model_and_the_response_format_are_part_of_it(self):
+        installed = {"model": "qwen3-4b", "endpoint": "http://localhost:8000",
+                     "api_key_env": "OPENAI_API_KEY",
+                     "response_format": {"type": "json_object"}}
+        (self.cog / "model.json").write_text(json.dumps(installed))
+        bound = op_runner.cog_package_sha256(self.cog)
+        self.assertNotEqual(bound, self.digest)
+        (self.cog / "model.json").write_text(
+            json.dumps(dict(installed, model="qwen3-8b")))
+        self.assertNotEqual(op_runner.cog_package_sha256(self.cog), bound)
+        (self.cog / "model.json").write_text(
+            json.dumps(dict(installed,
+                            response_format={"type": "json_schema"})))
+        self.assertNotEqual(op_runner.cog_package_sha256(self.cog), bound)
+
+    def test_the_endpoint_and_the_credential_are_not(self):
+        """Relocating a served model does not change what answered, and the
+        name of a credential's variable has no business in a Track."""
+        installed = {"model": "qwen3-4b", "endpoint": "http://localhost:8000",
+                     "api_key_env": "OPENAI_API_KEY"}
+        (self.cog / "model.json").write_text(json.dumps(installed))
+        bound = op_runner.cog_package_sha256(self.cog)
+        (self.cog / "model.json").write_text(json.dumps(
+            dict(installed, endpoint="https://hub.example/v1",
+                 api_key_env="HUB_TOKEN")))
+        self.assertEqual(op_runner.cog_package_sha256(self.cog), bound)
+        self.assertNotIn("localhost", json.dumps(bound))
+
+    def test_a_cog_that_is_not_here_digests_deterministically(self):
+        absent = op_runner.cog_package_sha256(self.root / "cog-nowhere")
+        self.assertEqual(absent,
+                         op_runner.cog_package_sha256(self.root / "cog-else"))
+        self.assertNotEqual(absent, self.digest)
+
+
+class CogIdentityTests(RunnerCase):
+    """A result belongs to a Cog as well as to a request (machinery 0.6.2,
+    narrowing contract §10; Codex review 3, residual 5).
+
+    Reuse used to compare the request alone, so a Cog could change at the
+    same source path while a passed repeat was reused beside a failed one
+    re-run against the new version — one union, two Cogs."""
+
+    def doc(self, count=2, require=2):
+        read = fx.cog_step("read", task="read")
+        draft = fx.cog_step("draft", task="draft", depends_on=["read"],
+                            repeat={"count": count, "require": require})
+        draft["input"] = {"items": {"$from": "steps.read.payload"}}
+        return fx.spec_doc([read, draft])
+
+    def packages(self, model=None):
+        write_code_cog(self.root / "cog-read", "openteams/cog-read", "read")
+        return write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
+                              "draft", model=model)
+
+    def first_run(self, model=None):
+        """`read` passes; draft's repeat 0 passes and repeat 1 fails, so the
+        step misses `require` and the run stops there."""
+        self.packages(model=model)
+        answers = {"read": fx.envelope(payload={"v": "a"}),
+                   "draft": [fx.envelope(payload={"n": 1}),
+                             fx.envelope(ok=False)]}
+        code, output, track, _ = self.go(self.doc(), answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(track["failed_step"], "draft")
+        return output, track
+
+    def resume_calls(self):
+        again = fx.FakeCog({"read": fx.envelope(payload={"v": "a"}),
+                            "draft": fx.envelope(payload={"n": 2})})
+        op_runner.invoke_cog = again
+        return again
+
+    def test_the_track_records_the_cogs_digest_per_step(self):
+        _, track = self.first_run()
+        self.assertEqual(
+            self.step(track, "read")["cog_sha256"],
+            op_runner.cog_package_sha256(self.root / "cog-read"))
+        record = self.step(track, "draft")
+        digest = op_runner.cog_package_sha256(self.root / "cog-draft")
+        self.assertEqual(record["cog_sha256"], digest)
+        self.assertEqual([r["cog_sha256"] for r in record["repeats"]],
+                         [digest, digest])
+
+    def test_a_changed_task_logic_re_runs_the_passed_repeats(self):
+        output, track = self.first_run()
+        kept = Path(self.step(track, "draft")["repeats"][0]["envelope"])
+        stamp = kept.stat().st_mtime_ns
+        (self.root / "cog-draft" / "src" / "task_logic.py").write_text(
+            "print('fixed')\n")
+
+        again = self.resume_calls()
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 0)
+        # BOTH repeats ran again: no answer from the old Cog is counted
+        # toward this step's `require`.
+        self.assertEqual([c["task"] for c in again.calls], ["draft", "draft"])
+        self.assertNotEqual(kept.stat().st_mtime_ns, stamp)
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual({r["cog_sha256"]
+                          for r in self.step(resumed, "draft")["repeats"]},
+                         {op_runner.cog_package_sha256(
+                             self.root / "cog-draft")})
+
+    def test_a_changed_model_re_runs_them_too(self):
+        installed = {"model": "qwen3-4b", "endpoint": "http://localhost:8000",
+                     "api_key_env": "OPENAI_API_KEY"}
+        output, _ = self.first_run(model=installed)
+        (self.root / "cog-draft" / "model.json").write_text(
+            json.dumps(dict(installed, model="qwen3-8b")))
+        again = self.resume_calls()
+        code, _ = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 0)
+        self.assertEqual([c["task"] for c in again.calls], ["draft", "draft"])
+
+    def test_a_changed_endpoint_keeps_the_reuse(self):
+        """An endpoint-only relocation does not invalidate an otherwise
+        identical binding: the same model answered."""
+        installed = {"model": "qwen3-4b", "endpoint": "http://localhost:8000",
+                     "api_key_env": "OPENAI_API_KEY"}
+        output, track = self.first_run(model=installed)
+        kept = Path(self.step(track, "draft")["repeats"][0]["envelope"])
+        stamp = kept.stat().st_mtime_ns
+        (self.root / "cog-draft" / "model.json").write_text(
+            json.dumps(dict(installed, endpoint="https://hub.example/v1")))
+        again = self.resume_calls()
+        code, _ = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 0)
+        # one invocation, for the repeat that failed.
+        self.assertEqual([c["task"] for c in again.calls], ["draft"])
+        self.assertEqual(kept.stat().st_mtime_ns, stamp)
+
+    def test_a_passed_step_whose_cog_changed_is_not_re_run(self):
+        """Fix-and-resume keeps working: the passed step keeps its result and
+        the resume entry says which Cog is no longer the one that produced
+        it."""
+        output, track = self.first_run()
+        was = self.step(track, "read")["cog_sha256"]
+        (self.root / "cog-read" / "context" / "prompt.md").write_text("New.\n")
+        now = op_runner.cog_package_sha256(self.root / "cog-read")
+
+        again = self.resume_calls()
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 0)
+        self.assertEqual([c["task"] for c in again.calls], ["draft"])
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual(resumed["resumes"][-1]["changed_cogs"],
+                         [{"step": "read", "cog": "openteams/cog-read",
+                           "was": was, "now": now}])
+        self.assertEqual(self.step(resumed, "read")["cog_sha256"], was)
+
+    def test_an_unchanged_run_lists_no_changed_cogs(self):
+        output, _ = self.first_run()
+        self.resume_calls()
+        _, output = op_runner.resume(self.package, output["run_dir"])
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual(resumed["resumes"][-1]["changed_cogs"], [])
 
 
 if __name__ == "__main__":

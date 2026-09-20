@@ -295,6 +295,67 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.6.2 — bounded failure, kept records, and the Cog behind a result (2026-09-20)
+
+The fix round on 0.6.1, from the Codex review-3 confirmation
+(`planning/current/narrowing-codex-review-3-confirmation.md`, ranked
+residuals 3, 4 and 5; decided in narrowing contract §10, "Runner"). A PATCH
+bump: one new field on a step record, one new element-level `status`, and
+three behaviours that only ever remove waste or preserve evidence.
+
+- **Residual 3 — a `foreach` stops at its first finally-failed element.**
+  When an element's Gate is `fail` after its repeats and its retries are
+  exhausted, `_run_foreach` ends the loop: the step fails, the remaining
+  elements are recorded `not-reached` (a new element-level `status`, with a
+  null request and a null envelope — nothing was built and nothing was
+  paid for), the completed elements and repeats stay on the Track, and a
+  resume continues from the element that failed. Retry was per element and
+  the Gate was combined only after every element had run, so a systematic
+  outage over 140 batches could buy 280 overlap or 840 dependency
+  invocations for a verdict settled at the first one; it now costs at most
+  2 or 6. This is the rule for every `foreach`, whatever `on_fail` says:
+  `on_fail` decides what the failed STEP does to the run, not how many
+  elements a failing step buys. Element reuse follows the repeats' rule, so
+  "continue from the failed element" re-runs only what failed.
+- **Residual 4 — a checkpoint keeps the records it has not revisited.**
+  `_kept_by_index` preserves BY INDEX every repeat and element record the
+  current pass has not yet replaced, with its original `request_sha256`, and
+  does the same for the repeat tail of the element in flight. A checkpoint
+  says what has happened so far, not what the step will end up with:
+  rewriting `repeats` with a prefix discarded a repeat that had already
+  passed — resume `[pass, fail, pass]`, reuse repeat 0, crash retrying
+  repeat 1, and repeat 2's durable record was gone — and the next resume
+  paid for it again. Every element now checkpoints, repeated or not.
+- **Residual 5 — a result belongs to a Cog as well as to a request.**
+  `cog_package_sha256` digests the Cog at invocation: its manifest
+  (`pixi.toml` or `cog.yaml`), every file under `context/` and `src/` by
+  sorted relative path (`__pycache__` and `.pyc` excluded — build products
+  of files already hashed), and, when an installation left a `model.json`,
+  ONLY its `model` and `response_format`. Never the endpoint, never
+  `api_key_env`, never anything credential-like: relocating a served model
+  does not change what answered, and a credential's name has no business in
+  a Track. The digest is recorded per step and on every repeat and element
+  record, and reuse now requires BOTH it and `request_sha256` to match, so
+  one union never mixes two versions of a Cog or two models. A step that
+  already PASSED is never re-run for a changed Cog — fix-and-resume is how a
+  run is finished — so the resume entry gains
+  `changed_cogs: [{step, cog, was, now}]` and the evidence says which
+  version produced what. A record written before 0.6.2 carries no digest and
+  is re-run: silence is not a match.
+
+Tests: `test_op_runner.py::ForeachStopTests` (retry exhausted before the
+loop ends, an element missing `require` stopping it, unreached elements null
+in the payload a later step reads, a resume continuing from the failed
+element, a changed element not reused), `::ForeachBoundaryTests`
+(`test_a_failed_element_stops_the_later_elements` and the `skip` case —
+both formerly asserted that every element ran), `::RepeatTailDurabilityTests`
+(a crash after a reused prefix, single-step and inside a `foreach` element),
+`::CogPackageDigestTests` (what the digest covers and what it must never
+cover), `::CogIdentityTests` (the recorded digest, changed `task_logic` and
+changed `model` re-running the passed repeats, a changed endpoint keeping
+the reuse, a passed step's changed Cog listed in `changed_cogs` and not
+re-run).
+
 ### 0.6.1 — a repeat answers a REQUEST (2026-09-20)
 
 The fix round on 0.6.0, from Codex review 1
