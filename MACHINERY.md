@@ -295,6 +295,65 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.6.5 — the repeat budget is an account (2026-09-21)
+
+From Codex review 5, after the first four-repository survey (narrowing
+contract §15, "Repeat budget"). 0.6.4 called `count` a budget that holds
+across a resume; three findings showed it did not hold against a crash, a
+retry, or an edit. A PATCH bump: no new key, no spec change, and `mode: all`
+runs as it ran.
+
+- **Blocker 1 — an attempt is RESERVED before it is paid for.** The runner
+  writes the repeat record with `phase: asking`, its slot index, its
+  `request_sha256` and its `cog_sha256` BEFORE `invoke_cog`, and completes it
+  (`phase: answered`) after. Three rejected asks checkpointed, the fourth's
+  envelope written and then a crash used to leave three spent slots and buy
+  a fifth ask against `count: 4`; now the resume reads the `asking` record as
+  SPENT and RECOVERS the fourth answer from its envelope (`recovered: true`),
+  gated as usual, without asking again. A crash during the outstanding call
+  leaves a reservation with no envelope: the slot is spent and that index is
+  never re-asked. `_from_the_ledger` replaces `_spent_repeat`, and a missing
+  or malformed envelope never refunds — it only makes the answer unreadable
+  (`spent: true`, with the reason on the record's Gate). The slot's envelope
+  file is CLEARED (`op_track.remove_durable`) when the slot is reserved, so a
+  crash can never recover an envelope an earlier attempt at that index left.
+- **Blocker 2 — in `until-required`, `count` is the ceiling on INVOCATIONS.**
+  `retry-once` is not applied inside a slot in this mode, because the next
+  slot IS the retry: an `ok: false` answer spends a slot like any other
+  failed ask. `{count: 4, require: 1, mode: until-required}` with
+  `on_fail: retry-once` and every answer `ok: false` now makes exactly four
+  invocations, not eight. In `mode: all` nothing changes: `count` slots, each
+  of which `retry-once` may run twice. BUILDING_OPS states both ceilings.
+- **Should-fix 1 — spending is a ledger, not a cache.** A changed Cog or
+  request invalidates the REUSE of earlier answers (`_reusable`, unchanged);
+  it no longer invalidates the record that they were paid for. An
+  edit-and-resume loop therefore cannot replenish the budget: a resume that
+  finds an element's budget spent with `require` unmet refuses that element
+  BY NAME, with a Gate reason that says the budget — not the Cog — ran out
+  and names the flag. `--renew-budget STEP` (repeatable, on the runner and
+  passed through by `smith op run`) is the explicit way to buy a new budget:
+  it is refused by name for a step that is not an `until-required` repeat
+  step, it is recorded in the Track's resume entry as `renewed_budgets`, and
+  only then do attempts start from zero, and only for that step's UNFINISHED
+  elements.
+- **Nit 1 — the docs say what the representation change is.** A spec that
+  declared no `mode` is the SAME EXECUTION WITH ONE ADDED FIELD, not a
+  byte-for-byte identical artifact: `{count: 3, require: 1, mode: "all"}`
+  where a pre-0.6.4 Track or plan read `{count: 3, require: 1}`
+  (BUILDING_OPS, `op_spec.repeat_spec`).
+
+Tests: `test_op_runner.py::RepeatUntilRequiredTests` (an answer written
+before the crash recovered with no fifth ask; an unreadable envelope
+refunding nothing; a deleted envelope refunding nothing; a reservation never
+recovering an earlier attempt's envelope; the next slot as the retry;
+`retry-once` never multiplying the invocation ceiling; a resume counting the
+interrupted attempt's slot; a changed Cog NOT replenishing the budget;
+`--renew-budget` buying one and being recorded; renewing a step that is not
+an until-required repeat step refused by name),
+`::RepeatModeDefaultTests::test_retry_once_may_run_a_slot_twice_in_mode_all`,
+and the durability suites updated to read the reservation records
+(`RepeatDurabilityTests`, `RepeatTailDurabilityTests`).
+
 ### 0.6.4 — `repeat.mode`: one bad answer should not end a 150-batch run (2026-09-21)
 
 From the first four-repository survey (narrowing contract §14): batch 5 of 150
@@ -312,9 +371,10 @@ no change to any existing spec's behaviour.
   `REPEAT_KEYS` gains `mode`, so `smith op check` accepts the key and reports
   a bad one as an invalid spec. The declared triple is what the Track and the
   `--dry-run` plan record, so a dry run shows the mode.
-- **`all` is today's behaviour**, unchanged line for line: `count`
-  invocations, the payload a list of `count` payloads, `null` for a failed
-  one. It is for a step whose RECALL varies run to run — the dependency
+- **`all` is today's behaviour**, the same execution with one added field
+  (`mode` on the normalized record — not a byte-for-byte identical Track;
+  see 0.6.5, nit 1): `count` invocations, the payload a list of `count`
+  payloads, `null` for a failed one. It is for a step whose RECALL varies run to run — the dependency
   detector, which returned 1, then 4, then 6 findings on one snapshot.
 - **`until-required` runs the repeats one at a time and STOPS** as soon as
   `require` of them have passed, never asking more than `count` times

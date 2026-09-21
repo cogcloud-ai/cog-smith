@@ -837,12 +837,15 @@ class RepeatDurabilityTests(RunnerCase):
             op_runner.run(self.package, path, runs_dir=self.root / "runs")
 
         # The Track already holds repeat 0 — written before repeat 1 was
-        # invoked, not after the step completed.
+        # invoked, not after the step completed — and repeat 1's RESERVATION,
+        # written before the invocation that never returned (0.6.5).
         run_dir = self.only_run_dir()
         record = self.step(self.track_of(run_dir), "draft")
         self.assertEqual(record["status"], "running")
-        self.assertEqual(len(record["repeats"]), 1)
+        self.assertEqual([r.get("phase") for r in record["repeats"]],
+                         ["answered", "asking"])
         self.assertEqual(record["repeats"][0]["gate"]["status"], "pass")
+        self.assertIsNone(record["repeats"][1]["gate"])
         self.assertTrue(Path(record["repeats"][0]["envelope"]).exists())
 
         # ---- the resume invokes repeat 1 alone.
@@ -874,8 +877,12 @@ class RepeatDurabilityTests(RunnerCase):
             op_runner.resume(self.package, run_dir)
         record = self.step(self.track_of(run_dir), "draft")
         self.assertEqual(record["status"], "running")
-        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
-                         ["fail", "pass", "pass"])
+        # repeat 0 is the RESERVATION of the ask the crash interrupted; the
+        # two that passed are still there behind it (0.6.5).
+        self.assertEqual([(r.get("gate") or {}).get("status")
+                          for r in record["repeats"]],
+                         [None, "pass", "pass"])
+        self.assertEqual(record["repeats"][0]["phase"], "asking")
 
         # ---- the second resume pays for repeat 0 only.
         again = fx.FakeCog({"draft": fx.envelope(payload={"n": 1}),
@@ -903,10 +910,13 @@ class RepeatDurabilityTests(RunnerCase):
         with self.assertRaises(self.Interrupted):
             op_runner.run(self.package, path, runs_dir=self.root / "runs")
         record = self.step(self.track_of(self.only_run_dir()), "detect")
-        # element 0 finished, element 1's first repeat finished: three
-        # envelopes were paid for and three are recorded.
-        self.assertEqual([len(e["repeats"]) for e in record["elements"]],
-                         [2, 1])
+        # element 0 finished, element 1's first repeat finished and its
+        # second was RESERVED when the crash came: three envelopes were paid
+        # for and three are recorded, the fourth attempt as an `asking`
+        # record that spends its slot (0.6.5).
+        self.assertEqual([[r.get("phase") for r in e["repeats"]]
+                          for e in record["elements"]],
+                         [["answered", "answered"], ["answered", "asking"]])
 
 
 class RepeatProblemsTests(RunnerCase):
@@ -1064,9 +1074,11 @@ class RepeatUntilRequiredTests(RunnerCase):
 
     # ------------------------------------------------------- with retries --
 
-    def test_retry_once_still_applies_per_repeat_for_ok_false(self):
-        """`retry-once` answers a transport failure, `mode` answers a bad
-        ANSWER: an `ok: false` repeat is still retried inside its own slot."""
+    def test_the_next_slot_is_the_retry(self):
+        """`count` is the ceiling on INVOCATIONS here (Codex review 5,
+        blocker 2): `retry-once` does not run inside a slot, because an
+        `ok: false` answer spends a slot like any other failed ask and the
+        NEXT slot is the retry."""
         answers = {"draft": [fx.envelope(ok=False),
                              fx.envelope(payload={"n": 1})]}
         code, _, track, fake = self.go(
@@ -1075,10 +1087,25 @@ class RepeatUntilRequiredTests(RunnerCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(fake.calls), 2)
         record = self.step(track, "draft")
-        # ONE repeat, retried: the budget bought one slot, not two.
-        self.assertEqual(len(record["repeats"]), 1)
-        self.assertEqual(len(record["repeats"][0]["attempts"]), 2)
-        self.assertEqual(record["status"], "passed")
+        # two slots, one invocation each — not one slot invoked twice.
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["fail", "pass"])
+        self.assertEqual([r["attempts"] for r in record["repeats"]], [[], []])
+        self.assertEqual(record["status"], "passed-with-problems")
+
+    def test_retry_once_never_multiplies_the_invocation_ceiling(self):
+        """Every answer `ok: false` with `{count: 4}`: FOUR invocations, not
+        eight. This is the guarantee the review found missing."""
+        code, output, track, fake = self.go(
+            self.doc(count=4, require=1, on_fail="retry-once"),
+            answers={"draft": fx.envelope(ok=False)})
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "draft")
+        self.assertEqual(len(fake.calls), 4)
+        record = self.step(track, "draft")
+        self.assertEqual(len(record["repeats"]), 4)
+        self.assertEqual([r["attempts"] for r in record["repeats"]],
+                         [[], [], [], []])
 
     def test_a_contract_failure_is_never_retried_inside_its_repeat(self):
         answers = {"draft": [contract_failed(), fx.envelope(payload={"n": 2})]}
@@ -1149,11 +1176,14 @@ class RepeatUntilRequiredTests(RunnerCase):
         code, output = op_runner.resume(self.package, run_dir)
         resumed = json.loads(Path(output["track"]).read_text())
         self.assertEqual(code, 1)
-        # two attempts were on the Track, so the resume buys the other two.
-        self.assertEqual(len(again.calls), 2)
+        # THREE attempts were on the Track: two answered and the one the
+        # crash interrupted, whose reservation spends its slot (0.6.5). The
+        # resume buys the one slot nobody has reserved.
+        self.assertEqual(len(again.calls), 1)
         record = self.step(resumed, "draft")
         self.assertEqual(record["status"], "failed")
         self.assertEqual(len(record["repeats"]), 4)
+        self.assertTrue(record["repeats"][2]["spent"])
 
     def test_a_resume_stops_as_soon_as_a_new_answer_is_clean(self):
         fx.write_package(self.package, self.doc(count=4, require=1))
@@ -1172,11 +1202,13 @@ class RepeatUntilRequiredTests(RunnerCase):
         self.assertEqual(len(again.calls), 1)
         record = self.step(resumed, "draft")
         self.assertEqual(record["status"], "passed-with-problems")
+        # two rejected answers, the interrupted attempt's spent slot, and
+        # then one clean answer: the budget is exactly four (0.6.5).
         self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
-                         ["fail", "fail", "pass"])
+                         ["fail", "fail", "fail", "pass"])
         self.assertEqual(
             op_runner._payloads_of(op_runner._repeat_envelopes(record)),
-            [None, None, {"n": 9}])
+            [None, None, None, {"n": 9}])
 
     def test_a_reused_pass_counts_toward_require(self):
         """A repeat that passed is read back, not paid for again — and it is
@@ -1202,32 +1234,218 @@ class RepeatUntilRequiredTests(RunnerCase):
         self.assertEqual(len(again.calls), 1)
         self.assertEqual(kept.stat().st_mtime_ns, stamp)
         record = self.step(resumed, "draft")
-        self.assertEqual(record["status"], "passed")
+        # repeat 0 was read back, repeat 1's slot was spent by the crash, and
+        # repeat 2 was bought: two passes, so `require: 2` is met — and the
+        # spent slot is still on the record as the expenditure it was.
+        self.assertEqual(record["status"], "passed-with-problems")
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["pass", "fail", "pass"])
         self.assertEqual(
             op_runner._payloads_of(op_runner._repeat_envelopes(record)),
-            [{"n": 1}, {"n": 2}])
+            [{"n": 1}, None, {"n": 2}])
 
-    def test_a_changed_cog_buys_the_budget_again(self):
-        """A spent attempt answered a QUESTION. Fix the Cog and the old
-        attempts say nothing about the new one, so the budget is whole."""
+    # ----------------------------------- reserved before it is paid for --
+
+    def crash_after_the_envelope(self, at, answers, task="draft"):
+        """A runner whose invocation numbered `at` writes its envelope and
+        THEN dies — the paid-but-uncheckpointed window (Codex review 5,
+        blocker 1). `_attempt` has already written the envelope file when it
+        returns, so raising here is a crash between the answer and the
+        completion checkpoint."""
+        script = fx.FakeCog(answers)
+        op_runner.invoke_cog = script
+        real = op_runner._attempt
+        self.addCleanup(setattr, op_runner, "_attempt", real)
+
+        def attempt(cog_dir, task_name, *args, **kwargs):
+            result = real(cog_dir, task_name, *args, **kwargs)
+            if task_name == task and len([c for c in script.calls
+                                          if c["task"] == task]) == at:
+                raise Interrupted("power loss after the envelope was written")
+            return result
+        op_runner._attempt = attempt
+        return script
+
+    def spend_then_crash_on_the_last(self, count=4, unreadable=False):
+        """Codex's scenario: `count - 1` rejected asks checkpointed, the last
+        one's envelope written and then a crash."""
+        fx.write_package(self.package, self.doc(count=count, require=1))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        answers = {"draft": [contract_failed()] * (count - 1)
+                   + [fx.envelope(payload={"n": 9})]}
+        self.crash_after_the_envelope(count, answers)
+        with self.assertRaises(Interrupted):
+            op_runner.run(self.package, path, runs_dir=self.root / "runs")
+        run_dir = next((self.root / "runs").iterdir())
+        if unreadable:
+            record = self.step(
+                json.loads((run_dir / "track.json").read_text()), "draft")
+            Path(record["repeats"][count - 1]["envelope"]).write_text("{oops")
+        return run_dir
+
+    def test_an_answer_written_before_the_crash_is_recovered(self):
+        """The fourth ask was PAID FOR: its envelope is on disk, so the
+        resume reads it back and gates it rather than buying a fifth."""
+        run_dir = self.spend_then_crash_on_the_last()
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 99})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 0)
+        self.assertEqual(again.calls, [])
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["fail", "fail", "fail", "pass"])
+        self.assertTrue(record["repeats"][3]["recovered"])
+        self.assertEqual(
+            op_runner._payloads_of(op_runner._repeat_envelopes(record)),
+            [None, None, None, {"n": 9}])
+
+    def test_an_unreadable_envelope_never_refunds_the_attempt(self):
+        """A missing or malformed envelope only means the answer cannot be
+        read back. The slot was still reserved and is still spent."""
+        run_dir = self.spend_then_crash_on_the_last(unreadable=True)
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 99})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 1)
+        self.assertEqual(again.calls, [])
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["repeats"][3]["spent"])
+
+    def test_deleting_an_envelope_between_runs_does_not_refund(self):
         fx.write_package(self.package, self.doc(count=2, require=1))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog({"draft": contract_failed()})
+        code, output = op_runner.run(self.package, path)
+        self.assertEqual(code, 1)
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        Path(record["repeats"][0]["envelope"]).unlink()
+
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 1})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 1)
+        self.assertEqual(again.calls, [])
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        self.assertEqual(len(record["repeats"]), 2)
+        self.assertTrue(record["repeats"][0]["spent"])
+
+    def test_a_reservation_never_recovers_an_earlier_attempts_envelope(self):
+        """The envelope at a slot is cleared when the slot is reserved: an
+        answer an EARLIER attempt left at that index is not this attempt's
+        result, and a crash must not recover it as one."""
+        cog, run_dir = self.spent_run()
+        (cog / "src" / "task_logic.py").write_text("# v2\n")
+        op_runner.invoke_cog = interrupting({"draft": contract_failed()}, 1,
+                                            "draft")
+        with self.assertRaises(Interrupted):
+            op_runner.resume(self.package, run_dir, renew_budgets=["draft"])
+
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 1})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(again.calls), 1)
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        self.assertTrue(record["repeats"][0]["spent"])
+        self.assertEqual(
+            op_runner._payloads_of(op_runner._repeat_envelopes(record)),
+            [None, {"n": 1}])
+
+    # ------------------------------------------------ spending is a ledger --
+
+    def spent_run(self, count=2):
+        """A run whose `draft` budget is spent on rejected answers, and the
+        Cog behind it."""
+        fx.write_package(self.package, self.doc(count=count, require=1))
         cog = write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
                              "draft", logic="# v1\n")
         path = fx.write_request(self.root / "request.json", {"note": "hi"})
         op_runner.invoke_cog = fx.FakeCog({"draft": contract_failed()})
         code, output = op_runner.run(self.package, path)
         self.assertEqual(code, 1)
+        return cog, output["run_dir"]
 
+    def test_a_changed_cog_does_not_replenish_the_budget(self):
+        """Spending is a LEDGER, not a cache (Codex review 5, should-fix 1).
+
+        A changed Cog invalidates the REUSE of the earlier answers; it never
+        invalidates the record that they were paid for. So an edit-and-resume
+        loop cannot buy the budget again and again: the element is refused by
+        name, and the reason says the budget — not the Cog — ran out."""
+        cog, run_dir = self.spent_run()
         (cog / "src" / "task_logic.py").write_text("# v2: ids copied exactly\n")
         again = fx.FakeCog({"draft": fx.envelope(payload={"n": 1})})
         op_runner.invoke_cog = again
-        code, output = op_runner.resume(self.package, output["run_dir"])
-        self.assertEqual(code, 0)
-        self.assertEqual(len(again.calls), 1)
+        code, output = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 1)
+        self.assertEqual(again.calls, [])
         record = self.step(json.loads(Path(output["track"]).read_text()),
                            "draft")
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(len(record["repeats"]), 2)
+        self.assertTrue(all(r["spent"] for r in record["repeats"]))
+        self.assertIn("the repeat budget of 2 attempts is spent",
+                      record["gate"]["reasons"][0])
+        self.assertIn("step 'draft'", record["gate"]["reasons"][0])
+        self.assertIn("--renew-budget draft", record["gate"]["reasons"][0])
+
+    def test_renew_budget_buys_a_new_one_and_is_recorded(self):
+        """`--renew-budget` is the explicit, recorded way to start again
+        after a fix: only then do attempts start from zero."""
+        cog, run_dir = self.spent_run()
+        (cog / "src" / "task_logic.py").write_text("# v2: ids copied exactly\n")
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 1})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir,
+                                        renew_budgets=["draft"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(again.calls), 1)
+        track = json.loads(Path(output["track"]).read_text())
+        record = self.step(track, "draft")
         self.assertEqual(record["status"], "passed")
         self.assertEqual(len(record["repeats"]), 1)
+        # the renewal is on the Track, in the resume entry that bought it.
+        self.assertEqual(track["resumes"][-1]["renewed_budgets"], ["draft"])
+
+    def test_renewing_a_step_that_has_no_budget_is_refused_by_name(self):
+        """Only an `until-required` repeat step spends a budget; naming
+        anything else is a mistake about what the run did."""
+        fx.write_package(self.package,
+                         self.doc(count=2, require=1, with_consumer=True))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog({"draft": contract_failed()})
+        code, output = op_runner.run(self.package, path)
+        self.assertEqual(code, 1)
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.resume(self.package, output["run_dir"],
+                             renew_budgets=["merge"])
+        self.assertIn("'merge'", str(caught.exception.problems))
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.resume(self.package, output["run_dir"],
+                             renew_budgets=["no-such-step"])
+        self.assertIn("'no-such-step'", str(caught.exception.problems))
+
+    def test_renewing_a_mode_all_step_is_refused_by_name(self):
+        draft = fx.cog_step("draft", task="draft",
+                            repeat={"count": 2, "require": 1})
+        fx.write_package(self.package, fx.spec_doc([draft]))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog({"draft": contract_failed()})
+        code, output = op_runner.run(self.package, path)
+        self.assertEqual(code, 1)
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.resume(self.package, output["run_dir"],
+                             renew_budgets=["draft"])
+        problems = str(caught.exception.problems)
+        self.assertIn("'draft'", problems)
+        self.assertIn("until-required", problems)
 
 
 class RepeatModeDefaultTests(RunnerCase):
@@ -1255,6 +1473,21 @@ class RepeatModeDefaultTests(RunnerCase):
         self.assertEqual(len([c for c in fake.calls if c["task"] == "draft"]), 3)
         self.assertEqual(len(record["repeats"]), 3)
         self.assertEqual(record["repeat"]["mode"], "all")
+
+    def test_retry_once_may_run_a_slot_twice_in_mode_all(self):
+        """In `all` the ceiling is `count` SLOTS, each of which `retry-once`
+        may run twice — unchanged by 0.6.5, and the other half of the two
+        ceilings BUILDING_OPS now states."""
+        step = fx.cog_step("draft", task="draft", on_fail="retry-once",
+                           repeat={"count": 4, "require": 1, "mode": "all"})
+        code, output, track, fake = self.go(
+            fx.spec_doc([step]), answers={"draft": fx.envelope(ok=False)})
+        self.assertEqual(code, 1)
+        self.assertEqual(len(fake.calls), 8)
+        record = self.step(track, "draft")
+        self.assertEqual(len(record["repeats"]), 4)
+        self.assertEqual([len(r["attempts"]) for r in record["repeats"]],
+                         [2, 2, 2, 2])
 
     def test_an_explicit_all_is_the_same_run(self):
         record, fake = self.run_mode("all")
@@ -2048,8 +2281,10 @@ class RepeatTailDurabilityTests(RunnerCase):
         with self.assertRaises(Interrupted):
             op_runner.resume(self.package, run_dir)
         record = self.step(self.track_of(run_dir), "draft")
-        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
-                         ["pass", "fail", "pass"])
+        # repeat 1 is the reservation of the interrupted re-ask (0.6.5).
+        self.assertEqual([(r.get("gate") or {}).get("status")
+                          for r in record["repeats"]],
+                         ["pass", None, "pass"])
         self.assertEqual(record["repeats"][2], before)
 
         # ---- the second resume pays for repeat 1 alone.
@@ -2087,8 +2322,9 @@ class RepeatTailDurabilityTests(RunnerCase):
         with self.assertRaises(Interrupted):
             op_runner.resume(self.package, run_dir)
         element = self.step(self.track_of(run_dir), "detect")["elements"][0]
-        self.assertEqual([r["gate"]["status"] for r in element["repeats"]],
-                         ["pass", "fail", "pass"])
+        self.assertEqual([(r.get("gate") or {}).get("status")
+                          for r in element["repeats"]],
+                         ["pass", None, "pass"])
         self.assertEqual(element["repeats"][2], before)
 
 

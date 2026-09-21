@@ -455,6 +455,10 @@ def cmd_op_run(args):
         command += ["--authority", str(Path(args.authority).resolve())]
     if args.decision:
         command += ["--decision", str(Path(args.decision).resolve())]
+    # Step ids, not paths: they are passed through untouched, and the runner
+    # refuses one that is not an until-required repeat step (0.6.5).
+    for sid in getattr(args, "renew_budget", None) or []:
+        command += ["--renew-budget", sid]
     return subprocess.run(command, cwd=str(package)).returncode
 
 
@@ -584,6 +588,10 @@ def main():
     q.add_argument("--decision",
                    help="with --resume: the human decision "
                         "(openteams/op-decision [0.1]) for the waiting step")
+    q.add_argument("--renew-budget", metavar="STEP", action="append",
+                   dest="renew_budget",
+                   help="with --resume: buy a new repeat budget for this "
+                        "until-required step after a fix (repeatable)")
     q.set_defaults(fn=cmd_op_run, cmd="op run", envelope=False)
 
     p = sub.add_parser("card", help="render a Cog's catalog card")

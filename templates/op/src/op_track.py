@@ -134,6 +134,23 @@ def touch_durable(path, base=None):
     return path
 
 
+def remove_durable(path):
+    """Delete PATH if it is there, and persist the REMOVAL: the directory
+    entry is fsynced, so a power loss cannot bring the file back.
+
+    A repeat's envelope file is cleared this way when its slot is reserved
+    (machinery 0.6.5). The reservation says an answer is being bought at that
+    slot; an envelope left there by an EARLIER attempt at the same index
+    would otherwise be read back as this attempt's recovered result."""
+    path = Path(path)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return path
+    _fsync_dir(path.parent)
+    return path
+
+
 def write_atomic(path, text, base=None):
     """Write TEXT to PATH atomically and durably: a temporary sibling is
     written, flushed and fsynced, then replaces the destination in one step,
@@ -184,7 +201,11 @@ def new_track(spec, run_id, input_request, status="running"):
         "records": (spec.track or {}).get("records") or DEFAULT_RECORDS,
         # Authority (phase 3 §5): the admission this run was started with,
         # every grant it issued (scope and provenance, never a credential),
-        # and every time a human resumed it.
+        # and every time a human resumed it. A resume entry carries `at`, the
+        # `decision` it applied, the `changed_cogs` it is keeping results
+        # from, and (0.6.5) `renewed_budgets`: the steps this resume bought a
+        # new `until-required` repeat budget for, by name. No edit renews a
+        # budget silently, so this list is the whole record of it.
         "authority": None,
         "grants": [],
         "resumes": [],
@@ -260,6 +281,16 @@ def step_record(step, status, **fields):
         # before the next repeat is invoked — a partial `running` record
         # already lists them. Under `mode: until-required` (0.6.4) `repeats`
         # holds only the repeats that RAN, so it can be shorter than `count`.
+        #
+        # Since 0.6.5 a repeat record carries a `phase`: it is written
+        # `asking` — with its slot index, its `request_sha256` and its
+        # `cog_sha256` and no gate — BEFORE the Cog is invoked, and rewritten
+        # `answered` after. An `asking` record a crash left behind is a SPENT
+        # attempt: the resume recovers its result from the envelope beside it
+        # when that file is a valid envelope, and otherwise keeps the record
+        # with a failing Gate and `spent: true` saying why. A record the
+        # resume read back out of an envelope nobody had checkpointed carries
+        # `recovered: true`.
         "repeat": None,
         "repeats": None,
         # Authority (phase 3 §5): the grant this step was issued, the

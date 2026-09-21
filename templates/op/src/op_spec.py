@@ -441,7 +441,14 @@ def repeat_spec(step):
     EVERY repeat to pass. Silence never loosens a Gate. `mode` defaults to
     `all`, today's behaviour: an absent `mode` is the step that unions every
     answer. A malformed `repeat` reads as None here — `validate` refuses it by
-    name at load, so the runner never sees one."""
+    name at load, so the runner never sees one.
+
+    The normalized record ALWAYS carries `mode`, so a step that declared none
+    is the SAME EXECUTION WITH ONE ADDED FIELD, not a byte-for-byte identical
+    artifact: the Track record and the `--dry-run` plan now read
+    `{count: 3, require: 1, mode: "all"}` where they read
+    `{count: 3, require: 1}` (Codex review 5, nit 1). A golden comparison
+    against a pre-0.6.4 Track sees that one key."""
     declared = (step or {}).get("repeat")
     if not isinstance(declared, dict):
         return None

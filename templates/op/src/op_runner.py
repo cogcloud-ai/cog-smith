@@ -4,6 +4,7 @@
     python src/op_runner.py --request examples/request.json [--dry-run]
                             [--runs-dir DIR] [--authority FILE]
     python src/op_runner.py --resume RUN_DIR [--decision FILE]
+                            [--renew-budget STEP ...]
 
 Machinery master (cog-smith `templates/op/src/`) — never edited inside an Op
 package. The runner is the Op layer: it sequences steps, builds each step's
@@ -50,6 +51,20 @@ four rejected answers in a row. Its payload is the list of the repeats that
 RAN — a repeat that never ran is absent, not null — and `count` is a budget
 of attempts that holds across a resume: a reused pass counts toward
 `require`, and a failed attempt already on the Track has spent its slot.
+
+The budget is an ACCOUNT, and 0.6.5 is what makes it one. An attempt is
+RESERVED before it is paid for: the record goes on the Track with
+`phase: asking` before `invoke_cog`, and is completed after, so a crash in
+that window leaves a record of the expenditure. A resume recovers that
+attempt's result from its envelope when the file is there and is envelope v1,
+and spends the slot when it is not — nothing refunds an attempt, and deleting
+an envelope only makes an answer unreadable. In `until-required` `count` is
+the ceiling on INVOCATIONS, so `retry-once` does not run inside a slot: the
+NEXT slot is the retry. And spending is a ledger, not a cache: a changed Cog
+or request invalidates the REUSE of earlier answers, never the record that
+they were paid for, so a resume that finds a budget spent refuses that
+element by name and `--renew-budget STEP` is the explicit, recorded
+(`resumes[].renewed_budgets`) way to buy a new one after a fix.
 
 A `foreach` STOPS at its first finally-failed element (0.6.2): when an
 element's Gate is `fail` after its repeats and its retries are exhausted,
@@ -1443,6 +1458,79 @@ def _same_question(entry, request_sha256, cog_sha256):
     return bool(cog_sha256) and entry.get("cog_sha256") == cog_sha256
 
 
+#: The two phases of a repeat record (machinery 0.6.5). An attempt is
+#: RESERVED on the Track — written with `phase: asking`, its request and Cog
+#: digests and its slot index — BEFORE the Cog is invoked, and the record is
+#: completed (`phase: answered`) after. A crash between the two leaves an
+#: `asking` record, which is what makes the budget survive it: the slot was
+#: paid for whether or not anyone learned the answer.
+ASKING = "asking"
+ANSWERED = "answered"
+
+
+def _reserved_repeat(index, envelope_path, request_sha256, cog_sha256):
+    """The record written BEFORE a repeat is invoked (machinery 0.6.5).
+
+    It names the slot, the envelope file the invocation is about to write,
+    the request it answers and the Cog it is being put to — everything a
+    resume needs to decide whether the attempt can be recovered or is simply
+    spent. It carries no gate, because nothing has been decided yet."""
+    return {"index": index,
+            "phase": ASKING,
+            "envelope": str(Path(envelope_path).resolve()),
+            "request_sha256": request_sha256,
+            "cog_sha256": cog_sha256,
+            "gate": None,
+            "binding": None,
+            "elapsed_s": None,
+            "attempts": []}
+
+
+def _in_flight(entry):
+    """Whether a repeat record is a RESERVATION nobody completed: the
+    process died between the reservation and the completion checkpoint.
+
+    A record written before 0.6.5 carries no `phase` and always carries a
+    gate, so it is never read as in flight."""
+    return (entry.get("phase") == ASKING
+            or not isinstance(entry.get("gate"), dict))
+
+
+def _envelope_on_disk(entry):
+    """The envelope a repeat record points at, or None when the file is
+    gone, unreadable, or not envelope v1.
+
+    None is never a refund (machinery 0.6.5, Codex review 5 blocker 1):
+    deleting an envelope does not un-spend the attempt that wrote it. It only
+    means the answer cannot be read back, so the slot counts as a failed one."""
+    path = (entry or {}).get("envelope")
+    if not path:
+        return None
+    try:
+        envelope = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(envelope, dict) or envelope_problems(envelope):
+        return None
+    return envelope
+
+
+def _spent_record(entry, reason):
+    """`(record, envelope, gate)` for a slot that was PAID FOR and whose
+    answer cannot be used: the attempt is kept on the Track with a failing
+    Gate that says why, and it contributes `null` downstream.
+
+    Spending is a ledger, not a cache (machinery 0.6.5, Codex review 5
+    should-fix 1). A changed Cog or request invalidates REUSE of an earlier
+    answer; it never invalidates the record that the answer was bought."""
+    gate = {"policy": op_spec.GATE_POLICY, "status": "fail",
+            "reasons": [reason], "decided_at": op_track.utc_now(),
+            "guards": []}
+    record = dict(entry, phase=ANSWERED, gate=gate, spent=True)
+    record.setdefault("attempts", [])
+    return record, None, gate
+
+
 def _reusable(entry, request_sha256, cog_sha256):
     """The record of a repeat or element an earlier attempt already PASSED
     over this same request and this same Cog, or None.
@@ -1456,7 +1544,11 @@ def _reusable(entry, request_sha256, cog_sha256):
     match (machinery 0.6.1 and 0.6.2, narrowing contract §8 and §10)."""
     if not isinstance(entry, dict) or not entry.get("envelope"):
         return None
-    if (entry.get("gate") or {}).get("status") == "fail":
+    # A RESERVATION is not a result: an attempt that never completed has no
+    # Gate, and silence is not a pass (machinery 0.6.5).
+    if not isinstance(entry.get("gate"), dict):
+        return None
+    if entry["gate"].get("status") == "fail":
         return None
     if not _same_question(entry, request_sha256, cog_sha256):
         return None
@@ -1465,37 +1557,84 @@ def _reusable(entry, request_sha256, cog_sha256):
 
 def _reusable_repeat(prior, index, request_sha256, cog_sha256):
     """`_reusable` over the repeat at INDEX of an earlier record."""
-    entries = (prior or {}).get("repeats")
-    if not isinstance(entries, list) or index >= len(entries):
-        return None
-    return _reusable(entries[index], request_sha256, cog_sha256)
+    return _reusable(_prior_repeat(prior, index) or {},
+                     request_sha256, cog_sha256)
 
 
-def _spent_repeat(prior, index, request_sha256, cog_sha256):
-    """The record of a repeat an earlier attempt already PAID FOR and that
-    FAILED, over this same request and this same Cog — or None.
-
-    Only `mode: until-required` reads this (machinery 0.6.4). There, `count`
-    is a BUDGET of attempts and not a number of answers to collect: "never
-    more than `count`" has to hold across the original run and every resume,
-    so an attempt already on the Track has spent its slot and is not bought
-    again. It keeps its index, its null payload and its problems, and the
-    resume asks only at the indices nobody has spent yet.
-
-    A record that answered a DIFFERENT question — a changed request or a
-    changed Cog — has spent nothing here: fix-and-resume buys the whole
-    budget again, which is the point of fixing something."""
+def _prior_repeat(prior, index):
+    """The record an earlier attempt left at repeat INDEX, or None when
+    nobody has ever reserved that slot."""
     entries = (prior or {}).get("repeats")
     if not isinstance(entries, list) or index >= len(entries):
         return None
     entry = entries[index]
-    if not isinstance(entry, dict) or not entry.get("envelope"):
+    return entry if isinstance(entry, dict) else None
+
+
+#: Why a spent slot's answer cannot be used, in the Gate reasons of the
+#: record that keeps the expenditure on the Track (machinery 0.6.5).
+INTERRUPTED_REASON = (
+    "this attempt was reserved and interrupted before any result was "
+    "recorded; the attempt is spent and its answer is not recoverable.")
+UNREADABLE_REASON = (
+    "this attempt was paid for and its envelope is missing or is not "
+    "envelope v1; the attempt is spent and its answer cannot be read back.")
+CHANGED_QUESTION_REASON = (
+    "this attempt was paid for under a different request or a different "
+    "Cog; the attempt is spent and its answer is not evidence for the "
+    "question being asked now.")
+
+
+def _from_the_ledger(prior, index, request_sha256, cog_sha256,
+                     until_required):
+    """What an earlier attempt at repeat INDEX contributes, or None when the
+    slot has never been reserved and must be ASKED.
+
+    Returns `(record, envelope, gate)`. Four outcomes, in order:
+
+    - **reused** — a completed PASS over this same request and this same Cog,
+      read back from its envelope rather than bought again (0.6.1, 0.6.2);
+    - **recovered** — a RESERVATION whose envelope is on disk and is a valid
+      envelope for this same question: the ask was paid for, so the result is
+      taken from the file and gated as usual, without a second ask (0.6.5,
+      Codex review 5 blocker 1);
+    - **spent** — any other record at this index, under `until-required`: an
+      interrupted attempt, a failed one, one whose envelope has gone, or one
+      that answered a question this run is no longer asking. The slot stays
+      on the ledger with a failing Gate that says which (0.6.5, should-fix 1);
+    - **None** — nothing was ever reserved here, or the mode is `all`, where
+      a failed repeat is a missing answer the union still wants and is re-run
+      (narrowing contract §2, §14 open item 6).
+
+    A failed attempt whose envelope is still readable keeps its own record,
+    so its problems stay in the step's evidence exactly as before."""
+    entry = _prior_repeat(prior, index)
+    if entry is None:
         return None
-    if (entry.get("gate") or {}).get("status") != "fail":
+    reused = _reusable(entry, request_sha256, cog_sha256)
+    if reused is not None:
+        return reused, json.loads(Path(reused["envelope"]).read_text()), \
+            reused["gate"]
+    same = _same_question(entry, request_sha256, cog_sha256)
+    if _in_flight(entry):
+        envelope = _envelope_on_disk(entry) if same else None
+        if envelope is not None:
+            gate = gate_envelope(envelope)
+            return (dict(entry, phase=ANSWERED, recovered=True, gate=gate,
+                         binding=envelope.get("binding")),
+                    envelope, gate)
+        if not until_required:
+            return None
+        return _spent_record(entry, INTERRUPTED_REASON if same
+                             else CHANGED_QUESTION_REASON)
+    if not until_required:
         return None
-    if not _same_question(entry, request_sha256, cog_sha256):
-        return None
-    return entry if Path(entry["envelope"]).exists() else None
+    if not same:
+        return _spent_record(entry, CHANGED_QUESTION_REASON)
+    envelope = _envelope_on_disk(entry)
+    if envelope is None:
+        return _spent_record(entry, UNREADABLE_REASON)
+    return entry, envelope, entry["gate"]
 
 
 def _last_digest(records):
@@ -1513,7 +1652,8 @@ def _last_digest(records):
 
 
 def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
-                 request_sha256, prior=None, progress=None):
+                 request_sha256, prior=None, progress=None, name=None,
+                 step_id=None):
     """Invoke ONE request `count` times, sequentially, and gate each repeat
     on its own (narrowing contract §2).
 
@@ -1541,55 +1681,96 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
     repeat that never ran is absent rather than null. One clean first answer
     costs one invocation; only `count` rejected answers in a row fail the
     step. A reused pass counts toward `require` and a failed attempt already
-    on the Track has spent its slot, so the budget holds across a resume."""
+    on the Track has spent its slot, so the budget holds across a resume.
+
+    **An attempt is RESERVED before it is paid for** (machinery 0.6.5, Codex
+    review 5 blocker 1): the record goes on the Track with `phase: asking`,
+    its request and Cog digests and its slot index, BEFORE `invoke_cog`, and
+    is completed after. A crash in that window leaves an `asking` record, and
+    the resume reads it as SPENT — recovering the answer from the envelope on
+    disk when there is one, and simply losing the slot when there is not.
+    Nothing refunds an attempt: a missing envelope only makes it unreadable.
+
+    **In `until-required`, `count` is the ceiling on INVOCATIONS** (0.6.5,
+    blocker 2): `retry-once` does not run inside a slot here, because the
+    next slot IS the retry — an `ok: false` answer fails its slot like any
+    other bad ask and the loop asks again, up to `count` times. In `all` the
+    ceiling stays `count` SLOTS, each of which `retry-once` may run twice.
+
+    `name` and `step_id` are what a refusal is spoken in: when the budget is
+    spent and this pass could buy nothing, the Gate names the step or the
+    element and says how to renew it."""
     count, require = repeat["count"], repeat["require"]
     until_required = repeat.get("mode") == op_spec.REPEAT_UNTIL_REQUIRED
+    # The slot is the retry (finding 2): `retry-once` would multiply the
+    # ceiling, so it is not applied inside a slot in this mode.
+    invoke_on_fail = None if until_required else on_fail
     records, gates, payloads, envelopes = [], [], [], []
     all_envelopes = []
     elapsed = 0.0
     passed = 0
+    invoked = 0
     for index in range(count):
         if until_required and passed >= require:
             # The step asked for `require` clean answers and has them: every
             # further invocation would buy evidence nobody asked for.
             break
         cog_sha256 = cog_package_sha256(cog_dir)
-        reused = _reusable_repeat(prior, index, request_sha256, cog_sha256)
-        spent = (_spent_repeat(prior, index, request_sha256, cog_sha256)
-                 if until_required and reused is None else None)
-        if reused is not None or spent is not None:
-            record = reused if reused is not None else spent
-            envelope = json.loads(Path(record["envelope"]).read_text())
-            gate = record["gate"]
+        from_ledger = _from_the_ledger(prior, index, request_sha256,
+                                       cog_sha256, until_required)
+        if from_ledger is not None:
+            record, envelope, gate = from_ledger
         else:
             envelope_path = repeat_envelope_path(base, index)
+            # ---- the reservation: the attempt is on the Track, with the
+            # question it is about to ask, before anything is paid for.
+            record = _reserved_repeat(index, envelope_path, request_sha256,
+                                      cog_sha256)
+            if progress is not None:
+                progress(records + [record])
+            # An envelope an EARLIER attempt left at this slot is not this
+            # attempt's answer: it is cleared with the reservation, so a
+            # crash can only recover what this invocation actually wrote.
+            op_track.remove_durable(envelope_path)
             envelope, gate, attempts, cog_sha256, seconds = _attempt(
-                cog_dir, task, request_path, envelope_path, on_fail, seam,
-                cog_sha256=cog_sha256)
+                cog_dir, task, request_path, envelope_path, invoke_on_fail,
+                seam, cog_sha256=cog_sha256)
             elapsed += seconds
-            record = {"index": index,
-                      "envelope": str(envelope_path.resolve()),
-                      # The request this answer answers (0.6.1) and the Cog
-                      # that answered THIS repeat (0.6.2, per invocation
-                      # since 0.6.3): a resume reuses the repeat only when
-                      # both hash the same.
-                      "request_sha256": request_sha256,
-                      "cog_sha256": cog_sha256,
-                      "gate": gate,
-                      "binding": envelope.get("binding"),
-                      "elapsed_s": seconds,
-                      "attempts": attempts}
+            invoked += 1
+            record = dict(record,
+                          phase=ANSWERED,
+                          # The request this answer answers (0.6.1) and the
+                          # Cog that answered THIS repeat (0.6.2, per
+                          # invocation since 0.6.3): a resume reuses the
+                          # repeat only when both hash the same.
+                          cog_sha256=cog_sha256,
+                          gate=gate,
+                          binding=envelope.get("binding"),
+                          elapsed_s=seconds,
+                          attempts=attempts)
         failed = gate["status"] == "fail"
         if not failed:
             passed += 1
         records.append(record)
         gates.append(gate)
-        payloads.append(None if failed else envelope.get("payload"))
+        payloads.append(None if failed else (envelope or {}).get("payload"))
         envelopes.append(None if failed else envelope)
         all_envelopes.append(envelope)
         if progress is not None:
             progress(records)
-    return (records, combine_repeat_gates(gates, require), payloads,
+    gate = combine_repeat_gates(gates, require)
+    if until_required and passed < require and invoked == 0 and records:
+        # The budget is spent and this pass could buy nothing: the element is
+        # refused BY NAME, exactly as it would be after `count` bad answers,
+        # and the reason says the budget — not the Cog — is what ran out
+        # (0.6.5, should-fix 1).
+        gate = dict(gate, reasons=[
+            f"{name or 'this step'}: the repeat budget of {count} attempts "
+            f"is spent and {require} passing repeat(s) are still required; "
+            f"nothing was asked. Resume with --renew-budget "
+            f"{step_id or '<step>'} to buy a new budget after a fix."
+        ] + list(gate.get("reasons") or []))
+    return (records, gate, payloads,
             envelopes, all_envelopes, round(elapsed, 3))
 
 
@@ -1755,7 +1936,9 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
                 _run_repeats(cog_dir, task, request_path,
                              envelope_path.with_suffix(""), on_fail, seam,
                              repeat, request_sha256,
-                             prior=prior_element, progress=element_progress)
+                             prior=prior_element, progress=element_progress,
+                             name=f"element {index} of step {step['id']!r}",
+                             step_id=step["id"])
             elapsed += seconds
             element.update({"envelope": None,
                             "status": STEP_STATUS[gate["status"]],
@@ -1827,7 +2010,8 @@ def _run_single(step, cog_dir, run_dir, context, seam=None,
                 on_fail, seam, repeat, canonical_sha256(request),
                 prior=prior,
                 progress=(None if progress is None
-                          else lambda rs: progress({"repeats": list(rs)})))
+                          else lambda rs: progress({"repeats": list(rs)})),
+                name=f"step {step['id']!r}", step_id=step["id"])
         fields = {
             "cog": next((e.get("cog") for e in all_envelopes if e), None)
             or identity,
@@ -2276,7 +2460,8 @@ def run(package_root, request_path, dry_run=False, runs_dir=None,
         lock.release()
 
 
-def resume(package_root, run_dir, decision_path=None, authority_path=None):
+def resume(package_root, run_dir, decision_path=None, authority_path=None,
+           renew_budgets=None):
     """Continue a paused, interrupted or FAILED run: apply the human's
     decision to the step that asked for it, and carry on from the next step.
 
@@ -2284,7 +2469,12 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
     crash runs again (a Cog with a journal reconciles first), and the step
     that STOPPED a failed run runs again too (contract §9e). A repeat that
     passed is never re-run either: only the failed repeats of that step are
-    invoked again (narrowing contract §2)."""
+    invoked again (narrowing contract §2).
+
+    `renew_budgets` names the steps whose `until-required` repeat budget this
+    resume BUYS AGAIN (machinery 0.6.5): spending is a ledger, so no edit
+    replenishes it silently, and this is the explicit, recorded way to start
+    a step's unfinished elements from zero attempts after a fix."""
     package_root = Path(package_root).resolve()
     run_dir = Path(run_dir).resolve()
     track_path = run_dir / "track.json"
@@ -2297,7 +2487,7 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None):
     lock = RunLock(run_dir).acquire()
     try:
         return _resume(package_root, run_dir, track_path, decision_path,
-                       authority_path)
+                       authority_path, renew_budgets)
     finally:
         lock.release()
 
@@ -2338,8 +2528,62 @@ def _changed_cogs(spec, package_root, done):
     return sorted(changed, key=lambda c: c["step"])
 
 
+def _renewable_budgets(spec, renew_budgets):
+    """The step ids this resume buys a new repeat budget for, in the order
+    they were named and without duplicates — or a refusal BY NAME.
+
+    Only an `until-required` repeat step HAS a budget: in `mode: all` every
+    `count` slot is asked on every attempt, so there is nothing to renew, and
+    a step that does not repeat at all has nothing to renew either. Naming
+    one is a mistake about what the run did, so it is refused rather than
+    ignored (machinery 0.6.5, Codex review 5 should-fix 1)."""
+    named = list(dict.fromkeys(renew_budgets or []))
+    if not named:
+        return []
+    declared = {step["id"]: step for step in spec.ordered}
+    for sid in named:
+        step = declared.get(sid)
+        if step is None:
+            raise op_spec.OpSpecError(
+                f"--renew-budget names step {sid!r}, which this Op does not "
+                f"declare; a budget is renewed for a step of this spec.")
+        repeat = op_spec.repeat_spec(step)
+        if repeat is None or repeat["mode"] != op_spec.REPEAT_UNTIL_REQUIRED:
+            raise op_spec.OpSpecError(
+                f"--renew-budget names step {sid!r}, which declares no "
+                f"repeat with mode: {op_spec.REPEAT_UNTIL_REQUIRED}; only an "
+                f"until-required repeat spends a budget of attempts, so only "
+                f"such a step has one to renew.")
+    return named
+
+
+def _renewed_budget(record):
+    """The record an earlier attempt left for a step whose budget is being
+    renewed, with the spent attempts of its UNFINISHED work cleared.
+
+    Attempts start again from zero for those elements, and only for them: an
+    element that already finished keeps its answers, because a renewal buys
+    a new budget, it does not re-buy work the run has. The expenditure it
+    clears is not erased quietly — the resume entry names the step in
+    `renewed_budgets`, which is what makes this the EXPLICIT way."""
+    renewed = dict(record)
+    finished = ("passed", "passed-with-problems")
+    if record.get("elements") is not None:
+        renewed["elements"] = [
+            dict(element, repeats=None)
+            if (isinstance(element, dict)
+                and element.get("repeats") is not None
+                and element.get("status") not in finished)
+            else element
+            for element in record["elements"]]
+    elif record.get("repeats") is not None \
+            and record.get("status") not in finished:
+        renewed["repeats"] = None
+    return renewed
+
+
 def _resume(package_root, run_dir, track_path, decision_path,
-            authority_path):
+            authority_path, renew_budgets=None):
     track = json.loads(track_path.read_text())
     spec = op_spec.load(package_root / "op.yaml")
     if spec.sha256() != track.get("spec_sha256"):
@@ -2350,6 +2594,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
         raise op_spec.OpSpecError(
             "this run is a dry run: it resolved a plan and invoked nothing, "
             "so there is nothing to resume — start a run with --request.")
+    renewed = _renewable_budgets(spec, renew_budgets)
 
     recorded = track.get("authority") or None
     if authority_path is None and recorded:
@@ -2447,7 +2692,13 @@ def _resume(package_root, run_dir, track_path, decision_path,
              # PASSED is never re-run — fix-and-resume is how a run is
              # finished — so the change is recorded instead, and the evidence
              # says which version produced what.
-             "changed_cogs": _changed_cogs(spec, package_root, done)}
+             "changed_cogs": _changed_cogs(spec, package_root, done),
+             # The steps this resume bought a NEW repeat budget for
+             # (machinery 0.6.5). Spending is a ledger: a changed Cog or
+             # request invalidates the reuse of earlier answers, never the
+             # record that they were paid for, so a new budget is bought
+             # here by name and recorded here by name.
+             "renewed_budgets": renewed}
     track.setdefault("resumes", []).append(entry)
     track["status"] = "running"
     track["ended_at"] = None
@@ -2458,6 +2709,9 @@ def _resume(package_root, run_dir, track_path, decision_path,
     # step re-runs only the repeats that FAILED, and reads the rest back from
     # the envelopes already on disk (narrowing contract §2).
     previous = {r["id"]: r for r in track.get("steps") or [] if r.get("id")}
+    for sid in renewed:
+        if previous.get(sid) is not None:
+            previous[sid] = _renewed_budget(previous[sid])
     return _execute(spec, track, context, run_dir, package_root, authority,
                     track["run_id"], done=done, decisions=decisions,
                     previous=previous)
@@ -2484,17 +2738,27 @@ def main(argv=None):
                         help="with --resume: the human decision "
                              "(openteams/op-decision [0.1]) for the step that "
                              "is waiting")
+    parser.add_argument("--renew-budget", metavar="STEP", action="append",
+                        dest="renew_budget",
+                        help="with --resume: buy a new repeat budget for "
+                             "this until-required step, after a fix. "
+                             "Repeatable. Spending is a ledger: without "
+                             "this, a step whose budget is spent is refused "
+                             "rather than quietly given more attempts.")
     args = parser.parse_args(argv)
     if bool(args.resume) == bool(args.request):
         parser.error("pass --request to start a run or --resume to continue "
                      "one, not both")
     if args.decision and not args.resume:
         parser.error("--decision applies to --resume")
+    if args.renew_budget and not args.resume:
+        parser.error("--renew-budget applies to --resume")
     try:
         if args.resume:
             code, output = resume(ROOT, args.resume,
                                   decision_path=args.decision,
-                                  authority_path=args.authority)
+                                  authority_path=args.authority,
+                                  renew_budgets=args.renew_budget)
         else:
             code, output = run(ROOT, args.request, dry_run=args.dry_run,
                                runs_dir=args.runs_dir,

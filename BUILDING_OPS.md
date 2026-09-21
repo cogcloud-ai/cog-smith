@@ -256,7 +256,8 @@ what came back.
 * Each repeat gets its OWN Gate decision under the step's policy. A repeat
   whose Gate failed contributes `null` to the list. `on_fail: retry-once`
   applies per repeat, under the same rule as anywhere else (only when the
-  Cog reported `ok: false`).
+  Cog reported `ok: false`) — except in `mode: until-required`, where the
+  next slot is the retry and `count` bounds the invocations themselves.
 * The step's Gate is `fail` when fewer than `require` repeats passed, else
   `pass-with-problems` when any repeat failed or carried problems, else
   `pass`. The step's `problems` are EVERY repeat's, the failed ones
@@ -265,8 +266,12 @@ what came back.
 * Inside a `foreach`, each ELEMENT is repeated, so `steps.<id>.payload` is a
   list of lists — one list of repeat payloads per element. A Cog that merges
   them (`cog-merge-findings`) reads exactly that shape.
-* The Track records what each repeat did: `repeats: [{index, envelope,
-  request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]` on the
+* The Track records what each repeat did: `repeats: [{index, phase,
+  envelope, request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]`
+  — `phase` is `asking` between the reservation and the answer, `answered`
+  after, and a record a resume read back out of an uncheckpointed envelope
+  carries `recovered: true` while a slot whose answer is unusable carries
+  `spent: true` — on the
   step record — each repeat's `cog_sha256` taken immediately before ITS own
   invocation —
   or on each element of a `foreach` step. `repeat: {count, require, mode}` says
@@ -290,7 +295,12 @@ what came back.
 
 `repeat.mode` says how many of the `count` repeats actually run. It is `all`
 or `until-required`, and it defaults to `all` — today's behaviour, so an
-existing spec runs exactly as it ran.
+existing spec runs exactly as it ran. What a spec that declared no `mode`
+gets is the **same execution with one added field**, not a byte-for-byte
+identical artifact: the normalized record the Track and the `--dry-run` plan
+carry now reads `{count: 3, require: 1, mode: "all"}` where it read
+`{count: 3, require: 1}`, so a golden comparison against an older Track sees
+that one key.
 
 ```yaml
   # the DEPENDENCY detector: recall varies run to run, so union the runs
@@ -327,17 +337,50 @@ existing spec runs exactly as it ran.
   after `count` attempts, else `pass-with-problems` when any repeat that ran
   failed or carried problems, else `pass`. The step's `problems` still carry
   every repeat that ran, the rejected ones included.
-* `count` is then a BUDGET of attempts, and it holds across a resume: a
-  reused pass counts toward `require`, and a failed attempt already on the
-  Track has spent its slot and is not bought again. Change the request or
-  the Cog — fix the prompt, re-bind the model — and the old attempts answer
-  a different question, so the budget is whole again.
+* **The two ceilings.** In `until-required`, `count` is the ceiling on
+  INVOCATIONS: `retry-once` does not multiply it, because the next slot IS
+  the retry — an `ok: false` answer spends a slot like any other failed ask
+  and the loop asks again. With `{count: 4}` and every answer `ok: false`
+  that is exactly four invocations. In `all`, `count` is the ceiling on
+  SLOTS, each of which `retry-once` may run twice: four slots are at most
+  eight invocations.
 * Why this exists: a contract-failed ANSWER is not a systematic failure. The
   Cog's own checks reject what is fabricated, the model is nondeterministic,
   and re-asking is legitimate. `retry-once` does not cover it — that answers
   an `ok: false` transport or model failure, and a rejected answer is `ok`.
-  The two compose: inside `until-required`, an `ok: false` repeat is still
-  retried once inside its own slot.
+
+#### The budget is an account, and spending is a ledger
+
+`count` is a BUDGET of attempts and it holds across a resume — across a
+crash, an edit, and every resume after them.
+
+* **An attempt is reserved before it is paid for.** The runner writes the
+  attempt to the Track with `phase: asking`, its slot index, its
+  `request_sha256` and its `cog_sha256`, BEFORE it invokes the Cog, and
+  completes the record (`phase: answered`) after. A crash in that window
+  leaves an `asking` record, and a resume reads it as SPENT: if the envelope
+  beside it is there and is envelope v1, the result is RECOVERED from the
+  file and gated as usual, without a second ask; if it is missing or
+  unreadable, the slot is simply spent. Deleting an envelope does not refund
+  an attempt — it only makes an answer unreadable.
+* **Spending is a ledger, not a cache.** A changed Cog or a changed request
+  invalidates the REUSE of earlier answers; it never invalidates the record
+  that they were paid for. So editing the Cog and resuming does NOT
+  replenish the budget: a resume that finds an element's budget spent with
+  `require` unmet refuses that element BY NAME, with a Gate reason saying
+  the budget is spent, exactly as it would after `count` bad answers.
+* **`--renew-budget STEP` is how you buy a new one**, after a fix:
+
+  ```
+  smith op run . --resume runs/<run-id> --renew-budget detect-overlaps
+  ```
+
+  It is repeatable, it names a step (never a path), it is refused by name
+  when the step is not an `until-required` repeat step, and it is recorded
+  in the Track's resume entry as `renewed_budgets: [step ids]`. Only then do
+  attempts start again from zero for that step's UNFINISHED elements; the
+  elements that already finished keep their answers. Nothing renews a budget
+  silently.
 
 ### The Cog behind a result
 
@@ -594,7 +637,9 @@ resume), applies the decision, exposes `steps.<id>.decision` to later
 mappings, and continues from the next step. Steps already passed are **never
 re-run**; a step a crash left `running` runs again (a Cog with a journal
 reconciles first). Resuming with no decision while one is pending exits 3
-again, and every resume is appended to the Track's `resumes`.
+again, and every resume is appended to the Track's `resumes` — with the
+`changed_cogs` it is keeping results from and the `renewed_budgets` it
+bought.
 
 **A failed run resumes too** (Op machinery 0.5.5). When a step's Gate fails
 and the step is `on_fail: stop`, the run ends `failed` and the Track names
