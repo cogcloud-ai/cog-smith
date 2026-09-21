@@ -134,21 +134,14 @@ def touch_durable(path, base=None):
     return path
 
 
-def remove_durable(path):
-    """Delete PATH if it is there, and persist the REMOVAL: the directory
-    entry is fsynced, so a power loss cannot bring the file back.
-
-    A repeat's envelope file is cleared this way when its slot is reserved
-    (machinery 0.6.5). The reservation says an answer is being bought at that
-    slot; an envelope left there by an EARLIER attempt at the same index
-    would otherwise be read back as this attempt's recovered result."""
-    path = Path(path)
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return path
-    _fsync_dir(path.parent)
-    return path
+# `remove_durable` is GONE (machinery 0.6.6). 0.6.5 cleared a slot's envelope
+# when the slot was reserved, because the path was derived from the slot index
+# alone and an earlier attempt's file sat exactly where a recovery would look.
+# The reservation and the deletion were two durable operations, not one: a
+# crash between them left the new digests on the Track with the OLD answer on
+# disk (Codex review 6, finding 1). 0.6.6 removes the reason instead of the
+# file — every attempt owns an immutable path that names it, so nothing a run
+# wrote is ever deleted or overwritten.
 
 
 def write_atomic(path, text, base=None):
@@ -261,10 +254,18 @@ def step_record(step, status, **fields):
         "problems": [],
         "gate": None,
         "elapsed_s": None,
-        # Empty unless `on_fail: retry-once` actually retried. Then one entry
-        # per invocation, in order: `{envelope, cog_sha256}` — the envelope
-        # that attempt produced and the digest of the Cog it ran under
-        # (0.6.3; before that, a bare list of envelope paths).
+        # One entry per invocation, in order:
+        # `{attempt, envelope, request_sha256, cog_sha256, phase}` — which
+        # invocation it was, the immutable file it owns, the question it put,
+        # the digest of the Cog it put it to, and whether it reached an answer
+        # (0.6.6; 0.6.3 wrote `{envelope, cog_sha256}` and only when
+        # `retry-once` actually retried; before that, a bare list of paths).
+        #
+        # Since 0.6.6 `attempt` counts every invocation ever made for that
+        # slot IN THIS RUN — a retry, a re-ask after a renewal, a re-run after
+        # a changed request or Cog — and the envelope path names it, so
+        # nothing a run wrote is ever overwritten and the record's own
+        # `envelope` is simply the attempt that decided the slot.
         "attempts": [],
         # One record per `foreach` element, in element order. Each carries an
         # element-level `status`; since 0.6.2 a `foreach` stops at its first
@@ -290,9 +291,16 @@ def step_record(step, status, **fields):
         # when that file is a valid envelope, and otherwise keeps the record
         # with a failing Gate and `spent: true` saying why. A record the
         # resume read back out of an envelope nobody had checkpointed carries
-        # `recovered: true`.
+        # `recovered: true`, and since 0.6.6 every repeat record names the
+        # `attempt` that decided it and lists every attempt of its slot.
         "repeat": None,
         "repeats": None,
+        # The repeats a `--renew-budget` retired (0.6.6): off the ledger the
+        # new budget is measured against, still on the Track, their envelopes
+        # still on disk. Attempt numbering continues from them, so a renewed
+        # slot never writes over the first budget's files. On a `foreach` step
+        # this stays null and each ELEMENT carries its own.
+        "retired_repeats": None,
         # Authority (phase 3 §5): the grant this step was issued, the
         # journal it recorded its external effects in, what it reported
         # attempting, and — for a human Gate — the decision it carries.

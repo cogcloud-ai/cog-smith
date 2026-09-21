@@ -251,8 +251,14 @@ what came back.
   non-integer.
 * The request is written ONCE (`requests/<step>.json`, or
   `requests/<step>/<index>.json` inside a `foreach`) and invoked `count`
-  times. The envelopes are `envelopes/<step>.r<j>.json`, or
-  `envelopes/<step>/<index>.r<j>.json`.
+  times. The envelopes are `envelopes/<step>.r<j>.a<n>.json`, or
+  `envelopes/<step>/<index>.r<j>.a<n>.json`: every ATTEMPT owns an immutable
+  file, `n` counting every invocation ever made for that slot in this run — a
+  retry, a re-ask after a renewal, a re-run after a changed request or Cog.
+  Numbering continues and never restarts, and nothing a run wrote is ever
+  deleted or overwritten. A step that does NOT repeat keeps
+  `envelopes/<step>.json` (or `envelopes/<step>/<index>.json`) for its first
+  attempt and writes `<name>.a<n>.json` for any later one.
 * Each repeat gets its OWN Gate decision under the step's policy. A repeat
   whose Gate failed contributes `null` to the list. `on_fail: retry-once`
   applies per repeat, under the same rule as anywhere else (only when the
@@ -266,8 +272,11 @@ what came back.
 * Inside a `foreach`, each ELEMENT is repeated, so `steps.<id>.payload` is a
   list of lists — one list of repeat payloads per element. A Cog that merges
   them (`cog-merge-findings`) reads exactly that shape.
-* The Track records what each repeat did: `repeats: [{index, phase,
+* The Track records what each repeat did: `repeats: [{index, phase, attempt,
   envelope, request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]`
+  — `envelope` is the attempt that DECIDED the slot, and `attempts` lists
+  every attempt of it, `{attempt, envelope, request_sha256, cog_sha256,
+  phase}`
   — `phase` is `asking` between the reservation and the answer, `answered`
   after, and a record a resume read back out of an uncheckpointed envelope
   carries `recovered: true` while a slot whose answer is unusable carries
@@ -343,7 +352,11 @@ that one key.
   and the loop asks again. With `{count: 4}` and every answer `ok: false`
   that is exactly four invocations. In `all`, `count` is the ceiling on
   SLOTS, each of which `retry-once` may run twice: four slots are at most
-  eight invocations.
+  eight invocations. Read `all`'s ceiling as **per execution pass**, not as a
+  lifetime bound: in `all` a failed repeat is a missing answer the union still
+  wants, so a resume runs it again and each pass has its own `count` slots.
+  Only `until-required` spends a budget that holds across resumes — which is
+  why only it has one to renew.
 * Why this exists: a contract-failed ANSWER is not a systematic failure. The
   Cog's own checks reject what is fabricated, the model is nondeterministic,
   and re-asking is legitimate. `retry-once` does not cover it — that answers
@@ -354,13 +367,25 @@ that one key.
 `count` is a BUDGET of attempts and it holds across a resume — across a
 crash, an edit, and every resume after them.
 
+* **A retry is an attempt like any other.** In both modes it is reserved —
+  its own number, its own digests, its own path — before it is invoked. A
+  crash during a retry leaves a spent attempt on the Track; a crash after its
+  envelope is written recovers THAT attempt under ITS digests, so a Cog
+  re-bound between the first attempt and the retry does not throw the retry's
+  paid-for answer away.
+* **A run recorded before machinery 0.6.6 cannot be resumed.** Its envelope
+  paths do not name their attempts, so the resume is refused by name and says
+  to start a new run; the old Track and its envelopes are left untouched.
 * **An attempt is reserved before it is paid for.** The runner writes the
-  attempt to the Track with `phase: asking`, its slot index, its
-  `request_sha256` and its `cog_sha256`, BEFORE it invokes the Cog, and
+  attempt to the Track with `phase: asking`, its slot index, its attempt
+  number, the exact envelope path it is about to write, its `request_sha256`
+  and its `cog_sha256`, BEFORE it invokes the Cog, and
   completes the record (`phase: answered`) after. A crash in that window
   leaves an `asking` record, and a resume reads it as SPENT: if the envelope
-  beside it is there and is envelope v1, the result is RECOVERED from the
-  file and gated as usual, without a second ask; if it is missing or
+  the reservation NAMED is there and is envelope v1, the result is RECOVERED
+  from that file and gated as usual, without a second ask — only ever from the
+  file that reservation named, so an older attempt's answer can never be taken
+  for a newer one; if it is missing or
   unreadable, the slot is simply spent. Deleting an envelope does not refund
   an attempt — it only makes an answer unreadable.
 * **Spending is a ledger, not a cache.** A changed Cog or a changed request
@@ -378,9 +403,12 @@ crash, an edit, and every resume after them.
   It is repeatable, it names a step (never a path), it is refused by name
   when the step is not an `until-required` repeat step, and it is recorded
   in the Track's resume entry as `renewed_budgets: [step ids]`. Only then do
-  attempts start again from zero for that step's UNFINISHED elements; the
-  elements that already finished keep their answers. Nothing renews a budget
-  silently.
+  the step's UNFINISHED work gets `count` fresh slots; the elements that
+  already finished keep their answers. Nothing renews a budget silently, and
+  nothing is erased: the retired attempts stay on the record as
+  `retired_repeats` with their envelopes on disk, and attempt numbering
+  continues from them, so the new budget's asks never write over the old
+  budget's files.
 
 ### The Cog behind a result
 

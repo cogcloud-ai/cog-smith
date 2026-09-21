@@ -66,6 +66,16 @@ they were paid for, so a resume that finds a budget spent refuses that
 element by name and `--renew-budget STEP` is the explicit, recorded
 (`resumes[].renewed_budgets`) way to buy a new one after a fix.
 
+Every attempt OWNS AN IMMUTABLE FILE (0.6.6, Codex review 6). The envelope
+path names its attempt — `envelopes/<step>[/<index>].r<slot>.a<attempt>.json`,
+`attempt` counting every invocation ever made for that slot in this run — and
+a reservation records the exact path it will write, so recovery reads only the
+file that reservation named and an older attempt's answer can never be taken
+for a newer one. Nothing a run wrote is ever deleted or overwritten; a retry
+is an attempt like any other, reserved with its own digests and its own path
+before it is invoked; and a renewal keeps the old attempts on the Track
+(`retired_repeats`) and their files on disk, opening a new budget only.
+
 A `foreach` STOPS at its first finally-failed element (0.6.2): when an
 element's Gate is `fail` after its repeats and its retries are exhausted,
 the loop ends, the step fails, and the remaining elements are recorded
@@ -1392,8 +1402,24 @@ def apply_decision(pending, decision):
 
 # ------------------------------------------------------------- the run ---
 
+def _attempt_entry(attempt, envelope_path, request_sha256, cog_sha256, phase):
+    """One line of the attempt ledger (machinery 0.6.6): WHICH invocation it
+    was, the immutable file it owns, the question it put, the Cog it put it
+    to, and whether it got as far as an answer.
+
+    `attempt` counts every invocation ever made for that slot in this run —
+    retries in mode `all`, re-asks after a renewal, re-runs after a changed
+    request or Cog — so no two attempts of a slot ever name the same file."""
+    return {"attempt": attempt,
+            "envelope": str(Path(envelope_path).resolve()),
+            "request_sha256": request_sha256,
+            "cog_sha256": cog_sha256,
+            "phase": phase}
+
+
 def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
-             cog_sha256=None):
+             cog_sha256=None, first_attempt=1, path_for=None, reserve=None,
+             request_sha256=None):
     """Invoke once, gate, and retry exactly once when the failure was a
     transport/model failure (ok:false) and the step asked for retry-once.
     An error-severity problem in an ok envelope is never retried.
@@ -1402,43 +1428,86 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
     path, the run id, and the journal. It is EMPTY for a step with no
     authority, so an ordinary Cog is invoked exactly as before.
 
-    Returns `(envelope, gate, attempts, cog_sha256, elapsed_s)`. The Cog is
-    digested immediately before EACH invocation (machinery 0.6.3): a retry is
-    a second invocation and can land on a different Cog — a package edited or
-    a model re-bound while the first attempt was failing — so each entry of
-    `attempts` carries the digest ITS invocation ran under, and the returned
-    `cog_sha256` is the one the winning envelope came from. `cog_sha256` may
-    be passed in when the caller has just taken it for its reuse check; it is
-    then the digest of the first attempt, taken immediately before it."""
+    Returns `(envelope, gate, attempts, cog_sha256, elapsed_s, envelope_path)`,
+    where the last is the file the DECIDING attempt wrote. The Cog is digested
+    immediately before EACH invocation (machinery 0.6.3): a retry is a second
+    invocation and can land on a different Cog — a package edited or a model
+    re-bound while the first attempt was failing — so each entry of `attempts`
+    carries the digest ITS invocation ran under, and the returned `cog_sha256`
+    is the one the winning envelope came from. `cog_sha256` may be passed in
+    when the caller has just taken it for its reuse check; it is then the
+    digest of the first attempt, taken immediately before it.
+
+    **Every attempt owns an immutable file** (machinery 0.6.6, Codex review 6
+    finding 1). `first_attempt` is the number this invocation takes — the one
+    after every attempt already on the Track for this slot — and `path_for`
+    maps an attempt number to its own path, so nothing is ever overwritten and
+    an older attempt's answer can never be read back as a newer one's.
+
+    **A retry is an attempt like any other** (finding 2): `reserve`, when
+    given, is called with `(attempt, path, cog_sha256, attempts_so_far)`
+    BEFORE each invocation — the retry included — so the Track carries the
+    retry's own digests and its own path before it is paid for."""
     seam = seam or {}
     envelope_path = Path(envelope_path)
+    path_for = path_for or (
+        lambda n: attempt_envelope_path(envelope_path, n))
     started = time.monotonic()
+    number = first_attempt
     digest = cog_sha256 or cog_package_sha256(cog_dir)
-    envelope = invoke_cog(cog_dir, task, request_path, **seam)
-    op_track.write_json(envelope_path, envelope)
-    gate = gate_envelope(envelope)
+    path = Path(path_for(number))
     attempts = []
+    if reserve is not None:
+        reserve(number, path, digest, list(attempts))
+    envelope = invoke_cog(cog_dir, task, request_path, **seam)
+    op_track.write_json(path, envelope)
+    gate = gate_envelope(envelope)
+    attempts.append(_attempt_entry(number, path, request_sha256, digest,
+                                   ANSWERED))
     if (gate["status"] == "fail" and on_fail == "retry-once"
             and not envelope.get("ok")):
-        first = envelope_path.with_name(envelope_path.stem + ".attempt-1.json")
-        op_track.write_json(first, envelope)
-        attempts.append({"envelope": str(first.resolve()),
-                         "cog_sha256": digest})
+        number += 1
         digest = cog_package_sha256(cog_dir)
+        path = Path(path_for(number))
+        if reserve is not None:
+            reserve(number, path, digest, list(attempts))
         envelope = invoke_cog(cog_dir, task, request_path, **seam)
-        op_track.write_json(envelope_path, envelope)
+        op_track.write_json(path, envelope)
         gate = gate_envelope(envelope)
-        attempts.append({"envelope": str(envelope_path.resolve()),
-                         "cog_sha256": digest})
-    return envelope, gate, attempts, digest, round(time.monotonic() - started, 3)
+        attempts.append(_attempt_entry(number, path, request_sha256, digest,
+                                       ANSWERED))
+    return (envelope, gate, attempts, digest,
+            round(time.monotonic() - started, 3), path)
 
 
-def repeat_envelope_path(base, index):
-    """Where repeat INDEX of a step (or of a `foreach` element) writes its
-    envelope: `<step>.r<j>.json`, `<step>/<index>.r<j>.json`. The REQUEST
-    beside it is written once and invoked k times — the repeats are of the
-    same request, which is what makes agreeing answers evidence."""
-    return Path(str(base) + f".r{index}.json")
+def attempt_envelope_path(base, attempt):
+    """Where attempt N of a step (or `foreach` element) that does NOT repeat
+    writes its envelope (machinery 0.6.6).
+
+    Attempt 1 keeps today's documented path — `envelopes/<step>.json`,
+    `envelopes/<step>/<index>.json` — because that is the Track shape every
+    reader and every Op package already knows, and a first attempt has no
+    earlier file to collide with. Every LATER attempt of the same slot (the
+    `retry-once` second invocation, or a re-run after a resume) takes
+    `<name>.a<n>.json`, so it owns its own file and overwrites nothing."""
+    base = Path(base)
+    if attempt <= 1:
+        return base
+    return base.with_name(f"{base.stem}.a{attempt}{base.suffix}")
+
+
+def repeat_envelope_path(base, index, attempt=1):
+    """Where attempt N of repeat INDEX of a step (or of a `foreach` element)
+    writes its envelope: `<step>.r<j>.a<n>.json`,
+    `<step>/<index>.r<j>.a<n>.json`. The REQUEST beside it is written once and
+    invoked k times — the repeats are of the same request, which is what makes
+    agreeing answers evidence.
+
+    The `.a<n>` component is machinery 0.6.6: a slot may be invoked more than
+    once over a run (a retry in mode `all`, a re-ask after a renewal, a re-run
+    after a changed request or Cog), and each of those invocations owns its
+    own immutable file."""
+    return Path(str(base) + f".r{index}.a{attempt}.json")
 
 
 def _same_question(entry, request_sha256, cog_sha256):
@@ -1468,22 +1537,91 @@ ASKING = "asking"
 ANSWERED = "answered"
 
 
-def _reserved_repeat(index, envelope_path, request_sha256, cog_sha256):
+def _reserved_repeat(index, envelope_path, request_sha256, cog_sha256,
+                     attempt=1, before=()):
     """The record written BEFORE a repeat is invoked (machinery 0.6.5).
 
-    It names the slot, the envelope file the invocation is about to write,
-    the request it answers and the Cog it is being put to — everything a
-    resume needs to decide whether the attempt can be recovered or is simply
-    spent. It carries no gate, because nothing has been decided yet."""
+    It names the slot, the EXACT envelope file this invocation is about to
+    write, the request it answers and the Cog it is being put to — everything
+    a resume needs to decide whether the attempt can be recovered or is simply
+    spent. It carries no gate, because nothing has been decided yet.
+
+    Since 0.6.6 it also names WHICH attempt of that slot it is, and carries
+    `before` — every attempt already made for this slot in this run — ahead of
+    its own `asking` line. Recovery therefore reads only the file THIS
+    reservation named: an older attempt's answer sits at its own path and can
+    never be taken for this one's."""
     return {"index": index,
             "phase": ASKING,
+            "attempt": attempt,
             "envelope": str(Path(envelope_path).resolve()),
             "request_sha256": request_sha256,
             "cog_sha256": cog_sha256,
             "gate": None,
             "binding": None,
             "elapsed_s": None,
-            "attempts": []}
+            "attempts": list(before) + [
+                _attempt_entry(attempt, envelope_path, request_sha256,
+                               cog_sha256, ASKING)]}
+
+
+def _highest_attempt(attempts):
+    """The largest attempt number in an attempt ledger, or 0 for an empty
+    one. A ledger entry written before 0.6.6 carries no number, so it counts
+    as none — a pre-0.6.6 Track is refused at resume rather than renumbered
+    (see `_pre_0_6_6_track`)."""
+    highest = 0
+    for entry in attempts or []:
+        number = (entry or {}).get("attempt")
+        if isinstance(number, int) and number > highest:
+            highest = number
+    return highest
+
+
+def _records_at(prior, index):
+    """Every record any earlier pass left for repeat slot INDEX: the live one
+    and any the renewals retired (machinery 0.6.6).
+
+    Renewal keeps the old attempts on the Track and their files on disk — it
+    opens a new budget only — so attempt numbering has to see them, or a
+    renewed slot would start again at `a1` and collide with the file the first
+    budget's first attempt still owns."""
+    records = []
+    entry = _prior_repeat(prior, index)
+    if entry is not None:
+        records.append(entry)
+    for retired in (prior or {}).get("retired_repeats") or []:
+        if isinstance(retired, dict) and retired.get("index") == index:
+            records.append(retired)
+    return records
+
+
+def _attempts_at(prior, index):
+    """Every attempt ever made for repeat slot INDEX in this run, oldest
+    first — what a new reservation carries forward as its history."""
+    ledger = []
+    for record in sorted(_records_at(prior, index),
+                         key=lambda r: _highest_attempt(r.get("attempts"))):
+        for entry in record.get("attempts") or []:
+            if isinstance(entry, dict) and entry.get("attempt") is not None:
+                ledger.append(entry)
+    return ledger
+
+
+def _next_attempt(prior, index):
+    """The number the next invocation of repeat slot INDEX takes: one past
+    the highest ever recorded there, across retired budgets as well. Numbering
+    continues and never restarts, so paths never collide."""
+    return max([_highest_attempt(r.get("attempts"))
+                for r in _records_at(prior, index)] or [0]) + 1
+
+
+def _answered(attempts):
+    """An attempt ledger with its reservation lines closed: what a RECOVERED
+    record carries, because the file its last reservation named is on disk."""
+    return [dict(entry, phase=ANSWERED) if entry.get("phase") == ASKING
+            else entry
+            for entry in attempts or []]
 
 
 def _in_flight(entry):
@@ -1621,7 +1759,8 @@ def _from_the_ledger(prior, index, request_sha256, cog_sha256,
         if envelope is not None:
             gate = gate_envelope(envelope)
             return (dict(entry, phase=ANSWERED, recovered=True, gate=gate,
-                         binding=envelope.get("binding")),
+                         binding=envelope.get("binding"),
+                         attempts=_answered(entry.get("attempts"))),
                     envelope, gate)
         if not until_required:
             return None
@@ -1691,6 +1830,14 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
     disk when there is one, and simply losing the slot when there is not.
     Nothing refunds an attempt: a missing envelope only makes it unreadable.
 
+    **Every attempt owns an immutable file** (machinery 0.6.6, Codex review 6
+    findings 1 and 2): the reservation names `<base>.r<j>.a<n>.json`, `n`
+    counting every invocation ever made for that slot in this run, and a retry
+    reserves its own number, its own digests and its own path before it is
+    invoked. Nothing is ever deleted or overwritten, so the recovery reads
+    ONLY the file its reservation named and an older attempt's answer can
+    never be taken for a newer one.
+
     **In `until-required`, `count` is the ceiling on INVOCATIONS** (0.6.5,
     blocker 2): `retry-once` does not run inside a slot here, because the
     next slot IS the retry — an `ok: false` answer fails its slot like any
@@ -1721,24 +1868,39 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
         if from_ledger is not None:
             record, envelope, gate = from_ledger
         else:
-            envelope_path = repeat_envelope_path(base, index)
+            # Every attempt of this slot that any earlier pass made, and the
+            # number the next one takes (0.6.6): numbering continues across
+            # resumes and renewals, so no two attempts share a file.
+            carried = _attempts_at(prior, index)
+            first_attempt = _next_attempt(prior, index)
+            held = {}
+
             # ---- the reservation: the attempt is on the Track, with the
-            # question it is about to ask, before anything is paid for.
-            record = _reserved_repeat(index, envelope_path, request_sha256,
-                                      cog_sha256)
-            if progress is not None:
-                progress(records + [record])
-            # An envelope an EARLIER attempt left at this slot is not this
-            # attempt's answer: it is cleared with the reservation, so a
-            # crash can only recover what this invocation actually wrote.
-            op_track.remove_durable(envelope_path)
-            envelope, gate, attempts, cog_sha256, seconds = _attempt(
-                cog_dir, task, request_path, envelope_path, invoke_on_fail,
-                seam, cog_sha256=cog_sha256)
+            # question it is about to ask and the EXACT file it will write,
+            # before anything is paid for. A retry reserves the same way.
+            def reserve(number, path, digest, done, _c=carried,
+                        _i=index, _records=records):
+                held["record"] = _reserved_repeat(
+                    _i, path, request_sha256, digest, number,
+                    _c + list(done))
+                if progress is not None:
+                    progress(_records + [held["record"]])
+
+            envelope, gate, attempts, cog_sha256, seconds, envelope_path = \
+                _attempt(cog_dir, task, request_path, base, invoke_on_fail,
+                         seam, cog_sha256=cog_sha256,
+                         first_attempt=first_attempt,
+                         path_for=(lambda n, _i=index:
+                                   repeat_envelope_path(base, _i, n)),
+                         reserve=reserve, request_sha256=request_sha256)
             elapsed += seconds
             invoked += 1
-            record = dict(record,
+            record = dict(held["record"],
                           phase=ANSWERED,
+                          # The attempt that DECIDED the slot, and the file
+                          # it owns (0.6.6).
+                          attempt=attempts[-1]["attempt"],
+                          envelope=str(Path(envelope_path).resolve()),
                           # The request this answer answers (0.6.1) and the
                           # Cog that answered THIS repeat (0.6.2, per
                           # invocation since 0.6.3): a resume reuses the
@@ -1747,7 +1909,7 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
                           gate=gate,
                           binding=envelope.get("binding"),
                           elapsed_s=seconds,
-                          attempts=attempts)
+                          attempts=carried + attempts)
         failed = gate["status"] == "fail"
         if not failed:
             passed += 1
@@ -1891,7 +2053,11 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
         cog_sha256 = cog_package_sha256(cog_dir)
         element = {"index": index, "request": str(request_path.resolve()),
                    "request_sha256": request_sha256,
-                   "cog_sha256": cog_sha256}
+                   "cog_sha256": cog_sha256,
+                   # The attempts a renewal retired stay on the element: they
+                   # are what attempt numbering continues from (0.6.6).
+                   "retired_repeats": (prior_element
+                                       or {}).get("retired_repeats")}
         if repeat is None:
             # An element that already passed over this same request and this
             # same Cog is read back, not paid for again — the same reuse rule
@@ -1900,10 +2066,17 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
             if reused is not None:
                 envelope = json.loads(Path(reused["envelope"]).read_text())
                 gate, attempts = reused["gate"], reused.get("attempts") or []
+                envelope_path = Path(reused["envelope"])
             else:
-                envelope, gate, attempts, cog_sha256, seconds = _attempt(
-                    cog_dir, task, request_path, envelope_path, on_fail, seam,
-                    cog_sha256=cog_sha256)
+                # Attempt numbering continues from whatever an earlier pass
+                # left here, so a re-run writes its own file (0.6.6).
+                envelope, gate, attempts, cog_sha256, seconds, envelope_path \
+                    = _attempt(
+                        cog_dir, task, request_path, envelope_path, on_fail,
+                        seam, cog_sha256=cog_sha256,
+                        first_attempt=_highest_attempt(
+                            (prior_element or {}).get("attempts")) + 1,
+                        request_sha256=request_sha256)
                 elapsed += seconds
                 # A retry may have run under a different Cog: the element
                 # keeps the digest its winning envelope came from (0.6.3).
@@ -2025,11 +2198,16 @@ def _run_single(step, cog_dir, run_dir, context, seam=None,
             "attempts": [],
             "repeat": repeat,
             "repeats": records,
+            # Kept, not erased: a renewal retires the old attempts here and
+            # numbering continues from them (0.6.6).
+            "retired_repeats": (prior or {}).get("retired_repeats"),
             **_repeat_fields(records, all_envelopes),
         }
         return fields, payloads, envelopes
-    envelope, gate, attempts, cog_sha256, seconds = _attempt(
-        cog_dir, task, request_path, envelope_path, on_fail, seam)
+    envelope, gate, attempts, cog_sha256, seconds, envelope_path = _attempt(
+        cog_dir, task, request_path, envelope_path, on_fail, seam,
+        first_attempt=_highest_attempt((prior or {}).get("attempts")) + 1,
+        request_sha256=canonical_sha256(request))
     fields = {
         "cog": envelope.get("cog") or identity,
         "cog_sha256": cog_sha256,
@@ -2557,20 +2735,37 @@ def _renewable_budgets(spec, renew_budgets):
     return named
 
 
+def _retired(record):
+    """A record whose spent repeats are RETIRED: off the ledger the new
+    budget is measured against, but still on the Track (machinery 0.6.6).
+
+    §15 cleared them outright, which threw away both the expenditure's detail
+    and the attempt numbering. Codex review 6 finding 1: a renewal keeps the
+    old attempts on the Track and their files on disk — it opens a new budget
+    only — so numbering continues from them and a renewed slot's first ask
+    cannot land on the file the first budget's first ask still owns."""
+    return dict(record,
+                repeats=None,
+                retired_repeats=list(record.get("retired_repeats") or [])
+                + [entry for entry in record["repeats"]
+                   if isinstance(entry, dict)])
+
+
 def _renewed_budget(record):
     """The record an earlier attempt left for a step whose budget is being
-    renewed, with the spent attempts of its UNFINISHED work cleared.
+    renewed, with the spent attempts of its UNFINISHED work retired.
 
-    Attempts start again from zero for those elements, and only for them: an
-    element that already finished keeps its answers, because a renewal buys
-    a new budget, it does not re-buy work the run has. The expenditure it
-    clears is not erased quietly — the resume entry names the step in
-    `renewed_budgets`, which is what makes this the EXPLICIT way."""
+    The new budget is `count` fresh slots for those elements, and only for
+    them: an element that already finished keeps its answers, because a
+    renewal buys a new budget, it does not re-buy work the run has. Nothing is
+    erased — the retired attempts stay on the record, their envelopes stay on
+    disk, and the resume entry names the step in `renewed_budgets`, which is
+    what makes this the EXPLICIT way."""
     renewed = dict(record)
     finished = ("passed", "passed-with-problems")
     if record.get("elements") is not None:
         renewed["elements"] = [
-            dict(element, repeats=None)
+            _retired(element)
             if (isinstance(element, dict)
                 and element.get("repeats") is not None
                 and element.get("status") not in finished)
@@ -2578,8 +2773,44 @@ def _renewed_budget(record):
             for element in record["elements"]]
     elif record.get("repeats") is not None \
             and record.get("status") not in finished:
-        renewed["repeats"] = None
+        renewed = _retired(renewed)
     return renewed
+
+
+def _refuse_pre_0_6_6(track):
+    """Refuse BY NAME a Track written by Op machinery before 0.6.6.
+
+    Before 0.6.6 an envelope path was derived from the slot index alone, and
+    an attempt left no number on the Track. 0.6.6 cannot safely continue such
+    a run: its own attempt 1 would write over the file the old attempt 1
+    owns, and a recovery could read an older attempt's answer as this one's —
+    the very failure Codex review 6 found. Refusing is the small, honest
+    option; translating old paths would be guessing which file belonged to
+    which attempt. The run's results are all still on disk; what is refused
+    is continuing it in place.
+
+    An attempt ledger is the tell: from 0.6.6 every entry carries `attempt`,
+    and every repeat record does too."""
+    for record in track.get("steps") or []:
+        holders = [record] + [e for e in (record.get("elements") or [])
+                              if isinstance(e, dict)]
+        for holder in holders:
+            for entry in holder.get("attempts") or []:
+                if isinstance(entry, dict) and "attempt" not in entry:
+                    break
+            else:
+                for entry in holder.get("repeats") or []:
+                    if isinstance(entry, dict) and "attempt" not in entry:
+                        break
+                else:
+                    continue
+            raise op_spec.OpSpecError(
+                f"step {record.get('id')!r} of this run was recorded by Op "
+                f"machinery before 0.6.6, whose envelope files did not name "
+                f"the attempt that wrote them. This machinery cannot resume "
+                f"it without risking reading an earlier attempt's answer as "
+                f"this one's, so it refuses rather than guess: start a new "
+                f"run. The earlier run's Track and envelopes are untouched.")
 
 
 def _resume(package_root, run_dir, track_path, decision_path,
@@ -2594,6 +2825,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
         raise op_spec.OpSpecError(
             "this run is a dry run: it resolved a plan and invoked nothing, "
             "so there is nothing to resume — start a run with --request.")
+    _refuse_pre_0_6_6(track)
     renewed = _renewable_budgets(spec, renew_budgets)
 
     recorded = track.get("authority") or None

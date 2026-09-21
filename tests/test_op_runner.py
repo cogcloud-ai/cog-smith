@@ -283,7 +283,10 @@ class OnFailTests(RunnerCase):
         self.assertEqual(code, 1)
         self.assertEqual(output["failed_step"], "first")
         self.assertEqual(len(fake.calls), 1)
-        self.assertEqual(self.step(track, "first")["attempts"], [])
+        # One invocation is one attempt on the ledger (machinery 0.6.6): the
+        # list is of every invocation, not only of a retry's two.
+        self.assertEqual([a["attempt"]
+                          for a in self.step(track, "first")["attempts"]], [1])
 
     def test_retry_once_that_fails_again_stops_the_run(self):
         answers = {"ask": [fx.envelope(ok=False), fx.envelope(ok=False)],
@@ -419,8 +422,11 @@ class RepeatTests(RunnerCase):
         answers = {"draft": lambda n, req: fx.envelope(payload={"n": n})}
         _, _, track, _ = self.go(self.doc(), answers=answers)
         record = self.step(track, "draft")
+        # Every attempt owns an immutable file, and the path names it
+        # (machinery 0.6.6).
         self.assertEqual([Path(r["envelope"]).name for r in record["repeats"]],
-                         ["draft.r0.json", "draft.r1.json", "draft.r2.json"])
+                         ["draft.r0.a1.json", "draft.r1.a1.json",
+                          "draft.r2.a1.json"])
         for entry in record["repeats"]:
             self.assertTrue(Path(entry["envelope"]).exists())
         # The step has no single envelope: the repeats name one file each.
@@ -496,8 +502,15 @@ class RepeatTests(RunnerCase):
         self.assertEqual(code, 0)
         record = self.step(track, "draft")
         self.assertEqual(record["status"], "passed")
-        self.assertEqual(record["repeats"][0]["attempts"], [])
-        self.assertEqual(len(record["repeats"][1]["attempts"]), 2)
+        self.assertEqual([a["attempt"] for a in record["repeats"][0]["attempts"]],
+                         [1])
+        # The retry is attempt 2 OF ITS SLOT, with its own file (0.6.6).
+        self.assertEqual([a["attempt"] for a in record["repeats"][1]["attempts"]],
+                         [1, 2])
+        self.assertEqual(
+            [Path(a["envelope"]).name
+             for a in record["repeats"][1]["attempts"]],
+            ["draft.r1.a1.json", "draft.r1.a2.json"])
         self.assertEqual(len(fake.calls), 3)
 
     def test_the_track_records_every_repeat(self):
@@ -568,7 +581,7 @@ class RepeatForeachTests(RunnerCase):
         for index, element in enumerate(record["elements"]):
             self.assertEqual([Path(r["envelope"]).name
                               for r in element["repeats"]],
-                             [f"{index}.r0.json", f"{index}.r1.json"])
+                             [f"{index}.r0.a1.json", f"{index}.r1.a1.json"])
         # a list of lists, in element order then repeat order
         self.assertEqual(fake.calls[-1]["request"],
                          {"results": [[{"batch": "b1", "n": 1},
@@ -724,8 +737,11 @@ class RepeatRequestIdentityTests(RunnerCase):
         self.assertEqual([c["task"] for c in again.calls], ["draft", "draft"])
         self.assertEqual([c["request"] for c in again.calls],
                          [{"items": {"v": "b"}}] * 2)
-        self.assertNotEqual(kept.stat().st_mtime_ns, stamp)
+        # The re-ask writes its own file; the answer to the old question is
+        # still on disk, untouched (machinery 0.6.6).
+        self.assertEqual(kept.stat().st_mtime_ns, stamp)
         record = self.step(resumed, "draft")
+        self.assertNotEqual(Path(record["repeats"][0]["envelope"]), kept)
         self.assertEqual(record["status"], "passed")
         self.assertEqual({r["request_sha256"] for r in record["repeats"]},
                          {op_runner.canonical_sha256({"items": {"v": "b"}})})
@@ -1090,7 +1106,10 @@ class RepeatUntilRequiredTests(RunnerCase):
         # two slots, one invocation each — not one slot invoked twice.
         self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
                          ["fail", "pass"])
-        self.assertEqual([r["attempts"] for r in record["repeats"]], [[], []])
+        # one invocation each — not one slot invoked twice (0.6.6 puts that
+        # single invocation on the ledger as attempt 1 of its slot).
+        self.assertEqual([[a["attempt"] for a in r["attempts"]]
+                          for r in record["repeats"]], [[1], [1]])
         self.assertEqual(record["status"], "passed-with-problems")
 
     def test_retry_once_never_multiplies_the_invocation_ceiling(self):
@@ -1104,8 +1123,8 @@ class RepeatUntilRequiredTests(RunnerCase):
         self.assertEqual(len(fake.calls), 4)
         record = self.step(track, "draft")
         self.assertEqual(len(record["repeats"]), 4)
-        self.assertEqual([r["attempts"] for r in record["repeats"]],
-                         [[], [], [], []])
+        self.assertEqual([[a["attempt"] for a in r["attempts"]]
+                          for r in record["repeats"]], [[1]] * 4)
 
     def test_a_contract_failure_is_never_retried_inside_its_repeat(self):
         answers = {"draft": [contract_failed(), fx.envelope(payload={"n": 2})]}
@@ -1115,7 +1134,8 @@ class RepeatUntilRequiredTests(RunnerCase):
         self.assertEqual(code, 0)
         record = self.step(track, "draft")
         self.assertEqual(len(fake.calls), 2)
-        self.assertEqual([r["attempts"] for r in record["repeats"]], [[], []])
+        self.assertEqual([[a["attempt"] for a in r["attempts"]]
+                          for r in record["repeats"]], [[1], [1]])
         self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
                          ["fail", "pass"])
 
@@ -2707,7 +2727,12 @@ class CogIdentityTests(RunnerCase):
         # BOTH repeats ran again: no answer from the old Cog is counted
         # toward this step's `require`.
         self.assertEqual([c["task"] for c in again.calls], ["draft", "draft"])
-        self.assertNotEqual(kept.stat().st_mtime_ns, stamp)
+        # The re-run writes its OWN file: the old attempt's envelope is still
+        # exactly as it was (machinery 0.6.6).
+        self.assertEqual(kept.stat().st_mtime_ns, stamp)
+        self.assertNotEqual(
+            Path(self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")["repeats"][0]["envelope"]), kept)
         resumed = json.loads(Path(output["track"]).read_text())
         self.assertEqual({r["cog_sha256"]
                           for r in self.step(resumed, "draft")["repeats"]},
@@ -2767,6 +2792,295 @@ class CogIdentityTests(RunnerCase):
         _, output = op_runner.resume(self.package, output["run_dir"])
         resumed = json.loads(Path(output["track"]).read_text())
         self.assertEqual(resumed["resumes"][-1]["changed_cogs"], [])
+
+
+class AttemptOwnershipTests(RunnerCase):
+    """Every attempt owns an immutable file (machinery 0.6.6, Codex review 6
+    findings 1 and 2).
+
+    An envelope path names its attempt, a reservation records the exact path
+    it will write, and NOTHING a run wrote is ever deleted or overwritten. So
+    a recovery reads only the file its own reservation named: an older
+    attempt's answer can never be taken for a newer one, and a retry — an
+    attempt like any other — is reserved with its own digests before it is
+    invoked."""
+
+    def cog(self, logic="# v1\n"):
+        return write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
+                              "draft", logic=logic)
+
+    def doc(self, count=2, require=1, mode="until-required", on_fail="stop"):
+        step = fx.cog_step("draft", task="draft", on_fail=on_fail,
+                           repeat={"count": count, "require": require,
+                                   "mode": mode})
+        return fx.spec_doc([step])
+
+    def envelopes(self, run_dir):
+        """Every envelope file under a run, by name, with its bytes."""
+        root = Path(run_dir) / "envelopes"
+        return {str(p.relative_to(root)): p.read_bytes()
+                for p in sorted(root.rglob("*.json"))}
+
+    def only_grew(self, before, after):
+        """No file was removed and no earlier file's bytes changed."""
+        self.assertTrue(set(before) <= set(after),
+                        f"files disappeared: {set(before) - set(after)}")
+        for name, body in before.items():
+            self.assertEqual(after[name], body,
+                             f"{name} was overwritten")
+
+    def crash_after_the_envelope(self, at, answers, task="draft"):
+        """A runner whose invocation numbered `at` writes its envelope and
+        THEN dies — the paid-but-uncheckpointed window. `_attempt` has written
+        the file by the time it returns, so raising here is a crash between
+        the answer and the completion checkpoint."""
+        script = fx.FakeCog(answers)
+        op_runner.invoke_cog = script
+        real = op_runner._attempt
+        self.addCleanup(setattr, op_runner, "_attempt", real)
+
+        def attempt(cog_dir, task_name, *args, **kwargs):
+            result = real(cog_dir, task_name, *args, **kwargs)
+            if task_name == task and len([c for c in script.calls
+                                          if c["task"] == task]) == at:
+                raise Interrupted("power loss after the envelope was written")
+            return result
+        op_runner._attempt = attempt
+        self.uncrash = lambda: setattr(op_runner, "_attempt", real)
+        return script
+
+    def crash_on_the_reservation(self, answers, step="draft"):
+        """A runner that dies the instant a reservation is DURABLE and before
+        anything else happens — Codex's exact window (finding 1): the Track
+        carries the new question while the slot's old answer is still on
+        disk."""
+        script = fx.FakeCog(answers)
+        op_runner.invoke_cog = script
+        real = op_track.save
+        self.addCleanup(setattr, op_track, "save", real)
+
+        def save(track, run_dir, _real=real):
+            path = _real(track, run_dir)
+            for record in track.get("steps") or []:
+                if record.get("id") != step:
+                    continue
+                for entry in record.get("repeats") or []:
+                    if isinstance(entry, dict) and entry.get("phase") == "asking":
+                        op_track.save = _real
+                        raise Interrupted("power loss on the reservation")
+            return path
+        op_track.save = save
+        return script
+
+    # ------------------------------------------------- Codex's scenario --
+
+    def test_a_renewed_reservation_never_accepts_the_old_pass(self):
+        """An unfinished `require: 2` step with an old passing envelope; the
+        Cog changes; the operator renews; the new reservation is checkpointed
+        and the process dies BEFORE anything else. The resume must not accept
+        the old pass under the new digest."""
+        cog = self.cog()
+        fx.write_package(self.package, self.doc(count=2, require=2))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog(
+            {"draft": [fx.envelope(payload={"n": "old"}), contract_failed()]})
+        code, output = op_runner.run(self.package, path)
+        self.assertEqual(code, 1)
+        run_dir = output["run_dir"]
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        old_pass = Path(record["repeats"][0]["envelope"])
+        old_bytes = old_pass.read_bytes()
+
+        # the fix, and the renewal that buys a new budget for it
+        (cog / "src" / "task_logic.py").write_text("# v2\n")
+        self.crash_on_the_reservation({"draft": fx.envelope(payload={"n": 2})})
+        with self.assertRaises(Interrupted):
+            op_runner.resume(self.package, run_dir, renew_budgets=["draft"])
+
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": "new"})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        resumed = self.step(json.loads(Path(output["track"]).read_text()),
+                            "draft")
+        # The reservation named a file of its own, which nothing wrote: the
+        # slot is SPENT, and the old pass is neither read back nor destroyed.
+        self.assertNotIn(
+            {"n": "old"},
+            [p for p in op_runner._payloads_of(
+                op_runner._repeat_envelopes(resumed)) if p],
+            "the old pass was recovered under the new digest")
+        self.assertTrue(resumed["repeats"][0].get("spent"))
+        self.assertEqual(old_pass.read_bytes(), old_bytes)
+        # require: 2 is not met by one new answer, so the step still fails.
+        self.assertEqual(code, 1)
+        self.assertEqual(resumed["status"], "failed")
+
+    # ------------------------------------- a retry is an attempt like any --
+
+    def test_a_crash_during_a_mode_all_retry_leaves_a_spent_attempt(self):
+        """The retry is reserved before it is invoked, so a crash inside it
+        leaves an attempt on the Track — and the FIRST answer, at its own
+        file, is not mistaken for the retry's."""
+        self.cog()
+        fx.write_package(self.package,
+                         self.doc(count=1, require=1, mode="all",
+                                  on_fail="retry-once"))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = interrupting({"draft": fx.envelope(ok=False)},
+                                            2, "draft")
+        with self.assertRaises(Interrupted):
+            op_runner.run(self.package, path, runs_dir=self.root / "runs")
+        run_dir = next((self.root / "runs").iterdir())
+        record = self.step(json.loads((run_dir / "track.json").read_text()),
+                           "draft")
+
+        slot = record["repeats"][0]
+        self.assertEqual([a["attempt"] for a in slot["attempts"]], [1, 2])
+        self.assertEqual([a["phase"] for a in slot["attempts"]],
+                         ["answered", "asking"])
+        # the record points at the RETRY's file, which nothing wrote; the
+        # first answer is beside it, under its own name.
+        self.assertEqual(Path(slot["envelope"]).name, "draft.r0.a2.json")
+        self.assertFalse(Path(slot["envelope"]).exists())
+        first = Path(slot["attempts"][0]["envelope"])
+        self.assertEqual(first.name, "draft.r0.a1.json")
+        self.assertEqual(json.loads(first.read_text())["ok"], False)
+
+        # mode `all` re-runs the slot; the re-ask is attempt 3, not attempt 1.
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 3})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 0)
+        resumed = self.step(json.loads(Path(output["track"]).read_text()),
+                            "draft")
+        self.assertEqual([a["attempt"] for a in resumed["repeats"][0]["attempts"]],
+                         [1, 2, 3])
+        self.assertEqual(Path(resumed["repeats"][0]["envelope"]).name,
+                         "draft.r0.a3.json")
+        self.assertEqual(json.loads(first.read_text())["ok"], False)
+
+    def test_a_rebound_retrys_answer_is_recovered_under_its_own_digest(self):
+        """A crash after the retry's envelope is written, with the Cog
+        re-bound between the first attempt and the retry: the reservation
+        carries the RETRY's digest, so the retry's answer is recovered rather
+        than thrown away and bought again."""
+        cog = self.cog()
+        fx.write_package(self.package,
+                         self.doc(count=1, require=1, mode="all",
+                                  on_fail="retry-once"))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+
+        def rebind(script, _request_path):
+            if len(script.calls) == 1:
+                (cog / "src" / "task_logic.py").write_text("# v2\n")
+        script = self.crash_after_the_envelope(
+            2, {"draft": [fx.envelope(ok=False),
+                          fx.envelope(payload={"n": "retry"})]})
+        script.watcher = rebind
+        with self.assertRaises(Interrupted):
+            op_runner.run(self.package, path, runs_dir=self.root / "runs")
+        run_dir = next((self.root / "runs").iterdir())
+        rebound = op_runner.cog_package_sha256(cog)
+        self.uncrash()
+
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": "bought"})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 0)
+        # nothing was bought: the retry's answer was already paid for.
+        self.assertEqual(again.calls, [])
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        slot = record["repeats"][0]
+        self.assertTrue(slot["recovered"])
+        self.assertEqual(slot["cog_sha256"], rebound)
+        self.assertEqual(Path(slot["envelope"]).name, "draft.r0.a2.json")
+        self.assertEqual(op_runner._payloads_of(
+            op_runner._repeat_envelopes(record)), [{"n": "retry"}])
+
+    # --------------------------------------------- nothing is ever lost --
+
+    def test_no_envelope_is_removed_or_overwritten_across_a_whole_run(self):
+        """Failures, a retry, a renewal and two resumes: the set of envelope
+        files only ever GROWS, and the bytes of every earlier file are
+        untouched."""
+        write_code_cog(self.root / "cog-probe", "openteams/cog-probe", "probe")
+        cog = self.cog()
+        probe = fx.cog_step("probe", task="probe", on_fail="retry-once",
+                            repeat={"count": 2, "require": 1, "mode": "all"})
+        draft = fx.cog_step("draft", task="draft", depends_on=["probe"],
+                            repeat={"count": 2, "require": 1,
+                                    "mode": "until-required"})
+        fx.write_package(self.package, fx.spec_doc([probe, draft]))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+
+        # run 1: the probe's retries, and a draft budget spent on failures.
+        op_runner.invoke_cog = fx.FakeCog(
+            {"probe": [fx.envelope(ok=False), fx.envelope(payload={"p": 1}),
+                       fx.envelope(payload={"p": 2})],
+             "draft": contract_failed()})
+        code, output = op_runner.run(self.package, path)
+        self.assertEqual(code, 1)
+        run_dir = output["run_dir"]
+        seen = self.envelopes(run_dir)
+        self.assertIn("probe.r0.a2.json", seen)
+
+        # resume 1: the budget is spent, so nothing is bought.
+        op_runner.invoke_cog = fx.FakeCog({"draft": fx.envelope(payload={})})
+        code, _ = op_runner.resume(self.package, run_dir)
+        self.assertEqual(code, 1)
+        after_first = self.envelopes(run_dir)
+        self.only_grew(seen, after_first)
+
+        # resume 2: a renewal buys a new budget, which answers cleanly.
+        (cog / "src" / "task_logic.py").write_text("# v2\n")
+        op_runner.invoke_cog = fx.FakeCog(
+            {"draft": fx.envelope(payload={"n": "renewed"})})
+        code, output = op_runner.resume(self.package, run_dir,
+                                        renew_budgets=["draft"])
+        self.assertEqual(code, 0)
+        after_second = self.envelopes(run_dir)
+        self.only_grew(after_first, after_second)
+        self.assertLess(len(after_first), len(after_second))
+
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        # the renewal RETIRED the spent attempts; it did not erase them.
+        self.assertEqual([r["index"] for r in record["retired_repeats"]],
+                         [0, 1])
+        self.assertTrue(all(Path(a["envelope"]).exists()
+                            for r in record["retired_repeats"]
+                            for a in r["attempts"]))
+        # and the new budget's first ask numbered itself past them.
+        self.assertEqual(Path(record["repeats"][0]["envelope"]).name,
+                         "draft.r0.a2.json")
+
+    # ------------------------------------------------ an older Track --
+
+    def test_a_pre_0_6_6_track_is_refused_by_name(self):
+        """A Track whose envelope paths do not name their attempt cannot be
+        resumed safely, so it is refused rather than guessed at."""
+        self.cog()
+        fx.write_package(self.package, self.doc(count=2, require=2))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog({"draft": contract_failed()})
+        code, output = op_runner.run(self.package, path)
+        self.assertEqual(code, 1)
+        track_path = Path(output["track"])
+        track = json.loads(track_path.read_text())
+        for record in track["steps"]:
+            for entry in record.get("repeats") or []:
+                entry.pop("attempt", None)
+                for line in entry.get("attempts") or []:
+                    line.pop("attempt", None)
+        track_path.write_text(json.dumps(track, indent=2))
+
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.resume(self.package, output["run_dir"])
+        problems = str(caught.exception.problems)
+        self.assertIn("0.6.6", problems)
+        self.assertIn("'draft'", problems)
 
 
 if __name__ == "__main__":

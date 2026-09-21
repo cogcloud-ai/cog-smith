@@ -295,6 +295,68 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.6.6 — every attempt owns an immutable file (2026-09-21)
+
+From Codex review 6 (narrowing contract §16, "Runner"). 0.6.5 made an attempt
+durable before it was paid for, but the attempt's FILE was still named by the
+slot alone, so two operations had to agree about one path. Two findings fell
+out of that, and both are fixed by making the path name the attempt. A PATCH
+bump: no new key in `op.yaml`, no spec change, and every mode runs the same
+number of invocations it ran before.
+
+- **Finding 1 — an envelope path names its attempt.**
+  `envelopes/<step>[/<index>].r<slot>.a<attempt>.json`, where `attempt` counts
+  every invocation ever made for that slot IN THIS RUN: a retry in mode `all`,
+  a re-ask after a renewal, a re-run after a changed request or Cog. Numbering
+  continues across resumes and renewals and never restarts, so no two attempts
+  of a slot can name the same file. `op_track.remove_durable` is GONE and
+  nothing a run wrote is ever deleted or overwritten. A reservation records the
+  exact path it will write beside its `request_sha256` and `cog_sha256`, so
+  recovery reads ONLY the file that reservation named — an older attempt's
+  answer can never be taken for a newer one. Codex's scenario (an unfinished
+  `require: 2` step with an old passing envelope, a changed Cog, a renewal, the
+  new reservation checkpointed and then a crash) now spends the slot instead of
+  recovering the old pass under the new digest. The record's `envelope` is the
+  attempt that DECIDED the slot; its `attempts` list every attempt of that
+  slot, `{attempt, envelope, request_sha256, cog_sha256, phase}`, which is also
+  what numbering is read from.
+- **Finding 2 — a retry is an attempt like any other.** In BOTH modes it is
+  reserved on the Track — its own number, its own digests, its own path —
+  before it is invoked (`_attempt` takes a `reserve` callback). A crash during
+  a retry therefore leaves a spent attempt on the Track rather than an empty
+  `attempts` list, and the first answer sits at its own file and is not
+  mistaken for it. A crash after the retry's envelope is written recovers THAT
+  attempt under ITS digests, so a Cog re-bound between the first attempt and
+  the retry no longer throws the retry's paid-for answer away.
+- **Renewal keeps what it retires.** `--renew-budget` moves the step's (or
+  element's) spent repeats to `retired_repeats` instead of clearing them: off
+  the ledger the new budget is measured against, still on the Track, their
+  envelopes still on disk, and their attempt numbers still counted — which is
+  what keeps a renewed slot's first ask off the first budget's files.
+- **The path a step that does NOT repeat writes.** Attempt 1 keeps today's
+  documented path (`envelopes/<step>.json`, `envelopes/<step>/<index>.json`),
+  because that is the Track shape every reader and Op package already knows and
+  a first attempt has no earlier file to collide with; every later attempt of
+  that slot — the `retry-once` second invocation, or a re-run after a resume —
+  takes `<name>.a<n>.json`. So the `.attempt-1.json` sibling 0.6.3 wrote is
+  gone, and `attempts` is now populated for a single invocation too.
+- **A pre-0.6.6 Track is REFUSED, not translated.** Old paths carry no attempt
+  number, so continuing such a run in place would write over the old attempt 1
+  and could recover an older attempt's answer — the very failure this version
+  fixes. `_refuse_pre_0_6_6` refuses the resume by name and says to start a new
+  run; the earlier Track and its envelopes are untouched. Refusing is the
+  smaller option: translating would be guessing which file belonged to which
+  attempt.
+- **Docs:** mode `all`'s ceiling is per EXECUTION PASS, not a lifetime bound
+  across resumes (BUILDING_OPS).
+
+Tests: `test_op_runner.py::AttemptOwnershipTests` — Codex's renewed-reservation
+scenario; a crash during a mode-`all` retry leaving a spent attempt with the
+first answer intact; a re-bound retry's answer recovered under the retry's own
+digest; no envelope removed or overwritten across a run with failures, a retry,
+a renewal and two resumes; a pre-0.6.6 Track refused by name. The 0.6.5
+recovery suites still hold, under the new paths.
+
 ### 0.6.5 — the repeat budget is an account (2026-09-21)
 
 From Codex review 5, after the first four-repository survey (narrowing
@@ -317,6 +379,10 @@ runs as it ran.
   (`spent: true`, with the reason on the record's Gate). The slot's envelope
   file is CLEARED (`op_track.remove_durable`) when the slot is reserved, so a
   crash can never recover an envelope an earlier attempt at that index left.
+  **This last sentence is WITHDRAWN by 0.6.6**: the reservation and the
+  deletion were two durable operations, not one, and a crash between them
+  left the new digests on the Track with the old answer on disk. 0.6.6
+  removes the reason instead of the file.
 - **Blocker 2 — in `until-required`, `count` is the ceiling on INVOCATIONS.**
   `retry-once` is not applied inside a slot in this mode, because the next
   slot IS the retry: an `ok: false` answer spends a slot like any other
