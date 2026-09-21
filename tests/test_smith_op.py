@@ -264,7 +264,24 @@ class CheckTests(SmithOpCase):
         self.assertEqual(self.errors(findings), [])
         spec = op_spec.load(self.dest / "op.yaml")
         self.assertEqual(op_spec.repeat_spec(spec.steps[0]),
-                         {"count": 3, "require": 1})
+                         {"count": 3, "require": 1, "mode": "all"})
+
+    def test_a_repeat_mode_checks_clean(self):
+        """Machinery 0.6.4: `op check` accepts `repeat.mode` (narrowing
+        §14)."""
+        self.usage_cog()
+        self.with_repeat({"count": 4, "require": 1, "mode": "until-required"})
+        findings = smith_op.check(self.dest)
+        self.assertEqual(self.errors(findings), [])
+        spec = op_spec.load(self.dest / "op.yaml")
+        self.assertEqual(op_spec.repeat_spec(spec.steps[0]),
+                         {"count": 4, "require": 1, "mode": "until-required"})
+
+    def test_an_unknown_repeat_mode_is_an_invalid_spec(self):
+        self.with_repeat({"count": 4, "require": 1, "mode": "until-agreement"})
+        findings = smith_op.check(self.dest)
+        self.assertIn("'all' or 'until-required'", self.details(findings))
+        self.assertTrue(smith_op.invalid_spec(findings))
 
     def test_a_repeat_out_of_bounds_is_an_invalid_spec(self):
         self.with_repeat({"count": 9, "require": 1})

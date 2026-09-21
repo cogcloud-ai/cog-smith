@@ -47,11 +47,19 @@ STEP_KEYS = {"id", "name", "depends_on", "cog", "foreach", "input",
 COG_KEYS = {"id", "version", "source", "task"}
 INPUT_KEYS = {"name", "description", "required", "default", "schema"}
 FOREACH_KEYS = {"items", "as"}
-#: `repeat: {count, require}` — the same request invoked `count` times, of
-#: which `require` must pass (machinery 0.6.0, narrowing contract §2). The
+#: `repeat: {count, require, mode}` — the same request invoked `count` times,
+#: of which `require` must pass (machinery 0.6.0, narrowing contract §2). The
 #: ceiling is small on purpose: repetition is evidence, not a budget.
-REPEAT_KEYS = {"count", "require"}
+REPEAT_KEYS = {"count", "require", "mode"}
 MAX_REPEAT = 5
+#: How many of the `count` repeats actually run (machinery 0.6.4, narrowing
+#: contract §14). `all` asks every time and unions the answers — for a step
+#: whose RECALL varies run to run. `until-required` stops as soon as
+#: `require` repeats have passed — for a step that wants ONE clean answer and
+#: must not end a 150-batch run because one answer was rejected.
+REPEAT_ALL = "all"
+REPEAT_UNTIL_REQUIRED = "until-required"
+REPEAT_MODES = (REPEAT_ALL, REPEAT_UNTIL_REQUIRED)
 GATE_KEYS = {"policy", "guards"}
 TRACK_KEYS = {"records"}
 #: Authority vocabulary (phase 3 contract §2). Top level: how long a grant
@@ -426,13 +434,14 @@ def human_gate_steps(steps):
 
 
 def repeat_spec(step):
-    """The normalized `{count, require}` of a step that repeats, or None when
-    it runs once (machinery 0.6.0).
+    """The normalized `{count, require, mode}` of a step that repeats, or None
+    when it runs once (machinery 0.6.0; `mode` since 0.6.4).
 
     `require` defaults to `count`: a step that states no tolerance requires
-    EVERY repeat to pass. Silence never loosens a Gate. A malformed `repeat`
-    reads as None here — `validate` refuses it by name at load, so the runner
-    never sees one."""
+    EVERY repeat to pass. Silence never loosens a Gate. `mode` defaults to
+    `all`, today's behaviour: an absent `mode` is the step that unions every
+    answer. A malformed `repeat` reads as None here — `validate` refuses it by
+    name at load, so the runner never sees one."""
     declared = (step or {}).get("repeat")
     if not isinstance(declared, dict):
         return None
@@ -442,7 +451,10 @@ def repeat_spec(step):
     require = declared.get("require", count)
     if isinstance(require, bool) or not isinstance(require, int):
         require = count
-    return {"count": count, "require": require}
+    mode = declared.get("mode", REPEAT_ALL)
+    if mode not in REPEAT_MODES:
+        mode = REPEAT_ALL
+    return {"count": count, "require": require, "mode": mode}
 
 
 def _repeat_problems(step, sid, problems):
@@ -485,6 +497,13 @@ def _repeat_problems(step, sid, problems):
         problems.append(f"Op step {sid!r} declares repeat.require {require!r} "
                         f"with repeat.count {count!r}; a step requires between "
                         f"1 and count passing repeats.")
+    # `mode` says how many of the `count` repeats actually run (0.6.4). Only
+    # OMISSION defaults (`all`): a misspelled mode is refused by name rather
+    # than read as the default, because the two modes cost differently.
+    if "mode" in declared and declared.get("mode") not in REPEAT_MODES:
+        problems.append(f"Op step {sid!r} declares repeat.mode "
+                        f"{declared.get('mode')!r}; a repeat mode is "
+                        f"{' or '.join(repr(m) for m in REPEAT_MODES)}.")
     if step.get("authority") is not None:
         problems.append(f"Op step {sid!r} declares repeat and authority; an "
                         f"effectful step is never repeated.")

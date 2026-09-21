@@ -295,6 +295,68 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.6.4 — `repeat.mode`: one bad answer should not end a 150-batch run (2026-09-21)
+
+From the first four-repository survey (narrowing contract §14): batch 5 of 150
+of `detect-overlaps` came back with item ids written `ISSUE-469` instead of
+`owner/repo#469`, the Cog's `citation-coverage` check correctly rejected every
+finding, and §10's stop-at-first-failed-element rule then ended the run 17
+minutes in. `retry-once` does not apply — the envelope was `ok` and the failure
+was a contract error, not a transport one. A MINOR bump: one new optional key,
+no change to any existing spec's behaviour.
+
+- **`repeat` gains `mode`**, `all` or `until-required`, defaulting to `all`.
+  `repeat_spec` normalizes to `{count, require, mode}`, and an absent or
+  misspelled `mode` is the only difference at load: omission reads as `all`, a
+  wrong word is refused BY NAME in `_repeat_problems` with both modes printed.
+  `REPEAT_KEYS` gains `mode`, so `smith op check` accepts the key and reports
+  a bad one as an invalid spec. The declared triple is what the Track and the
+  `--dry-run` plan record, so a dry run shows the mode.
+- **`all` is today's behaviour**, unchanged line for line: `count`
+  invocations, the payload a list of `count` payloads, `null` for a failed
+  one. It is for a step whose RECALL varies run to run — the dependency
+  detector, which returned 1, then 4, then 6 findings on one snapshot.
+- **`until-required` runs the repeats one at a time and STOPS** as soon as
+  `require` of them have passed, never asking more than `count` times
+  (`_run_repeats` breaks on `passed >= require`). The lists are of the repeats
+  that ACTUALLY RAN: the payload's length is between `require` and `count` and
+  a repeat that never ran is ABSENT, not null. The Gate is
+  `combine_repeat_gates` over what ran — unchanged code, so `fail` below
+  `require`, `pass-with-problems` when anything that ran failed or carried
+  problems, else `pass` — and the step's `problems` still aggregate every
+  repeat that ran. `{count: 4, require: 1, mode: until-required}` therefore
+  costs ONE invocation on a clean first answer and fails the element only
+  after four rejected answers in a row.
+- **`count` is a budget that holds across a resume.** A passed repeat is
+  reused under the existing rule (request hash AND Cog digest) and counts
+  toward `require`; a FAILED attempt already on the Track has spent its slot
+  and is not bought again (`_spent_repeat`, read only in this mode), so the
+  original run and its resumes never exceed `count` attempts between them. A
+  spent record answered a QUESTION: change the request or the Cog and it
+  matches nothing, so fix-and-resume buys the whole budget again — which is
+  the point of fixing something.
+- **Unchanged:** `retry-once` still applies per repeat and still only when
+  `ok` was false (so a rejected answer is never retried inside its slot, and a
+  transport failure still is); a `foreach` still stops at its first
+  finally-failed element, now only after that element's budget is spent; the
+  refusals (authority, reaching Cog, human gate, the bounds) are as they were.
+
+Tests: `test_op_runner.py::RepeatUntilRequiredTests` (a clean first answer
+costing one invocation and a one-element payload; a rejected answer re-asked,
+the payload `[null, payload]`, the element passing with problems and the
+rejected answer's problem still in the step's `problems`; `count` bad answers
+failing the step; `require: 2` stopping at the second pass; the mode on the
+record and on the dry-run plan; `retry-once` inside a slot for `ok: false` and
+not for a contract failure; each `foreach` element stopping independently; an
+element of bad answers stopping the loop there; a resume counting the attempts
+already on the Track, stopping at its first clean answer, counting a reused
+pass toward `require`, and buying the budget again after the Cog changed),
+`::RepeatModeDefaultTests` (an absent and an explicit `all` running every
+repeat), `test_op_spec.py::RepeatTests` (both modes loading, omission
+normalizing to `all`, an unknown mode refused by name),
+`test_smith_op.py::CheckTests` (`op check` accepting the key and refusing a
+bad mode as an invalid spec).
+
 ### 0.6.3 — the digest is taken per invocation (2026-09-20)
 
 The fix round on 0.6.2, from the Codex go/no-go review

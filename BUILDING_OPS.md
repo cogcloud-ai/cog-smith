@@ -269,7 +269,7 @@ what came back.
   request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]` on the
   step record — each repeat's `cog_sha256` taken immediately before ITS own
   invocation —
-  or on each element of a `foreach` step. `repeat: {count, require}` says
+  or on each element of a `foreach` step. `repeat: {count, require, mode}` says
   what was DECLARED, and a `--dry-run` plan carries it, so the cost of a run
   is readable before it starts. Each completed repeat is written to the
   Track BEFORE the next one is invoked, so a crash mid-step never loses a
@@ -285,6 +285,59 @@ what came back.
   `foreach` step's elements come back in another order), the request the
   step rebuilds hashes differently and every repeat of it runs again rather
   than mixing answers to two different questions under one `require`.
+
+#### `mode`: union the answers, or stop at the first good one
+
+`repeat.mode` says how many of the `count` repeats actually run. It is `all`
+or `until-required`, and it defaults to `all` — today's behaviour, so an
+existing spec runs exactly as it ran.
+
+```yaml
+  # the DEPENDENCY detector: recall varies run to run, so union the runs
+  - id: detect-dependencies
+    cog: {id: openteams/cog-dependency-detector, version: "0.1.0",
+          source: ../cog-dependency-detector, task: detect}
+    input: {items: {$from: inputs.github_items}}
+    repeat: {count: 3, require: 1}                   # mode: all, the default
+  # the OVERLAP detector: one clean answer is the whole result
+  - id: detect-overlaps
+    cog: {id: openteams/cog-overlap-detector, version: "0.1.0",
+          source: ../cog-overlap-detector, task: detect}
+    input: {items: {$from: inputs.github_items}}
+    repeat: {count: 4, require: 1, mode: until-required}
+```
+
+* **`all`** runs `count` times whatever the early answers said, and the
+  payload is the list of `count` payloads (`null` for a failed one). Use it
+  for a step whose RECALL varies run to run — a detector that finds one
+  relationship this time and four the next. Three answers unioned is three
+  answers' worth of recall, and that is what the repetition buys.
+* **`until-required`** runs the repeats one at a time and STOPS as soon as
+  `require` of them have passed their Gate, never asking more than `count`
+  times. Use it for a step that wants ONE clean answer and must not end a
+  long run because one answer was rejected: with
+  `{count: 4, require: 1, mode: until-required}` a clean first answer costs
+  ONE invocation, and the element fails only after four rejected answers in
+  a row — at which point something really is wrong.
+* The payload is then the list of the repeats that ACTUALLY RAN, so its
+  length is between `require` and `count`; a repeat that never ran is
+  ABSENT, not null. A merging Cog must accept a short list —
+  `cog-merge-findings` does, by construction. The Gate is computed over what
+  ran, exactly as in `all` mode: `fail` when fewer than `require` passed
+  after `count` attempts, else `pass-with-problems` when any repeat that ran
+  failed or carried problems, else `pass`. The step's `problems` still carry
+  every repeat that ran, the rejected ones included.
+* `count` is then a BUDGET of attempts, and it holds across a resume: a
+  reused pass counts toward `require`, and a failed attempt already on the
+  Track has spent its slot and is not bought again. Change the request or
+  the Cog — fix the prompt, re-bind the model — and the old attempts answer
+  a different question, so the budget is whole again.
+* Why this exists: a contract-failed ANSWER is not a systematic failure. The
+  Cog's own checks reject what is fabricated, the model is nondeterministic,
+  and re-asking is legitimate. `retry-once` does not cover it — that answers
+  an `ok: false` transport or model failure, and a rejected answer is `ok`.
+  The two compose: inside `until-required`, an `ok: false` repeat is still
+  retried once inside its own slot.
 
 ### The Cog behind a result
 
@@ -621,6 +674,7 @@ construct and the phase that adds it — never discovered mid-run:
 | `on_fail: retry-once` on a step with `authority` or a reaching Cog | a reaching Cog recovers by resume and journal reconciliation |
 | `repeat` on a step with `authority`, a reaching Cog, or `gate.policy: human` | an effectful step is never repeated; a human decides about one set of proposals |
 | `repeat.count` outside 1–5, or `repeat.require` outside 1–`count` | the bounds, by name |
+| `repeat.mode` that is not `all` or `until-required` | the two modes, by name |
 | a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
 | two write requirements reading different human gates | one gate per writing step |
 | `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `run.lock` or `track.json` | the runner's control entries are reserved |

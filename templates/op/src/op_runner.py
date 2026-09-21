@@ -29,7 +29,7 @@ the ordinary envelope Gate: the proposed changes are written to
 the process exits 3. `--resume RUN_DIR --decision FILE` applies the human's
 answer and carries on; steps that already passed are never re-run.
 
-A step may declare `repeat: {count, require}` (machinery 0.6.0): the SAME
+A step may declare `repeat: {count, require, mode}` (machinery 0.6.0): the SAME
 request is invoked `count` times in sequence, each repeat gets its own Gate
 decision, and the step's payload is the LIST of the repeat payloads (`null`
 where a repeat's Gate failed). The step's Gate fails when fewer than
@@ -39,6 +39,17 @@ propose: a step with `authority`, a human Gate, or a Cog that declares
 `request_sha256` of the request it answered, and is written to the Track
 before the next one is invoked (0.6.1), so a resume reuses a passed repeat
 only when it answered the question the step is asking now.
+
+`repeat.mode` says how many of the `count` repeats actually run (0.6.4,
+narrowing contract §14). `all` — the default, and today's behaviour — runs
+all `count` and unions the answers: for a step whose RECALL varies run to
+run. `until-required` runs them one at a time and STOPS as soon as `require`
+have passed, so `{count: 4, require: 1, mode: until-required}` costs one
+invocation when the first answer is clean and fails the element only after
+four rejected answers in a row. Its payload is the list of the repeats that
+RAN — a repeat that never ran is absent, not null — and `count` is a budget
+of attempts that holds across a resume: a reused pass counts toward
+`require`, and a failed attempt already on the Track has spent its slot.
 
 A `foreach` STOPS at its first finally-failed element (0.6.2): when an
 element's Gate is `fail` after its repeats and its retries are exhausted,
@@ -1460,6 +1471,33 @@ def _reusable_repeat(prior, index, request_sha256, cog_sha256):
     return _reusable(entries[index], request_sha256, cog_sha256)
 
 
+def _spent_repeat(prior, index, request_sha256, cog_sha256):
+    """The record of a repeat an earlier attempt already PAID FOR and that
+    FAILED, over this same request and this same Cog — or None.
+
+    Only `mode: until-required` reads this (machinery 0.6.4). There, `count`
+    is a BUDGET of attempts and not a number of answers to collect: "never
+    more than `count`" has to hold across the original run and every resume,
+    so an attempt already on the Track has spent its slot and is not bought
+    again. It keeps its index, its null payload and its problems, and the
+    resume asks only at the indices nobody has spent yet.
+
+    A record that answered a DIFFERENT question — a changed request or a
+    changed Cog — has spent nothing here: fix-and-resume buys the whole
+    budget again, which is the point of fixing something."""
+    entries = (prior or {}).get("repeats")
+    if not isinstance(entries, list) or index >= len(entries):
+        return None
+    entry = entries[index]
+    if not isinstance(entry, dict) or not entry.get("envelope"):
+        return None
+    if (entry.get("gate") or {}).get("status") != "fail":
+        return None
+    if not _same_question(entry, request_sha256, cog_sha256):
+        return None
+    return entry if Path(entry["envelope"]).exists() else None
+
+
 def _last_digest(records):
     """The Cog digest of the LAST record that carries one, or None.
 
@@ -1494,18 +1532,35 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
     that repeat's reuse check compares the prior record's own digest against,
     and is recorded on the repeat it ran under. A model re-bound between
     repeat 0 and repeat 1 therefore leaves two different digests on the two
-    records instead of one digest covering both."""
+    records instead of one digest covering both.
+
+    **`mode: until-required` stops as soon as `require` repeats have passed**
+    (machinery 0.6.4, narrowing contract §14). `count` is then a budget of
+    attempts, not a number of answers: the lists are of the repeats that
+    ACTUALLY RAN, so their length is between `require` and `count`, and a
+    repeat that never ran is absent rather than null. One clean first answer
+    costs one invocation; only `count` rejected answers in a row fail the
+    step. A reused pass counts toward `require` and a failed attempt already
+    on the Track has spent its slot, so the budget holds across a resume."""
     count, require = repeat["count"], repeat["require"]
+    until_required = repeat.get("mode") == op_spec.REPEAT_UNTIL_REQUIRED
     records, gates, payloads, envelopes = [], [], [], []
     all_envelopes = []
     elapsed = 0.0
+    passed = 0
     for index in range(count):
+        if until_required and passed >= require:
+            # The step asked for `require` clean answers and has them: every
+            # further invocation would buy evidence nobody asked for.
+            break
         cog_sha256 = cog_package_sha256(cog_dir)
         reused = _reusable_repeat(prior, index, request_sha256, cog_sha256)
-        if reused is not None:
-            envelope = json.loads(Path(reused["envelope"]).read_text())
-            gate = reused["gate"]
-            record = reused
+        spent = (_spent_repeat(prior, index, request_sha256, cog_sha256)
+                 if until_required and reused is None else None)
+        if reused is not None or spent is not None:
+            record = reused if reused is not None else spent
+            envelope = json.loads(Path(record["envelope"]).read_text())
+            gate = record["gate"]
         else:
             envelope_path = repeat_envelope_path(base, index)
             envelope, gate, attempts, cog_sha256, seconds = _attempt(
@@ -1525,6 +1580,8 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
                       "elapsed_s": seconds,
                       "attempts": attempts}
         failed = gate["status"] == "fail"
+        if not failed:
+            passed += 1
         records.append(record)
         gates.append(gate)
         payloads.append(None if failed else envelope.get("payload"))

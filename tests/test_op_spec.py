@@ -554,10 +554,10 @@ class RepeatTests(unittest.TestCase):
         # Silence never loosens a Gate: a step that states no tolerance
         # requires every repeat to pass.
         self.assertEqual(op_spec.repeat_spec(self.step({"count": 3})),
-                         {"count": 3, "require": 3})
+                         {"count": 3, "require": 3, "mode": "all"})
         self.assertEqual(op_spec.repeat_spec(self.step({"count": 3,
                                                         "require": 2})),
-                         {"count": 3, "require": 2})
+                         {"count": 3, "require": 2, "mode": "all"})
         self.assertIsNone(op_spec.repeat_spec(fx.cog_step("first")))
 
     def test_an_unknown_repeat_key_is_refused_by_name(self):
@@ -627,6 +627,29 @@ class RepeatTests(unittest.TestCase):
         text = one(fx.spec_doc([step]))
         self.assertIn("gate.policy: human", text)
         self.assertIn("never repeated", text)
+
+    def test_both_modes_load(self):
+        """Machinery 0.6.4, narrowing contract §14."""
+        for mode in ("all", "until-required"):
+            self.assertEqual(
+                problems(fx.spec_doc([self.step({"count": 4, "require": 1,
+                                                 "mode": mode})])), [], mode)
+
+    def test_an_absent_mode_normalizes_to_all(self):
+        # `all` is today's behaviour, so silence keeps every existing spec
+        # running exactly as it ran.
+        self.assertEqual(op_spec.repeat_spec(self.step({"count": 2})),
+                         {"count": 2, "require": 2, "mode": "all"})
+        self.assertEqual(
+            op_spec.repeat_spec(self.step({"count": 4, "require": 1,
+                                           "mode": "until-required"})),
+            {"count": 4, "require": 1, "mode": "until-required"})
+
+    def test_an_unknown_mode_is_refused_by_name(self):
+        for value in ("until-agreement", "ALL", "", None, 1):
+            text = one(fx.spec_doc([self.step({"count": 2, "mode": value})]))
+            self.assertIn(f"declares repeat.mode {value!r}", text, repr(value))
+            self.assertIn("'all' or 'until-required'", text)
 
     def test_repeat_inside_a_foreach_loads(self):
         step = self.step({"count": 3, "require": 2})

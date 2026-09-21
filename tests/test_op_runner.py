@@ -504,7 +504,8 @@ class RepeatTests(RunnerCase):
         answers = {"draft": lambda n, req: fx.envelope(payload={"n": n})}
         _, _, track, _ = self.go(self.doc(count=2, require=1), answers=answers)
         record = self.step(track, "draft")
-        self.assertEqual(record["repeat"], {"count": 2, "require": 1})
+        self.assertEqual(record["repeat"],
+                         {"count": 2, "require": 1, "mode": "all"})
         self.assertEqual(len(record["repeats"]), 2)
         for index, entry in enumerate(record["repeats"]):
             self.assertEqual(entry["index"], index)
@@ -528,7 +529,7 @@ class RepeatTests(RunnerCase):
         self.assertEqual(code, 0)
         self.assertEqual(fake.calls, [])
         self.assertEqual(self.step(track, "draft")["repeat"],
-                         {"count": 3, "require": 2})
+                         {"count": 3, "require": 2, "mode": "all"})
 
 
 class RepeatForeachTests(RunnerCase):
@@ -561,7 +562,8 @@ class RepeatForeachTests(RunnerCase):
                          [{"batch": "b1"}, {"batch": "b1"},
                           {"batch": "b2"}, {"batch": "b2"}])
         record = self.step(track, "detect")
-        self.assertEqual(record["repeat"], {"count": 2, "require": 1})
+        self.assertEqual(record["repeat"],
+                         {"count": 2, "require": 1, "mode": "all"})
         self.assertIsNone(record["repeats"])
         for index, element in enumerate(record["elements"]):
             self.assertEqual([Path(r["envelope"]).name
@@ -947,6 +949,319 @@ class RepeatProblemsTests(RunnerCase):
         record = self.step(track, "detect")
         self.assertEqual(record["problems"], [refused])
         self.assertEqual(record["elements"][0]["problems"], [refused])
+
+
+CONTRACT_FAILED = {"check": "citation-coverage", "severity": "error",
+                   "detail": "every finding cited an item id that is not in "
+                             "this batch"}
+
+
+def contract_failed(payload=None):
+    """An envelope that is `ok` and whose Cog's own contract check REJECTED
+    the answer (narrowing contract §14, the live failure): the Gate fails and
+    `retry-once` does not apply, because nothing went wrong with the model or
+    the transport — the model gave a bad answer."""
+    return fx.envelope(payload=payload or {"findings": []},
+                       problems=[CONTRACT_FAILED])
+
+
+class RepeatUntilRequiredTests(RunnerCase):
+    """`repeat.mode: until-required` — one bad answer should not end a
+    150-batch run (machinery 0.6.4, narrowing contract §14).
+
+    The repeats run one at a time and the step STOPS asking as soon as
+    `require` of them have passed, never asking more than `count` times. A
+    clean first answer costs ONE invocation; the element fails only after
+    `count` rejected answers in a row, which is when something really is
+    wrong. `mode: all` — the default — is untouched: it unions every answer,
+    for a step whose recall varies run to run."""
+
+    MODE = {"mode": "until-required"}
+
+    def doc(self, count=4, require=1, on_fail="stop", with_consumer=False):
+        step = fx.cog_step("draft", task="draft", on_fail=on_fail,
+                           repeat={"count": count, "require": require,
+                                   **self.MODE})
+        steps = [step]
+        if with_consumer:
+            after = fx.cog_step("merge", task="merge", depends_on=["draft"])
+            after["input"] = {"results": {"$from": "steps.draft.payload"}}
+            steps.append(after)
+        return fx.spec_doc(steps)
+
+    def foreach_doc(self, count=2, require=1, on_fail="stop"):
+        step = fx.cog_step("detect", task="detect", on_fail=on_fail,
+                           repeat={"count": count, "require": require,
+                                   **self.MODE})
+        step["foreach"] = {"items": {"$from": "inputs.batches"}, "as": "batch"}
+        step["input"] = {"batch": {"$from": "batch.id"}}
+        return fx.spec_doc([step], inputs=[{"name": "batches"}])
+
+    # ---------------------------------------------------------- the stop --
+
+    def test_a_clean_first_answer_costs_one_invocation(self):
+        answers = {"draft": fx.envelope(payload={"n": 1}),
+                   "merge": fx.envelope(payload={})}
+        code, _, track, fake = self.go(self.doc(with_consumer=True),
+                                       answers=answers)
+        self.assertEqual(code, 0)
+        self.assertEqual([c["task"] for c in fake.calls], ["draft", "merge"])
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(record["gate"]["status"], "pass")
+        # the repeats that RAN — one — not four, and not three nulls beside it
+        self.assertEqual(len(record["repeats"]), 1)
+        self.assertEqual(fake.calls[-1]["request"], {"results": [{"n": 1}]})
+
+    def test_a_rejected_answer_is_asked_again_and_the_step_carries_it(self):
+        answers = {"draft": [contract_failed(), fx.envelope(payload={"n": 2})],
+                   "merge": fx.envelope(payload={})}
+        code, _, track, fake = self.go(self.doc(with_consumer=True),
+                                       answers=answers)
+        self.assertEqual(code, 0)
+        self.assertEqual([c["task"] for c in fake.calls],
+                         ["draft", "draft", "merge"])
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "passed-with-problems")
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["fail", "pass"])
+        # the payload is what RAN, the rejected answer masked to null
+        self.assertEqual(fake.calls[-1]["request"],
+                         {"results": [None, {"n": 2}]})
+        # and the rejected answer's own problem is still in the evidence
+        self.assertEqual(record["problems"], [CONTRACT_FAILED])
+
+    def test_count_bad_answers_in_a_row_fail_the_step(self):
+        answers = {"draft": contract_failed()}
+        code, output, track, fake = self.go(self.doc(count=4, require=1),
+                                            answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "draft")
+        record = self.step(track, "draft")
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(len(fake.calls), 4)
+        self.assertEqual(len(record["repeats"]), 4)
+        self.assertIn("0 of 4 repeats passed; 1 required.",
+                      record["gate"]["reasons"])
+
+    def test_require_two_stops_at_the_second_pass(self):
+        answers = {"draft": lambda n, req: fx.envelope(payload={"n": n})}
+        code, _, track, fake = self.go(self.doc(count=4, require=2),
+                                       answers=answers)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual(self.step(track, "draft")["gate"]["status"], "pass")
+
+    def test_the_declared_mode_is_on_the_record_and_on_the_plan(self):
+        declared = {"count": 4, "require": 1, "mode": "until-required"}
+        code, _, track, fake = self.go(self.doc(), answers={}, dry_run=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(self.step(track, "draft")["repeat"], declared)
+        _, _, live, _ = self.go(self.doc(),
+                                answers={"draft": fx.envelope(payload={})})
+        self.assertEqual(self.step(live, "draft")["repeat"], declared)
+
+    # ------------------------------------------------------- with retries --
+
+    def test_retry_once_still_applies_per_repeat_for_ok_false(self):
+        """`retry-once` answers a transport failure, `mode` answers a bad
+        ANSWER: an `ok: false` repeat is still retried inside its own slot."""
+        answers = {"draft": [fx.envelope(ok=False),
+                             fx.envelope(payload={"n": 1})]}
+        code, _, track, fake = self.go(
+            self.doc(count=2, require=1, on_fail="retry-once"),
+            answers=answers)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(fake.calls), 2)
+        record = self.step(track, "draft")
+        # ONE repeat, retried: the budget bought one slot, not two.
+        self.assertEqual(len(record["repeats"]), 1)
+        self.assertEqual(len(record["repeats"][0]["attempts"]), 2)
+        self.assertEqual(record["status"], "passed")
+
+    def test_a_contract_failure_is_never_retried_inside_its_repeat(self):
+        answers = {"draft": [contract_failed(), fx.envelope(payload={"n": 2})]}
+        code, _, track, fake = self.go(
+            self.doc(count=2, require=1, on_fail="retry-once"),
+            answers=answers)
+        self.assertEqual(code, 0)
+        record = self.step(track, "draft")
+        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual([r["attempts"] for r in record["repeats"]], [[], []])
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["fail", "pass"])
+
+    # ------------------------------------------------------ in a foreach --
+
+    def test_each_element_stops_independently(self):
+        answers = {"detect": [contract_failed(),
+                              fx.envelope(payload={"b": 1}),
+                              fx.envelope(payload={"b": 2})]}
+        code, _, track, fake = self.go(
+            self.foreach_doc(count=2, require=1),
+            request={"batches": [{"id": "b1"}, {"id": "b2"}]},
+            answers=answers)
+        self.assertEqual(code, 0)
+        # element 0 asked twice, element 1 once: the budget is per element.
+        self.assertEqual([c["request"]["batch"] for c in fake.calls],
+                         ["b1", "b1", "b2"])
+        elements = self.step(track, "detect")["elements"]
+        self.assertEqual([e["status"] for e in elements],
+                         ["passed-with-problems", "passed"])
+        self.assertEqual([len(e["repeats"]) for e in elements], [2, 1])
+        self.assertEqual(
+            op_runner._payloads_of(op_runner._element_envelopes(
+                self.step(track, "detect"))),
+            [[None, {"b": 1}], [{"b": 2}]])
+
+    def test_an_element_of_bad_answers_stops_the_loop_there(self):
+        answers = {"detect": contract_failed()}
+        code, output, track, fake = self.go(
+            self.foreach_doc(count=2, require=1),
+            request={"batches": [{"id": "b1"}, {"id": "b2"}, {"id": "b3"}]},
+            answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "detect")
+        # two invocations for element 0 and nothing else: §10's stop rule
+        # still ends the loop, but only after the mode's budget is spent.
+        self.assertEqual(len(fake.calls), 2)
+        elements = self.step(track, "detect")["elements"]
+        self.assertEqual([e["status"] for e in elements],
+                         ["failed", "not-reached", "not-reached"])
+
+    # ---------------------------------------------------------- a resume --
+
+    def test_a_resume_counts_the_attempts_already_on_the_track(self):
+        """`count` is a budget, not a number of answers to collect: four bad
+        answers are four bad answers whether one process or two bought
+        them."""
+        fx.write_package(self.package, self.doc(count=4, require=1))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = interrupting({"draft": contract_failed()}, 3,
+                                            "draft")
+        with self.assertRaises(Interrupted):
+            op_runner.run(self.package, path, runs_dir=self.root / "runs")
+        run_dir = next((self.root / "runs").iterdir())
+
+        again = fx.FakeCog({"draft": contract_failed()})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual(code, 1)
+        # two attempts were on the Track, so the resume buys the other two.
+        self.assertEqual(len(again.calls), 2)
+        record = self.step(resumed, "draft")
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(len(record["repeats"]), 4)
+
+    def test_a_resume_stops_as_soon_as_a_new_answer_is_clean(self):
+        fx.write_package(self.package, self.doc(count=4, require=1))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = interrupting({"draft": contract_failed()}, 3,
+                                            "draft")
+        with self.assertRaises(Interrupted):
+            op_runner.run(self.package, path, runs_dir=self.root / "runs")
+        run_dir = next((self.root / "runs").iterdir())
+
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 9})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual(code, 0)
+        self.assertEqual(len(again.calls), 1)
+        record = self.step(resumed, "draft")
+        self.assertEqual(record["status"], "passed-with-problems")
+        self.assertEqual([r["gate"]["status"] for r in record["repeats"]],
+                         ["fail", "fail", "pass"])
+        self.assertEqual(
+            op_runner._payloads_of(op_runner._repeat_envelopes(record)),
+            [None, None, {"n": 9}])
+
+    def test_a_reused_pass_counts_toward_require(self):
+        """A repeat that passed is read back, not paid for again — and it is
+        one of the `require` the resume is still collecting."""
+        fx.write_package(self.package, self.doc(count=3, require=2))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = interrupting(
+            {"draft": fx.envelope(payload={"n": 1})}, 2, "draft")
+        with self.assertRaises(Interrupted):
+            op_runner.run(self.package, path, runs_dir=self.root / "runs")
+        run_dir = next((self.root / "runs").iterdir())
+        track = json.loads((run_dir / "track.json").read_text())
+        kept = Path(self.step(track, "draft")["repeats"][0]["envelope"])
+        stamp = kept.stat().st_mtime_ns
+
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 2})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, run_dir)
+        resumed = json.loads(Path(output["track"]).read_text())
+        self.assertEqual(code, 0)
+        # repeat 0 was read back and repeat 1 bought: two passes, so the
+        # third slot of the budget is never spent.
+        self.assertEqual(len(again.calls), 1)
+        self.assertEqual(kept.stat().st_mtime_ns, stamp)
+        record = self.step(resumed, "draft")
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(
+            op_runner._payloads_of(op_runner._repeat_envelopes(record)),
+            [{"n": 1}, {"n": 2}])
+
+    def test_a_changed_cog_buys_the_budget_again(self):
+        """A spent attempt answered a QUESTION. Fix the Cog and the old
+        attempts say nothing about the new one, so the budget is whole."""
+        fx.write_package(self.package, self.doc(count=2, require=1))
+        cog = write_code_cog(self.root / "cog-draft", "openteams/cog-draft",
+                             "draft", logic="# v1\n")
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog({"draft": contract_failed()})
+        code, output = op_runner.run(self.package, path)
+        self.assertEqual(code, 1)
+
+        (cog / "src" / "task_logic.py").write_text("# v2: ids copied exactly\n")
+        again = fx.FakeCog({"draft": fx.envelope(payload={"n": 1})})
+        op_runner.invoke_cog = again
+        code, output = op_runner.resume(self.package, output["run_dir"])
+        self.assertEqual(code, 0)
+        self.assertEqual(len(again.calls), 1)
+        record = self.step(json.loads(Path(output["track"]).read_text()),
+                           "draft")
+        self.assertEqual(record["status"], "passed")
+        self.assertEqual(len(record["repeats"]), 1)
+
+
+class RepeatModeDefaultTests(RunnerCase):
+    """`mode: all` is the default AND today's behaviour: every repeat runs,
+    whatever the early answers said (narrowing contract §14)."""
+
+    def doc(self, mode=None):
+        repeat = {"count": 3, "require": 1}
+        if mode is not None:
+            repeat["mode"] = mode
+        step = fx.cog_step("draft", task="draft", repeat=repeat)
+        after = fx.cog_step("merge", task="merge", depends_on=["draft"])
+        after["input"] = {"results": {"$from": "steps.draft.payload"}}
+        return fx.spec_doc([step, after])
+
+    def run_mode(self, mode):
+        answers = {"draft": lambda n, req: fx.envelope(payload={"n": n}),
+                   "merge": fx.envelope(payload={})}
+        code, _, track, fake = self.go(self.doc(mode), answers=answers)
+        self.assertEqual(code, 0)
+        return self.step(track, "draft"), fake
+
+    def test_an_absent_mode_runs_every_repeat(self):
+        record, fake = self.run_mode(None)
+        self.assertEqual(len([c for c in fake.calls if c["task"] == "draft"]), 3)
+        self.assertEqual(len(record["repeats"]), 3)
+        self.assertEqual(record["repeat"]["mode"], "all")
+
+    def test_an_explicit_all_is_the_same_run(self):
+        record, fake = self.run_mode("all")
+        self.assertEqual(len([c for c in fake.calls if c["task"] == "draft"]), 3)
+        self.assertEqual(len(record["repeats"]), 3)
+        self.assertEqual(fake.calls[-1]["request"],
+                         {"results": [{"n": 1}, {"n": 2}, {"n": 3}]})
 
 
 class DryRunTests(RunnerCase):
