@@ -191,7 +191,7 @@ def default_tokens(cog_name, **overrides):
         "SUMMARY": "Produces grounded, cited highlights from supplied items. "
                    "(Starter default — replace.)",
         "OWNER": "trent@openteams.com",
-        "LICENSE": "BSD-3-Clause",
+        "LICENSE": "Apache-2.0",
         "PUBLISHER": "OpenTeams",
         "PORT": "8093",
         "PRODUCES": "highlights",

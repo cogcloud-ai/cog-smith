@@ -8,7 +8,7 @@ Config shape (YAML):
 
     defaults:                 # optional, merged under every model
       owner: trent@openteams.com
-      license: BSD-3-Clause
+      license: Apache-2.0
       publisher: OpenTeams
     manifest: pixi                # optional: pixi (default) | yaml
     models:
@@ -124,7 +124,7 @@ def _entry_tokens(entry, defaults):
                  else name.replace("-", " ").title(),
         "SUMMARY": " ".join(summary.split()),
         "OWNER": e.get("owner", "trent@openteams.com"),
-        "LICENSE": e.get("license", "BSD-3-Clause"),
+        "LICENSE": e.get("license", "Apache-2.0"),
         "PUBLISHER": e.get("publisher", "OpenTeams"),
         "LOCALITY": locality,
         "MODEL_NAME": model_name,

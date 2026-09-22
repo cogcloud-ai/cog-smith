@@ -77,3 +77,10 @@ Docs: `BUILDING_COGS.md` (start-to-finish builder guide), `BUILDING_OPS.md`
 (the result contract — the Collab profile, decided by template),
 `MACHINERY.md` (provenance + deltas from cog-forge @7fe8aca), `COG.md`
 (cog-smith as a Cog), `AGENTS.md` (contributor invariants).
+
+## License
+
+Copyright 2026 OpenTeams. Licensed under the [Apache License 2.0](LICENSE).
+Third-party dependencies and external model services retain their own licenses
+and terms. Previously published BSD-3-Clause versions remain available under
+that license.

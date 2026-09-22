@@ -238,7 +238,7 @@ def cmd_new(args):
             "accountable contact recorded in the manifest")
         tokens["LICENSE"] = _prompt(
             "license", tokens["LICENSE"],
-            "SPDX license id for the package, e.g. BSD-3-Clause")
+            "SPDX license id for the package, e.g. Apache-2.0")
         tokens["PORT"] = _prompt(
             "web-api port", tokens["PORT"],
             "loopback port the HTTP entry point listens on (pixi run serve)")

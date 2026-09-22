@@ -1,4 +1,5 @@
 [workspace]
+license = "Apache-2.0"
 name = "cog-smith"
 version = "0.2.0"
 description = "Creates, validates, and describes Cogs: `new` scaffolds a complete runnable package from review-hardened machinery, `check` enforces manifest and copy-sync discipline, `card` renders the catalog card consumers see."
@@ -35,7 +36,7 @@ schema = "openteams/cog-manifest [0.1]"
 id = "openteams/cog-smith"
 kind = "context"
 owner = "trent@openteams.com"
-license = "BSD-3-Clause"
+license = "Apache-2.0"
 frames = []
 requires = []
 memory = "none"

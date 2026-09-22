@@ -864,3 +864,11 @@ Then prove the Cog works with deterministic tests and realistic evaluation
 fixtures.
 
 That is what turns a prompt into a portable cognitive worker.
+
+## Generated-package licensing
+
+Smith defaults new Cog package metadata to Apache-2.0. An explicit caller
+license remains supported. Generated Cogs and Ops include LICENSE.smith,
+NOTICE.smith, and LICENSING.md covering Smith-supplied material. Authors must
+include license terms for their own code, context, or Op specifications;
+selecting a package license does not relicense the copied machinery.

@@ -298,3 +298,11 @@ Edit `op.yaml`, run `pixi run test`, and check the package. Never edit
 `src/` — a machinery fix belongs in cog-smith's `templates/op/`, version
 bumped in MACHINERY.md, then re-copied out. Adding a capability means adding
 a Cog, not adding code to the Op.
+
+## Generated-package licensing
+
+Smith defaults new Cog package metadata to Apache-2.0. An explicit caller
+license remains supported. Generated Cogs and Ops include LICENSE.smith,
+NOTICE.smith, and LICENSING.md covering Smith-supplied material. Authors must
+include license terms for their own code, context, or Op specifications;
+selecting a package license does not relicense the copied machinery.

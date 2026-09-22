@@ -253,3 +253,10 @@ Rules are the Cog rules: fixes happen HERE, version-bumped, and roll out to
 Op packages by re-copying. A created Op package must be immediately runnable
 (`pixi run op -- --request examples/request.json --dry-run`) and immediately
 checkable (`smith op check --tests`).
+
+## Licensing (2026-09-22)
+
+OpenTeams has authorized Apache-2.0 for Smith and its supplied machinery.
+Generated packages now carry LICENSE.smith, NOTICE.smith, and LICENSING.md.
+Runtime source bytes and machinery versions are unchanged by this licensing
+update. Previously published BSD versions remain available under BSD.
