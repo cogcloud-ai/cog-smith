@@ -120,6 +120,8 @@ def plan(spec_path, dest):
     for name in MACHINERY:
         files[f"src/{name}"] = (TEMPLATE / "src" / name).read_text()
     files[".gitignore"] = (TEMPLATE / ".gitignore").read_text()
+    for name in ("LICENSE.smith", "NOTICE.smith", "LICENSING.md"):
+        files[name] = (TEMPLATE / name).read_text()
     files["pixi.toml"] = smith_core.render(
         (TEMPLATE / "pixi.toml.tmpl").read_text(), tokens)
     files["README.md"] = smith_core.render(

@@ -3,7 +3,7 @@ type: cog [0.1]
 name: cog-smith
 description: Context Cog. The Cog builder — creates complete runnable Cogs from review-hardened machinery, validates them, and renders their catalog cards. Engineer-facing ("closer to a compiler").
 version: "0.2.0"
-license: BSD-3-Clause
+license: Apache-2.0
 publisher: OpenTeams
 manifest: pixi.toml
 manifest_schema: openteams/cog-manifest [0.1]

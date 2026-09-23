@@ -80,12 +80,105 @@ CogSpec describes three broad kinds:
 A fourth kind, **code**, was decided on 2026-09-17 for the triage Op's phase 3:
 a package with the Cog shape (manifest, entry points, envelope v1, contract
 checks, catalog card, machinery by hash) whose work is done by code with no
-model in the loop. It carries task context in the same sense a program does,
-and no model. The kind is declared, never inferred; `smith check` refuses a
+model in the loop. Its schemas and rules describe a program's work contract;
+they do not give it model-based cognition. The kind is declared, never inferred; `smith check` refuses a
 code Cog that declares a model requirement. What a code Cog has are
 dependencies and function calls, not tools; "tools" is reserved for what a
 model-driven Cog is granted during a turn. cog-smith itself has this shape.
 **Code Cogs have a starter** — see §7b.
+
+### Why code Cogs exist, and when to use one
+
+“Cog” names a cognitive worker. A code-only package stretches that meaning:
+it performs no model-based interpretation or judgment at execution time. We
+retain `kind: code` as an explicit supporting type in the OpenTeams profile
+because cognitive workflows also need bounded operations implemented by rules.
+This is a practical composition choice, not a claim that ordinary code becomes
+cognitive when wrapped in Cog machinery, or a new universal CogSpec requirement.
+
+The benefit is a common work contract at the Op boundary. A deterministic
+worker can have its own identity, declared inputs and outputs, tests, package
+version, result provenance and authority requirements. The Op can discover,
+invoke and gate it through the same seam as its model-driven workers. The
+cognitive work remains identifiable in the Cogs that actually perform it.
+
+The reasons for giving code its own Cog boundary are:
+
+- **A distinct unit of work.** It has a recognizable job, clear inputs and
+  outputs, and a result that can be assessed independently.
+- **Reuse by more than one Cog.** Multiple Cogs can use the same capability
+  through its declared interface, rather than each carrying a separate
+  implementation. Ops can compose that capability as a step as well.
+- **Its own Gates and Guards.** The work needs independent verification and
+  decisions about whether it may proceed or whether its result is acceptable.
+  Making it a separate Cog gives those checks and decisions a clear subject.
+
+These are reasons to choose the boundary, not a requirement to demonstrate
+multiple current consumers before creating a Cog. Document which reasons apply.
+Identity, versioning and machinery support that boundary; they are not, on their
+own, the justification for it.
+
+“Its own Gates and Guards” means Gates and Guards specifically governing this
+unit of work. A Cog's packaged contract checks remain self-reported checks.
+Guards independently verify the system's requirements; Gates consume that
+evidence to decide. The surrounding Op or hosting environment applies them,
+including when another Cog invokes the capability. Packaging code as a Cog
+does not automatically provide or enforce those controls.
+
+Use the **code** kind when the job follows explicit rules without a model in
+the execution loop. Network access may affect the result; code does not
+necessarily mean a pure function.
+
+**Smith is the motivating example.** Its use as a code-only Cog made the value
+of this type clear: package creation and validation are distinct work that
+multiple authoring or design Cogs can use, with independent Guards and Gates
+governing the resulting artifact. The upstream Cogs perform the cognitive work
+of understanding the goal, designing the solution and authoring its contents.
+Smith takes that explicit input and applies repeatable construction and
+validation rules.
+
+That boundary also makes Smith useful as the final **creation** step for an
+Op: a resolved spec goes to `smith op new --from-spec`, which validates it and
+creates the runnable package. Smith does not need to interpret the user's goal
+or invent missing design decisions. Package creation is followed by execution
+evidence, evaluation and the applicable acceptance Gate; it is not itself final
+acceptance. The current builder pipeline still needs the proposal-to-resolved-
+spec handoff described in [Building Ops](BUILDING_OPS.md#2-the-path).
+
+As another example, `merge-findings` combines detector outputs by declared identity
+rules, preserves evidence and reports disagreements. It supports cognitive
+work without deciding which conflicting interpretation is true. A package
+that reads a repository snapshot or applies explicitly approved changes can
+also justify its own contract and authority boundary.
+
+Keep small parsing helpers, formatting functions and internal transformations
+inside the Cog that owns the job. Ordinary request-field wiring belongs in the
+Op's mappings. A model-driven Cog may call code internally; every function or
+tool call does not need a separate Cog. If the job requires interpretation,
+open-ended synthesis or judgment, use an appropriate model-driven Cog rather
+than hiding that requirement behind `kind: code`. Workflow coordination and
+human acceptance remain the Op's responsibilities.
+
+An AI-authored program is still a code Cog if its deployed work uses no model.
+Authoring provenance and runtime kind answer different questions. Likewise, a
+rule that prefers one source or combines scores is a policy choice: document
+and test it even though its execution is deterministic. Repeated agreement
+does not by itself establish that a finding is true.
+
+When documenting a code Cog in `COG.md`, explain:
+
+1. The distinct unit of work, which Cogs can reuse it, and why it needs an
+   independent boundary. Identify the applicable reasons above.
+2. Why explicit code rules are appropriate, and where interpretation or human
+   judgment happens in the surrounding workflow.
+3. The merge, selection or other policies it applies, its inputs and outputs,
+   external effects, failure behavior and verification evidence.
+4. The independent Guards and Gates the work needs, who applies them, and
+   which checks are only the Cog's own contract checks. State any required
+   controls that the current hosting environment does not yet provide.
+
+This is authoring and review guidance; the current Smith checker does not
+automatically assess whether the package's boundary is justified.
 
 Cog Smith provides supported starters for **context Cogs** and **code
 Cogs** (`smith new --kind code NAME`). Its
@@ -563,7 +656,9 @@ replace them.
 
     pixi run smith -- new cog-read-github --kind code --yes
 
-A code Cog is the same seam with the model half removed. What you get:
+A code Cog implements a bounded programmatic job through the shared Cog seam.
+First check [why and when to use this type](#why-code-cogs-exist-and-when-to-use-one).
+What you get:
 
     cog-read-github/
     ├── COG.md
@@ -1018,3 +1113,11 @@ Then prove the Cog works with deterministic tests and realistic evaluation
 fixtures.
 
 That is what turns a prompt into a portable cognitive worker.
+
+## Generated-package licensing
+
+Smith defaults new Cog package metadata to Apache-2.0. An explicit caller
+license remains supported. Generated Cogs and Ops include LICENSE.smith,
+NOTICE.smith, and LICENSING.md covering Smith-supplied material. Authors must
+include license terms for their own code, context, or Op specifications;
+selecting a package license does not relicense the copied machinery.

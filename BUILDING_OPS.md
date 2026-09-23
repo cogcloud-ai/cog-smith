@@ -14,6 +14,11 @@ decides about.
 Read [Building and Improving Cogs](BUILDING_COGS.md) first. This guide is the
 layer above it.
 
+The code-Cog type deliberately extends the cognitive-worker vocabulary to
+independently contracted supporting work. It does not make every helper a
+worker: keep internal functions inside their owning Cog and use Op mappings
+for ordinary field wiring. See [the rationale and selection guidance](BUILDING_COGS.md#why-code-cogs-exist-and-when-to-use-one).
+
 If you remember only one thing, remember this:
 
 > An Op is a composition, not a program. It declares which Cogs run, in what
@@ -776,3 +781,11 @@ Edit `op.yaml`, run `pixi run test`, and check the package. Never edit
 `src/` — a machinery fix belongs in cog-smith's `templates/op/`, version
 bumped in MACHINERY.md, then re-copied out. Adding a capability means adding
 a Cog, not adding code to the Op.
+
+## Generated-package licensing
+
+Smith defaults new Cog package metadata to Apache-2.0. An explicit caller
+license remains supported. Generated Cogs and Ops include LICENSE.smith,
+NOTICE.smith, and LICENSING.md covering Smith-supplied material. Authors must
+include license terms for their own code, context, or Op specifications;
+selecting a package license does not relicense the copied machinery.

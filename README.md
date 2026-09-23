@@ -36,6 +36,13 @@ with no model, no `resolve`, and a declared `reaches` saying what it touches
 outside the run. A reaching code Cog runs only under a grant, which it checks
 itself (BUILDING_COGS §7b, BUILDING_OPS §5).
 
+Code Cogs support cognitive workflows but perform no model-based cognition
+themselves. The reasons to give code a Cog boundary are a distinct unit of
+work, reuse by more than one Cog, and Gates and Guards specific to that work.
+The surrounding Op or host applies those controls; the Cog's own contract
+checks do not replace them. Keep ordinary helpers inside their owning Cog.
+See [why code Cogs exist and when to use one](BUILDING_COGS.md#why-code-cogs-exist-and-when-to-use-one).
+
 A created context Cog ships with: manifest (in-manifest input schema — no overlays),
 envelope-v1 entry points (web API + CLI), the forge binding/resolve/eval
 machinery, a grounding contract check (verbatim quotes), an eval fixture, and
@@ -86,3 +93,15 @@ Docs: `BUILDING_COGS.md` (start-to-finish builder guide), `BUILDING_OPS.md`
 (the result contract — the Collab profile, decided by template),
 `MACHINERY.md` (provenance + deltas from cog-forge @7fe8aca), `COG.md`
 (cog-smith as a Cog), `AGENTS.md` (contributor invariants).
+
+## License
+
+Copyright 2026 OpenTeams. Licensed under the [Apache License 2.0](LICENSE).
+Third-party dependencies and external model services retain their own licenses
+and terms. Previously published BSD-3-Clause versions remain available under
+that license.
+
+## Public preview
+
+See the [suite guide](https://github.com/cogcloud-ai/cog-op-builder/blob/main/docs/repositories.md)
+for repository roles, supported setup, and current limitations.

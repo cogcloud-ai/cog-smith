@@ -1,6 +1,6 @@
 # AGENTS.md — cog-smith contributor instructions
 
-Read `../CLAUDE.md` for workstream context and read `BUILDING_COGS.md` before
+Read the suite guide linked from README.md and read `BUILDING_COGS.md` before
 creating or changing a Cog. cog-smith is itself a Cog (see COG.md); it is also
 the single source of the machinery every created Cog carries.
 
@@ -32,9 +32,7 @@ the single source of the machinery every created Cog carries.
   pack-neutral (no smith imports); emits generate-descriptors's config.
 - Tests: `python3 -m unittest discover -s tests` — the model-free suite
   plus `tests/test_review_regressions.py` (one test per 2026-08-22 review
-  finding; never delete these). The 3.10 floor is real and exercised: the
-  device VM runs the suite on Python 3.10 at every delivery; pixi manifests
-  declare `python = ">=3.10"` to match. Live loop: `tests/mock_model.py` +
+  finding; never delete these). Current Pixi manifests require Python 3.11 or newer. Live loop: `tests/mock_model.py` +
   a created cog's resolve/ask.
 
 ## Invariants
