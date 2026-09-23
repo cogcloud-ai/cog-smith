@@ -217,11 +217,13 @@ def new_track(spec, run_id, input_request, status="running"):
 #: crash interrupted, which a resume runs again.
 STEP_STATUSES = ("passed", "passed-with-problems", "failed", "skipped",
                  "blocked", "planned", "not-reached", "denied", "running",
-                 "awaiting-decision")
+                 "awaiting-decision", "rejected")
 
-#: Run statuses. `paused` is a run waiting on a human Gate.
+#: Run statuses. `paused` is a run waiting on a human Gate; `rejected`
+#: (machinery 0.7.0) is a run a person ended by refusing the artifact its
+#: human Gate asked about — final, and never resumed.
 RUN_STATUSES = ("planned", "running", "paused", "completed",
-                "completed-with-problems", "failed")
+                "completed-with-problems", "failed", "rejected")
 
 
 def step_record(step, status, **fields):

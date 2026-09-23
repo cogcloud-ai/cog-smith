@@ -189,6 +189,7 @@ appears.
 | `{$run_dir: <subpath>}` | A directory inside this run, absolute and created. The subpath is RELATIVE and never leaves the run: an absolute value, a `..` escape, or a symlink out of the run is refused before anything is created — including when the value arrived as mapped data. |
 | `{$stem: <expr>}` | `Path(value).stem`. |
 | `{$literal: <any>}` | The value verbatim — the escape hatch for data that looks like an operator. |
+| `{$sha256: <expr>}` | The canonical sha256 of the evaluated value (sorted keys, compact separators, UTF-8, Unicode unescaped — the digest cog-author and Workbench compute). Null is refused by name: there is no digest of nothing. (Op machinery 0.7.0.) |
 
 A step may read `steps.<id>.payload` only when `<id>` is in its transitive
 `depends_on`. Reading without depending on it is refused at load, because the
@@ -674,6 +675,67 @@ again, and every resume is appended to the Track's `resumes` — with the
 `changed_cogs` it is keeping results from and the `renewed_budgets` it
 bought.
 
+### A human Gate over an ARTIFACT
+
+`gate: {policy: human, decides: artifact, artifact: {...}}` (Op machinery
+0.7.0) asks a person about ONE versioned thing rather than a list of
+changes: the contract a design step produced, the candidate a review step
+just reviewed. The Gate DECLARES the artifact — a closed mapping of `kind`
+and `digests` (required) plus `id`, `summary` and `detail` — evaluated after
+the step's Cog answered, so it may read the step's own payload:
+
+```yaml
+- id: design
+  cog: {id: openteams/cog-author, source: ../cog-author, task: ask-composed}
+  gate:
+    policy: human
+    decides: artifact
+    artifact:
+      kind: cog-contract
+      id: {$from: inputs.identity.id}
+      summary: {$from: steps.design.payload.contract.purpose}
+      digests:
+        contract: {$sha256: {$from: steps.design.payload.contract}}
+
+- id: author
+  depends_on: [design]
+  input:
+    contract: {$from: steps.design.payload.contract}
+    contract_sha256: {$from: steps.design.decision.artifact.digests.contract}
+```
+
+Every digest must be a sha256, and an artifact the Gate cannot state — a
+design that returned questions and no contract, a digest that is not 64 hex
+characters — is a **failed Gate** with the reasons named, never a pause
+asking someone to accept nothing; the step is the run's `failed_step`, and a
+resume runs it again. The pending document carries `decides: artifact`, the
+`artifact` and its canonical `artifact_sha256` beside the payload and
+`payload_sha256`; the sheet shows kind, id, summary and one line per digest.
+
+The decision names BOTH digests — recomputed from the pending document when
+applied, so an artifact edited on disk invalidates it — and gives one
+`verdict`, `accept` or `reject`, whole (there is no edit: an edited artifact
+is a different artifact with different digests, decided about by the run
+that produces it), a `reason` (required for a rejection), and
+`decided_by`/`decided_at`:
+
+```json
+{"schema": "openteams/op-decision [0.1]", "run_id": "...", "step": "design",
+ "payload_sha256": "...", "artifact_sha256": "...",
+ "verdict": "accept", "reason": "criteria are testable",
+ "decided_by": "trent", "decided_at": "2026-09-23T10:00:00Z"}
+```
+
+An accepted artifact exposes `steps.<id>.decision` as `{verdict, artifact,
+artifact_sha256, reason, decided_by, decided_at}`, so a later step binds to
+exactly the digests the person accepted. A **rejection ends the run**: the
+step is `rejected`, the run is `rejected` (exit 1, `{status: "rejected",
+step, decided_by, reason}`), the later steps stay `not-reached`, and the run
+is never resumed — a rejection is final for those bytes, and a different
+candidate is a new run. An artifact decision carries no approved changes,
+so no write grant can be asked for from one (refused at load). Completing
+the gated step is review; only the decision is acceptance.
+
 **A failed run resumes too** (Op machinery 0.5.5). When a step's Gate fails
 and the step is `on_fail: stop`, the run ends `failed` and the Track names
 that step in `failed_step`. `--resume RUN_DIR` (no decision needed) re-runs
@@ -751,6 +813,10 @@ construct and the phase that adds it — never discovered mid-run:
 | `authority` on a `foreach` step | phase 3 issues no per-element grants |
 | `on_fail: retry-once` on a step with `authority` or a reaching Cog | a reaching Cog recovers by resume and journal reconciliation |
 | `repeat` on a step with `authority`, a reaching Cog, or `gate.policy: human` | an effectful step is never repeated; a human decides about one set of proposals |
+| `gate.decides` outside `changes`/`artifact`, or `decides`/`artifact` on a non-human Gate | only a human Gate decides about something |
+| `decides: artifact` with no `artifact`, an `artifact` with no `kind` or `digests`, an unknown artifact key, or `digests` that is not a non-empty object | an artifact Gate declares the artifact it asks about |
+| an artifact reading its own `decision` | it does not exist until the person gives it |
+| a write requirement reading the `approved` list of an artifact Gate | an artifact decision is one verdict and carries no approved changes |
 | `repeat.count` outside 1–5, or `repeat.require` outside 1–`count` | the bounds, by name |
 | `repeat.mode` that is not `all` or `until-required` | the two modes, by name |
 | a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
@@ -770,8 +836,9 @@ construct and the phase that adds it — never discovered mid-run:
 | reading a step you do not depend on | add it to depends_on |
 
 Exit codes: `0` completed (or completed-with-problems, or a planned dry run),
-`1` failed, `2` an invalid spec, request, admission or decision — and a
-resume of a run another process holds — `3` paused for a human. Stdout is one
+`1` failed or rejected, `2` an invalid spec, request, admission or decision —
+and a resume of a run another process holds, or of a rejected run — `3`
+paused for a human. Stdout is one
 JSON object. Exit `1` is not the end of the run: the Track says which step
 stopped it, and `--resume` starts again there.
 

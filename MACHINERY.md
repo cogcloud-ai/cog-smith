@@ -295,6 +295,67 @@ Semantics implemented from `planning/current/phase2-op-runner-contract.md`
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
+### 0.7.0 — a human decides about an ARTIFACT (2026-09-23)
+
+For the Cog Builder's acceptance Gates (cogcloud-ai/op-cog-builder#1,
+plan gap 3 in `planning/current/cog-builder-op-plan-2026-09-21.md`). The
+human Gate of 0.5.0 decides about a LIST of proposed changes and feeds a
+write grant; a contract acceptance or a candidate acceptance is a decision
+about ONE versioned thing, bound to the bytes it is about. A MINOR bump:
+one new Gate key set, one new mapping operator, two new statuses; every
+0.6.x spec loads and runs unchanged, and a changes decision is unchanged.
+
+- **`gate.decides: changes | artifact`** on a human Gate (`changes` is the
+  default and the old behaviour). With `artifact`, the Gate DECLARES what it
+  asks about: `gate.artifact: {kind, digests: {<name>: <expr>}, id, summary,
+  detail}` — a closed vocabulary, evaluated AFTER the step's Cog answered, so
+  it may read `steps.<self>.payload`/`.envelope` as well as its dependencies'
+  (never its own `decision`). Every digest must be a sha256; an artifact the
+  Gate cannot state — a null contract, a digest that is not 64 hex characters,
+  a mapping this run cannot resolve — is a FAILED Gate with the reasons named
+  (`failed_step` = that step; a resume re-runs it), never a pause asking a
+  person to accept nothing. Hashes are never repaired.
+- **`{$sha256: <expr>}`** — the canonical digest (sorted keys, compact,
+  UTF-8, Unicode unescaped) of an evaluated value; the same bytes cog-author,
+  Workbench's `digest` and `canonical_sha256` hash, so an Op can bind an
+  acceptance to a payload it holds without trusting a Cog-stated digest.
+  `$sha256` of null is refused by name.
+- **The pending document** (`openteams/op-pending-decision [0.1]`, same
+  schema string) now carries `decides`, and for an artifact Gate the
+  `artifact` and its canonical `artifact_sha256` beside the payload and
+  `payload_sha256`. The sheet renders kind/id/summary and one line per
+  digest, every cell literal text as before. The Track's gate record carries
+  `decides` and `artifact_sha256` — the digest a resume re-hashes the pending
+  artifact against, so an artifact edited on disk invalidates any decision.
+- **The decision** (`openteams/op-decision [0.1]`) for an artifact Gate names
+  `payload_sha256` AND `artifact_sha256`, gives ONE `verdict` — `accept` or
+  `reject`, whole; there is no edit — and a `reason` (required for a
+  rejection), with `decided_by`/`decided_at` as before. A `decisions` list on
+  an artifact Gate, or a `verdict`/`artifact_sha256` on a changes Gate, is
+  refused: a decision of the wrong shape is a decision about something else.
+  `steps.<id>.decision` is `{verdict, artifact, artifact_sha256, reason,
+  decided_by, decided_at}`, so a later step binds to exactly the digests the
+  person accepted (`steps.design.decision.artifact.digests.contract`).
+- **A rejection ends the run.** The step is recorded `rejected` (new step
+  status), the Gate `status: rejected` with `rejected by <who>: <reason>` in
+  its reasons, the later steps stay `not-reached`, the run is `rejected` (new
+  run status, `failed_step: null`, `ended_at` set), the CLI exits 1 with
+  `{ok: false, status: "rejected", step, decided_by, reason}`. A rejected run
+  is never resumed — refused by name — because a rejection is final for
+  those bytes and a different candidate is a new run.
+- **No write grant from an artifact decision.** A write requirement reading
+  `steps.<id>.decision.approved` of an artifact Gate is refused at load: an
+  artifact decision carries no approved changes.
+- Completion of the gated step is REVIEW; only the decision is acceptance.
+  The runner still never grants anything itself.
+
+Verified by `tests/test_op_artifact_gate.py` (30 tests: the pause and its
+digests, accept/reject/refusals, changed-artifact invalidation, resume across
+a pending decision, a rejected run refused, load-time refusals, `$sha256`);
+the 584 earlier tests unchanged. Rolled out to op-cog-builder,
+op-builder-smoke, op-project-triage and op-triage-survey by re-copying; each
+suite re-run.
+
 ### 0.6.6 — every attempt owns an immutable file (2026-09-21)
 
 From Codex review 6 (narrowing contract §16, "Runner"). 0.6.5 made an attempt

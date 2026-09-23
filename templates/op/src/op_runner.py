@@ -30,6 +30,28 @@ the ordinary envelope Gate: the proposed changes are written to
 the process exits 3. `--resume RUN_DIR --decision FILE` applies the human's
 answer and carries on; steps that already passed are never re-run.
 
+A human Gate says WHAT it asks about (machinery 0.7.0). `decides: changes`
+— the default, and every human Gate before 0.7.0 — asks about a list of
+proposed changes, each approved, rejected or edited, and feeds a write
+grant. `decides: artifact` asks about ONE versioned thing — a contract the
+step designed, a candidate the run built and reviewed — declared on the Gate
+as `artifact: {kind, digests: {<name>: <expr>, ...}, id, summary, detail}`
+and evaluated after the step's Cog answered, so it may read the step's own
+payload. The pending document carries the artifact and its canonical
+`artifact_sha256` beside the payload and `payload_sha256`; the decision names
+BOTH digests and gives one `verdict`, `accept` or `reject`, with a `reason`.
+An accepted artifact lets the run continue and exposes
+`steps.<id>.decision` as `{verdict, artifact, artifact_sha256, reason,
+decided_by, decided_at}`, so a later step can bind to exactly the digests
+the person accepted. A REJECTED artifact ends the run: the step is recorded
+`rejected`, the run `rejected`, and a rejected run is never resumed — a
+rejection is a final decision about those bytes, and a different candidate
+is a new run. An artifact the Gate cannot state — a digest expression that
+reads a null contract, a digest that is not a sha256 — is a FAILED Gate with
+the reasons named, never a pause asking a person to accept nothing; the
+step is the run's `failed_step` and a resume runs it again. Completion of the
+step whose Gate asks is review; only the decision is acceptance.
+
 A step may declare `repeat: {count, require, mode}` (machinery 0.6.0): the SAME
 request is invoked `count` times in sequence, each repeat gets its own Gate
 decision, and the step's payload is the LIST of the repeat payloads (`null`
@@ -461,6 +483,11 @@ GRANT_SCHEMA = "openteams/op-grant [0.1]"
 PENDING_SCHEMA = "openteams/op-pending-decision [0.1]"
 DECISION_SCHEMA = "openteams/op-decision [0.1]"
 VERDICTS = ("approve", "reject", "edit")
+#: The verdicts of a decision about an ARTIFACT (machinery 0.7.0): one
+#: thing, taken whole or refused whole. There is no edit — an edited
+#: artifact is a different artifact, with different digests, and is decided
+#: about by the run that produces it.
+ARTIFACT_VERDICTS = ("accept", "reject")
 
 #: The exit code of a run that paused for a human.
 PAUSED_EXIT = 3
@@ -1184,8 +1211,38 @@ def cell(value):
     return "".join(out)
 
 
+def render_artifact(doc):
+    """The human's copy of an ARTIFACT question (0.7.0): the kind, id and
+    summary of the one thing asked about, and one line per digest — every
+    cell literal text, the JSON beside it the authority."""
+    artifact = doc["artifact"]
+    lines = [f"# Decision needed: {cell(doc['step'])}", "",
+             f"Run: {cell(doc['run_id'])}", f"Asked: {cell(doc['asked_at'])}", "",
+             f"The authority is `{cell(doc['step'])}.json` beside this file: "
+             "it holds the artifact and the step's payload in full, the "
+             "digests are over it, and string equality is decided there — "
+             "not by how a cell looks. This sheet is a reading aid, with "
+             "every ASCII punctuation character escaped and control, format "
+             "and separator characters shown as `U+XXXX`.", "",
+             f"Decide with: `{doc['decide_with']}`", "",
+             "One verdict, `accept` or `reject`, about this whole artifact; "
+             f"the decision names {cell('artifact_sha256')} "
+             f"`{cell(doc['artifact_sha256'])}` and {cell('payload_sha256')} "
+             f"`{cell(doc['payload_sha256'])}`. A rejection ends the run.", "",
+             "| field | value |", "|---|---|",
+             f"| kind | {cell(artifact.get('kind'))} |",
+             f"| id | {cell(artifact.get('id', ''))} |",
+             f"| summary | {cell(artifact.get('summary', ''))} |", "",
+             "| digest | sha256 |", "|---|---|"]
+    for name in sorted(artifact["digests"]):
+        lines.append(f"| {cell(name)} | {cell(artifact['digests'][name])} |")
+    return "\n".join(lines) + "\n"
+
+
 def render_pending(doc):
     """The human's copy: one line per change, every cell literal text."""
+    if doc.get("decides") == op_spec.DECIDES_ARTIFACT:
+        return render_artifact(doc)
     lines = [f"# Decision needed: {cell(doc['step'])}", "",
              f"Run: {cell(doc['run_id'])}", f"Asked: {cell(doc['asked_at'])}", "",
              # The sheet is a READING AID, and the header says only what the
@@ -1212,26 +1269,86 @@ def render_pending(doc):
     return "\n".join(lines) + "\n"
 
 
-def write_pending(run_dir, run_id, sid, payload):
-    """The pause: the pending document and its rendered twin."""
-    changes = pending_changes(payload, sid)
+def pending_artifact(step, context, sid):
+    """The artifact an artifact-deciding human Gate asks about, evaluated
+    from the Gate's declared mapping AFTER the step's Cog answered, and
+    checked to be decidable — or the list of reasons it is not.
+
+    Returns `(artifact, problems)`. The artifact is what the person's
+    acceptance is ABOUT, so it is refused rather than repaired: a digest
+    that is not 64 hex characters, a null kind, an empty digest set, a
+    mapping that reads something this run does not have. A refused artifact
+    is a FAILED Gate (the step produced nothing decidable), never a pause."""
+    declared = op_spec.gate_artifact(step)
+    problems = []
+    try:
+        artifact = op_spec.evaluate(declared, context)
+    except op_spec.OpSpecError as exc:
+        return None, [f"Op step {sid!r}'s artifact cannot be stated: {p}"
+                      for p in exc.problems]
+    if not isinstance(artifact, dict):
+        return None, [f"Op step {sid!r}'s artifact evaluated to "
+                      f"{type(artifact).__name__}, not an object."]
+    kind = artifact.get("kind")
+    if not isinstance(kind, str) or not kind.strip():
+        problems.append(f"Op step {sid!r}'s artifact declares kind {kind!r}; "
+                        f"an artifact says what kind of thing it is.")
+    for key in ("id", "summary"):
+        value = artifact.get(key)
+        if value is not None and not isinstance(value, str):
+            problems.append(f"Op step {sid!r}'s artifact declares {key} "
+                            f"{value!r}, which is not a string.")
+    detail = artifact.get("detail")
+    if detail is not None and not isinstance(detail, dict):
+        problems.append(f"Op step {sid!r}'s artifact declares detail "
+                        f"{type(detail).__name__}, not an object.")
+    digests = artifact.get("digests")
+    if not isinstance(digests, dict) or not digests:
+        problems.append(f"Op step {sid!r}'s artifact carries no digests; an "
+                        f"acceptance is bound to the sha256 of each thing it "
+                        f"accepts.")
+    else:
+        for name in sorted(str(n) for n in digests):
+            value = digests.get(name)
+            if not isinstance(value, str) or not HEX64.fullmatch(value):
+                problems.append(f"Op step {sid!r}'s artifact digest {name!r} "
+                                f"is {value!r}, which is not a sha256 (64 hex "
+                                f"characters); digests are checked at the "
+                                f"pause and never repaired.")
+    if problems:
+        return None, problems
+    return artifact, []
+
+
+def write_pending(run_dir, run_id, sid, payload, artifact=None):
+    """The pause: the pending document and its rendered twin.
+
+    With `artifact` (0.7.0) the document asks about that one thing and
+    carries its canonical `artifact_sha256`; without it the payload's
+    `changes` are what the person decides about, as before."""
     doc = {
         "schema": PENDING_SCHEMA,
         "run_id": run_id,
         "step": sid,
+        "decides": (op_spec.DECIDES_ARTIFACT if artifact is not None
+                    else op_spec.DECIDES_CHANGES),
         "payload": payload,
         "payload_sha256": canonical_sha256(payload),
         "asked_at": op_track.utc_now(),
         "decide_with": (f"op run --resume {Path(run_dir).resolve()} "
                         f"--decision <file>"),
     }
+    if artifact is not None:
+        doc["artifact"] = artifact
+        doc["artifact_sha256"] = canonical_sha256(artifact)
+    else:
+        pending_changes(payload, sid)
     json_path = Path(run_dir) / "pending" / f"{sid}.json"
     md_path = Path(run_dir) / "pending" / f"{sid}.md"
     op_track.write_json(json_path, doc, base=run_dir)
     # The human's copy is written the same way as the JSON: a half-written
     # decision sheet is a half-read decision (review S9).
     op_track.write_atomic(md_path, render_pending(doc), base=run_dir)
-    del changes
     return doc, json_path, md_path
 
 
@@ -1283,9 +1400,54 @@ def edited_change_problems(edit, proposed, where):
     return problems
 
 
+def apply_artifact_decision(pending, decision, problems):
+    """A decision about an ARTIFACT (0.7.0), checked against the pending
+    document, as {verdict, artifact, artifact_sha256, reason, decided_by,
+    decided_at}.
+
+    The pending ARTIFACT is re-hashed here and the decision's
+    `artifact_sha256` checked against that — never against the digest string
+    the pending file carries beside it — for the same reason the payload is:
+    an artifact edited on disk under an old digest would otherwise pass an
+    old acceptance off as a decision about new bytes. One verdict, whole:
+    there is no partial acceptance of an artifact and no edit."""
+    artifact = pending.get("artifact")
+    if not isinstance(artifact, dict):
+        problems.append("the pending document asks about an artifact but "
+                        "carries none; nothing can be decided from it.")
+    elif decision.get("artifact_sha256") != canonical_sha256(artifact):
+        problems.append("the decision's artifact_sha256 does not match the "
+                        "pending artifact; the human decided about "
+                        "something else.")
+    if "decisions" in decision:
+        problems.append("the decision carries a decisions list, but this "
+                        "step asks about one artifact; give one verdict.")
+    verdict = decision.get("verdict")
+    if verdict not in ARTIFACT_VERDICTS:
+        problems.append(f"the decision declares verdict {verdict!r}; an "
+                        f"artifact is {list(ARTIFACT_VERDICTS)}ed whole.")
+    reason = decision.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        problems.append(f"the decision declares reason {reason!r}, which is "
+                        f"not a string.")
+    elif verdict == "reject" and not (reason or "").strip():
+        problems.append("the decision rejects the artifact with no reason; "
+                        "a rejection says why, because the next candidate "
+                        "is built from it.")
+    if problems:
+        raise op_spec.OpSpecError(problems)
+    return {"verdict": verdict, "artifact": artifact,
+            "artifact_sha256": decision["artifact_sha256"],
+            "reason": (reason or "").strip() or None,
+            "decided_by": decision["decided_by"].strip(),
+            "decided_at": decision["decided_at"].strip()}
+
+
 def apply_decision(pending, decision):
     """The decision, checked against what was actually proposed, as
-    {approved, rejected, edited, history}.
+    {approved, rejected, edited, history} — or, for a step that asks about
+    an artifact (0.7.0), as {verdict, artifact, artifact_sha256, reason,
+    decided_by, decided_at}.
 
     The pending PAYLOAD is re-hashed here and the decision is checked against
     that hash, never against the hash string the pending file carries beside
@@ -1325,6 +1487,13 @@ def apply_decision(pending, decision):
             problems.append(f"the decision declares decided_at {when!r}, "
                             f"which is not a timestamp; a durable decision "
                             f"record says WHEN it was made.")
+    if pending.get("decides") == op_spec.DECIDES_ARTIFACT:
+        return apply_artifact_decision(pending, decision, problems)
+    for key in ("verdict", "artifact_sha256"):
+        if key in decision:
+            problems.append(f"the decision carries {key}, but this step asks "
+                            f"about proposed changes; decide each change in "
+                            f"a decisions list.")
     if problems:
         raise op_spec.OpSpecError(problems)
 
@@ -2505,12 +2674,31 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         on_fail = step.get("on_fail", "stop")
 
         # ---- the human Gate: only a PASSING envelope reaches the human.
+        artifact = None
+        if (op_spec.gate_policy(step) == op_spec.HUMAN_GATE_POLICY
+                and gate["status"] != "fail"
+                and op_spec.gate_decides(step) == op_spec.DECIDES_ARTIFACT):
+            # The artifact is evaluated with THIS step's result in view
+            # (0.7.0). An artifact the Gate cannot state is a failed Gate,
+            # recorded with its reasons: the step ran, but produced nothing
+            # a person can accept.
+            context["steps"][sid] = {"payload": payload,
+                                     "envelope": envelope_for_context}
+            artifact, artifact_problems = pending_artifact(step, context, sid)
+            if artifact_problems:
+                gate = fields["gate"] = {
+                    "policy": op_spec.HUMAN_GATE_POLICY, "status": "fail",
+                    "decides": op_spec.DECIDES_ARTIFACT,
+                    "envelope_status": gate["status"],
+                    "reasons": artifact_problems + list(gate["reasons"]),
+                    "decided_at": op_track.utc_now(), "guards": []}
         if (op_spec.gate_policy(step) == op_spec.HUMAN_GATE_POLICY
                 and gate["status"] != "fail"):
             pending, pending_path, _ = write_pending(run_dir, run_id, sid,
-                                                     payload)
+                                                     payload, artifact)
             fields["gate"] = {"policy": op_spec.HUMAN_GATE_POLICY,
                               "status": "pending",
+                              "decides": pending["decides"],
                               # What the ENVELOPE Gate decided before the
                               # human was asked. A human approving proposals
                               # does not erase the problems the Cog reported
@@ -2524,6 +2712,9 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
                               # with this, not with the hash the pending file
                               # carries beside it (review B5).
                               "payload_sha256": pending["payload_sha256"],
+                              # And the artifact's, for the same reason
+                              # (0.7.0): the acceptance is about THESE bytes.
+                              "artifact_sha256": pending.get("artifact_sha256"),
                               "reasons": gate["reasons"],
                               "decided_at": None, "guards": []}
             track["steps"][position_in_track] = (
@@ -2821,6 +3012,19 @@ def _resume(package_root, run_dir, track_path, decision_path,
         raise op_spec.OpSpecError(
             "op.yaml has changed since this run started; a resume continues "
             "the run it was planned as, so it cannot adopt a new spec.")
+    if track.get("status") == "rejected":
+        # A rejection is final for THESE bytes (0.7.0): the person refused
+        # the artifact this run produced, and no resume can produce another
+        # one under the same decision. A different candidate is a new run.
+        rejected = next((s for s in track.get("steps") or []
+                         if s.get("status") == "rejected"), None) or {}
+        who = ((rejected.get("decision") or {}).get("value") or {}).get(
+            "decided_by")
+        raise op_spec.OpSpecError(
+            f"this run was rejected at step {rejected.get('id')!r} by "
+            f"{who!r}; a rejection is final for the artifact this run "
+            f"produced, so it is not resumed — start a new run for a new "
+            f"candidate.")
     if track.get("status") == "planned":
         raise op_spec.OpSpecError(
             "this run is a dry run: it resolved a plan and invoked nothing, "
@@ -2876,7 +3080,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
         if stopper is not None:
             done.pop(stopper, None)
 
-    decision_copy = None
+    decision_copy, rejected = None, False
     if decision_path:
         decision = load_decision(decision_path)
         sid = decision.get("step")
@@ -2893,6 +3097,14 @@ def _resume(package_root, run_dir, track_path, decision_path,
                 f"run paused on; the proposals changed on disk since the "
                 f"Track recorded them, so no decision about them can be "
                 f"applied.")
+        remembered_artifact = (record.get("gate") or {}).get("artifact_sha256")
+        if remembered_artifact and canonical_sha256(
+                pending.get("artifact")) != remembered_artifact:
+            raise op_spec.OpSpecError(
+                f"the pending artifact for step {sid!r} is not the one this "
+                f"run paused on; the artifact changed on disk since the "
+                f"Track recorded it, so no decision about it can be "
+                f"applied.")
         value = apply_decision(pending, decision)
         decision_copy = run_dir / "decisions" / f"{sid}.json"
         op_track.write_json(decision_copy, decision, base=run_dir)
@@ -2901,15 +3113,29 @@ def _resume(package_root, run_dir, track_path, decision_path,
         # on the step that made them stands (contract §9b, finding 6).
         envelope_status = (record.get("gate") or {}).get("envelope_status")
         record["status"] = STEP_STATUS.get(envelope_status, "passed")
-        record["gate"] = {"policy": op_spec.HUMAN_GATE_POLICY, "status": "pass",
+        rejected = value.get("verdict") == "reject"
+        if rejected:
+            # The person refused the artifact (0.7.0). The step's Cog passed
+            # its envelope Gate; the HUMAN Gate is what failed, and the
+            # record says so by name rather than as a step failure a resume
+            # would re-run.
+            record["status"] = "rejected"
+        record["gate"] = {"policy": op_spec.HUMAN_GATE_POLICY,
+                          "status": "rejected" if rejected else "pass",
+                          "decides": pending.get("decides",
+                                                 op_spec.DECIDES_CHANGES),
                           "envelope_status": envelope_status,
                           "asked_at": (record.get("gate") or {}).get("asked_at"),
                           "payload_sha256": remembered,
+                          "artifact_sha256": remembered_artifact,
                           "decided_at": op_track.utc_now(),
                           "decision": str(decision_copy.resolve()),
                           "decision_sha256": digest,
-                          "reasons": (record.get("gate") or {}).get("reasons")
-                          or [], "guards": []}
+                          "reasons": ([f"rejected by {value['decided_by']}: "
+                                       f"{value.get('reason')}"]
+                                      if rejected else [])
+                          + ((record.get("gate") or {}).get("reasons") or []),
+                          "guards": []}
         record["decision"] = {"decision": str(decision_copy.resolve()),
                               "decision_sha256": digest, "value": value}
         decisions[sid] = record["decision"]
@@ -2932,6 +3158,19 @@ def _resume(package_root, run_dir, track_path, decision_path,
              # here by name and recorded here by name.
              "renewed_budgets": renewed}
     track.setdefault("resumes", []).append(entry)
+    if decision_copy is not None and rejected:
+        # The run ENDS here (0.7.0): the decision and the resume that carried
+        # it are recorded, the steps after the Gate stay `not-reached`, and
+        # nothing is invoked. Exit 1: the run did not complete, and the Track
+        # says why by name.
+        track["status"] = "rejected"
+        track["failed_step"] = None
+        track["ended_at"] = op_track.utc_now()
+        track_path = op_track.save(track, run_dir)
+        return 1, {"ok": False, "status": "rejected", "step": sid,
+                   "decided_by": value["decided_by"],
+                   "reason": value.get("reason"),
+                   "run_dir": str(run_dir), "track": track_path}
     track["status"] = "running"
     track["ended_at"] = None
     # Durability order (contract §9): the accepted decision and the resume are

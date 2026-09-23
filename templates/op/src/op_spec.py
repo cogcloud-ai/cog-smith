@@ -35,6 +35,23 @@ GATE_POLICY = "envelope-ok-no-error-problems"
 #: passing envelope reaches the human (phase 3 contract §3).
 HUMAN_GATE_POLICY = "human"
 GATE_POLICIES = (GATE_POLICY, HUMAN_GATE_POLICY)
+#: WHAT a human Gate decides about (machinery 0.7.0). `changes` — the
+#: default, and every human Gate before 0.7.0 — is a list of proposed
+#: changes, each approved, rejected or edited, feeding a write grant.
+#: `artifact` is ONE versioned thing the step produced or completed — a
+#: contract, a candidate package, a body of evidence — accepted or rejected
+#: as a whole, bound to the exact digests the Op names for it.
+DECIDES_CHANGES = "changes"
+DECIDES_ARTIFACT = "artifact"
+GATE_DECIDES = (DECIDES_CHANGES, DECIDES_ARTIFACT)
+#: The closed shape of a declared artifact: what KIND of thing it is, the
+#: named `digests` that pin it (each a sha256), and optional `id`, `summary`
+#: and `detail` for the person deciding. The Op names the digests from its
+#: own mappings — `{$sha256: ...}` of a payload it holds, or a digest a
+#: deterministic Cog reported — so an acceptance is about bytes, never about
+#: a step id.
+ARTIFACT_KEYS = {"kind", "id", "summary", "digests", "detail"}
+ARTIFACT_REQUIRED = ("kind", "digests")
 STEP_ID_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 #: A `foreach` loop variable is a name: it becomes a mapping-path root.
 LOOP_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -60,7 +77,7 @@ MAX_REPEAT = 5
 REPEAT_ALL = "all"
 REPEAT_UNTIL_REQUIRED = "until-required"
 REPEAT_MODES = (REPEAT_ALL, REPEAT_UNTIL_REQUIRED)
-GATE_KEYS = {"policy", "guards"}
+GATE_KEYS = {"policy", "guards", "decides", "artifact"}
 TRACK_KEYS = {"records"}
 #: Authority vocabulary (phase 3 contract §2). Top level: how long a grant
 #: this Op issues stays valid. Per step: what the step REQUIRES — a step
@@ -93,13 +110,15 @@ OPERATORS = (
     frozenset({"$run_dir"}),
     frozenset({"$stem"}),
     frozenset({"$literal"}),
+    frozenset({"$sha256"}),
 )
-OPERATOR_NAMES = "$from, $from/$default, $path, $run_dir, $stem, $literal"
+OPERATOR_NAMES = ("$from, $from/$default, $path, $run_dir, $stem, $literal, "
+                  "$sha256")
 #: Every `$`-prefixed name the closed vocabulary knows. A `$` key that is not
 #: one of these is an unknown operator WHEREVER it appears — sibling keys do
 #: not turn `$join` into ordinary data (contract §2).
 KNOWN_DOLLAR_KEYS = frozenset({"$from", "$default", "$path", "$run_dir",
-                               "$stem", "$literal"})
+                               "$stem", "$literal", "$sha256"})
 PATH_ROOTS = ("inputs", "steps", "run", "request")
 #: What a step's result exposes to later mappings. `decision` is the human
 #: Gate's answer, present only on a step whose gate policy is `human`.
@@ -285,10 +304,34 @@ def evaluate(expr, ctx):
             if "$stem" in keys:
                 value = evaluate(expr["$stem"], ctx)
                 return None if value is None else Path(str(value)).stem
+            if "$sha256" in keys:
+                # The canonical digest of a JSON value (machinery 0.7.0):
+                # sorted keys, compact separators, UTF-8, Unicode unescaped —
+                # the same bytes cog-author, Workbench and the runner's own
+                # `canonical_sha256` hash. A digest of NOTHING is refused:
+                # an artifact Gate that read a null contract would otherwise
+                # ask a person to accept the hash of `null`.
+                value = evaluate(expr["$sha256"], ctx)
+                if value is None:
+                    raise OpSpecError(
+                        f"$sha256 of {expr['$sha256']!r} has nothing to "
+                        f"digest: the value is null or not available in "
+                        f"this run.")
+                return canonical_sha256(value)
         return {k: evaluate(v, ctx) for k, v in expr.items()}
     if isinstance(expr, list):
         return [evaluate(item, ctx) for item in expr]
     return expr
+
+
+def canonical_sha256(value):
+    """The hash of a JSON value, canonically serialized — the same bytes for
+    the same document however it was written. Mirrored in op_runner (which
+    imports this module) so one definition serves the `$sha256` operator,
+    the pending document and the decision check."""
+    text = json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def reads_steps(expr):
@@ -348,7 +391,7 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                         f"{list(RESERVED_RUN_SUBPATHS)} are the runner's own "
                         f"control entries and no step writes into them.")
                     return
-            for key in ("$path", "$run_dir", "$stem"):
+            for key in ("$path", "$run_dir", "$stem", "$sha256"):
                 if key in keys:
                     _expr_problems(expr[key], where, input_names, step_ids,
                                    dep_ids, loop_vars, problems, human_steps)
@@ -431,6 +474,98 @@ def human_gate_steps(steps):
     """The ids of the steps whose Gate is a human one."""
     return {s["id"] for s in steps
             if _has_id(s) and gate_policy(s) == HUMAN_GATE_POLICY}
+
+
+def gate_decides(step):
+    """What the step's human Gate decides about: `changes` (the default) or
+    `artifact` (machinery 0.7.0). Meaningful only when the policy is human."""
+    gate = step.get("gate")
+    if not isinstance(gate, dict):
+        return DECIDES_CHANGES
+    return gate.get("decides", DECIDES_CHANGES)
+
+
+def artifact_gate_steps(steps):
+    """The ids of the human-gated steps that decide about an ARTIFACT."""
+    return {s["id"] for s in steps
+            if _has_id(s) and gate_policy(s) == HUMAN_GATE_POLICY
+            and gate_decides(s) == DECIDES_ARTIFACT}
+
+
+def gate_artifact(step):
+    """The declared artifact mapping of an artifact-deciding human Gate."""
+    return (step.get("gate") or {}).get("artifact")
+
+
+def _gate_problems(step, sid, problems):
+    """Every problem with one step's `gate:` block. `decides` and
+    `artifact` belong to a human Gate (0.7.0): an artifact Gate DECLARES the
+    artifact it asks about, as a closed mapping over `kind`, `digests`, and
+    the optional `id`, `summary` and `detail`; a changes Gate declares none."""
+    gate = step.get("gate")
+    if gate is None:
+        return
+    if not isinstance(gate, dict):
+        problems.append(f"Op step {sid!r}'s gate must be an object "
+                        f"with a policy.")
+        return
+    for key in sorted(str(k) for k in set(gate) - GATE_KEYS):
+        problems.append(f"unknown key {key!r} under Op step "
+                        f"{sid!r}'s gate:; the Gate vocabulary is "
+                        f"closed.")
+    policy = gate.get("policy", GATE_POLICY)
+    if policy not in GATE_POLICIES:
+        problems.append(f"Op step {sid!r} declares gate.policy "
+                        f"{policy!r}; the Gate policies are "
+                        f"{list(GATE_POLICIES)}.")
+    if gate.get("guards"):
+        problems.append(f"Op step {sid!r} declares gate.guards, "
+                        f"which are not in the runner subset; "
+                        f"Guards are system-side verifiers a "
+                        f"hosting environment supplies.")
+    decides = gate.get("decides", DECIDES_CHANGES)
+    if decides not in GATE_DECIDES:
+        problems.append(f"Op step {sid!r} declares gate.decides "
+                        f"{decides!r}; a human Gate decides about one of "
+                        f"{list(GATE_DECIDES)}.")
+        return
+    if policy != HUMAN_GATE_POLICY:
+        for key in ("decides", "artifact"):
+            if key in gate:
+                problems.append(f"Op step {sid!r} declares gate.{key} with "
+                                f"gate.policy {policy!r}; only a human Gate "
+                                f"decides about something.")
+        return
+    artifact = gate.get("artifact")
+    if decides == DECIDES_CHANGES:
+        if "artifact" in gate:
+            problems.append(f"Op step {sid!r} declares gate.artifact but "
+                            f"decides about changes; an artifact is what a "
+                            f"gate with decides: artifact asks about.")
+        return
+    if not isinstance(artifact, dict):
+        problems.append(f"Op step {sid!r} declares gate.decides: artifact "
+                        f"with no gate.artifact object; an artifact Gate "
+                        f"declares the artifact it asks about — its kind and "
+                        f"the digests that pin it.")
+        return
+    for key in sorted(str(k) for k in set(artifact) - ARTIFACT_KEYS):
+        problems.append(f"unknown key {key!r} under Op step {sid!r}'s "
+                        f"gate.artifact; an artifact is "
+                        f"{sorted(ARTIFACT_KEYS)}.")
+    for key in ARTIFACT_REQUIRED:
+        if key not in artifact:
+            problems.append(f"Op step {sid!r}'s gate.artifact declares no "
+                            f"{key}; an artifact Gate says what kind of "
+                            f"thing it asks about and the digests that pin "
+                            f"it.")
+    digests = artifact.get("digests")
+    if "digests" in artifact and (not isinstance(digests, dict)
+                                  or not digests
+                                  or operator_keys(digests) is not None):
+        problems.append(f"Op step {sid!r}'s gate.artifact.digests must be a "
+                        f"non-empty object of named digest expressions, one "
+                        f"per thing the acceptance is bound to.")
 
 
 def repeat_spec(step):
@@ -559,8 +694,13 @@ def decision_step(requirement):
     return None
 
 
-def _authority_problems(step, sid, step_ids, human_steps, problems):
-    """Every problem with one step's `authority:` block (phase 3 §2)."""
+def _authority_problems(step, sid, step_ids, human_steps, problems,
+                        artifact_steps=()):
+    """Every problem with one step's `authority:` block (phase 3 §2).
+
+    `artifact_steps` are the human Gates that decide about an ARTIFACT
+    (0.7.0): their decision is one verdict, not an approved list, so no
+    write grant can be asked for from one."""
     authority = step.get("authority")
     if authority is None:
         return
@@ -631,6 +771,12 @@ def _authority_problems(step, sid, step_ids, human_steps, problems):
                 problems.append(f"{where} reads the decision of step "
                                 f"{target!r}, which has no human Gate; a "
                                 f"write is authorized by a human decision.")
+            elif target in artifact_steps:
+                problems.append(f"{where} reads the approved list of step "
+                                f"{target!r}, whose human Gate decides about "
+                                f"an artifact; an artifact decision is one "
+                                f"verdict and carries no approved changes, "
+                                f"so it authorizes no write.")
             if target not in direct:
                 problems.append(f"{where} reads the decision of step "
                                 f"{target!r} without depending on it; add it "
@@ -867,29 +1013,10 @@ def validate(doc):
                                     f"{cog[field]!r}; cog.{field} is a "
                                     f"string.")
 
-        gate = step.get("gate")
-        if gate is not None:
-            if not isinstance(gate, dict):
-                problems.append(f"Op step {sid!r}'s gate must be an object "
-                                f"with a policy.")
-            else:
-                for key in sorted(str(k) for k in set(gate) - GATE_KEYS):
-                    problems.append(f"unknown key {key!r} under Op step "
-                                    f"{sid!r}'s gate:; the Gate vocabulary is "
-                                    f"closed.")
-                policy = gate.get("policy", GATE_POLICY)
-                if policy not in GATE_POLICIES:
-                    problems.append(f"Op step {sid!r} declares gate.policy "
-                                    f"{policy!r}; the Gate policies are "
-                                    f"{list(GATE_POLICIES)}.")
-                if gate.get("guards"):
-                    problems.append(f"Op step {sid!r} declares gate.guards, "
-                                    f"which are not in the runner subset; "
-                                    f"Guards are system-side verifiers a "
-                                    f"hosting environment supplies.")
+        _gate_problems(step, sid, problems)
 
         _authority_problems(step, sid, step_ids, human_gate_steps(steps),
-                            problems)
+                            problems, artifact_gate_steps(steps))
         _repeat_problems(step, sid, problems)
 
         on_fail = step.get("on_fail", "stop")
@@ -941,6 +1068,7 @@ def validate(doc):
         raise OpSpecError(problems)
     deps = _transitive(steps)
     human_steps = human_gate_steps(steps)
+    artifact_steps = artifact_gate_steps(steps)
 
     for step in steps:
         sid = step["id"]
@@ -953,6 +1081,15 @@ def validate(doc):
         _expr_problems(step.get("input") or {}, f"Op step {sid!r} input",
                        input_names, step_ids, dep_ids, loop_vars, problems,
                        human_steps)
+        if sid in artifact_steps and isinstance(gate_artifact(step), dict):
+            # The artifact is evaluated AFTER the step's own Cog answered, so
+            # it may read this step's payload and envelope as well as its
+            # dependencies' — but never its own decision, which does not
+            # exist until the person has given it (0.7.0).
+            _expr_problems(gate_artifact(step),
+                           f"Op step {sid!r} gate.artifact", input_names,
+                           step_ids, dep_ids | {sid}, loop_vars, problems,
+                           human_steps - {sid})
         for index, requirement in enumerate(requirements(step)):
             if not isinstance(requirement, dict):
                 continue
