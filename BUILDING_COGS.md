@@ -180,8 +180,9 @@ When documenting a code Cog in `COG.md`, explain:
 This is authoring and review guidance; the current Smith checker does not
 automatically assess whether the package's boundary is justified.
 
-Cog Smith provides supported starters for **context Cogs** and **code
-Cogs** (`smith new --kind code NAME`). Its
+Cog Smith provides supported starters for **context Cogs**, **code
+Cogs** (`smith new --kind code NAME`) and **decision Cogs**
+(`smith new --class decision NAME`, [§7c](#7c-build-a-decision-cog)). Its
 model-catalog command, **generate-descriptors**, also creates OpenTeams deployment
 descriptors:
 
@@ -785,6 +786,87 @@ effect. A journal this Cog cannot READ or CREATE at all — a permission, a
 directory where a file belongs — is the other failure and has its own name:
 `journal-unreadable`, an `ok: false` envelope like every other refusal, never
 a traceback.
+
+## 7c. Build a decision Cog
+
+    pixi run smith -- new cog-example-router --class decision --yes
+
+A **decision Cog** is a context Cog whose context is a set of typed questions
+instead of a prompt. A System One model — TypeSafe's Jev, or an ordinary LLM
+through TypeSafe's System One adapter — answers each question with a typed,
+probabilistic value, and your code makes the decision from those values:
+
+| Question | Answer |
+|---|---|
+| `noul` | probability that a statement is true (0–1) |
+| `choice` | one of 2–255 declared options, a distribution over all of them, and a confidence |
+| `score` | a probability-weighted position on an ordered rubric of 2–10 levels, its distribution, and a confidence |
+
+Use one when the work is a bounded judgment with a known answer space:
+routing, triage, classification, gating, extracting a label. Keep judgment in
+narrow questions and policy — thresholds, tie-breaks, escalation — in
+`decide`, where it can be read and tested. If the output is open-ended text,
+use an ordinary context Cog; if no judgment is needed, use a code Cog.
+
+`decision` is a **class**, not a kind: the manifest says `kind: context`,
+requires the `system-one/decisions` capability, and declares the class with
+`extensions.system_one`. Smith never infers the class from files.
+
+    cog-example-router/
+    ├── COG.md
+    ├── pixi.toml             # [tool.cog]; tasks: ask-composed, composition,
+    │                         #   prepare, replay, derive-schema, check, test
+    ├── context/
+    │   ├── questions.json        # YOURS — the typed questions
+    │   ├── input-schema.json     # YOURS
+    │   ├── output-schema.json    # $defs.decision YOURS; $defs.answers DERIVED
+    │   └── output-example.json
+    ├── examples/sample-bundle.json, sample-result.json
+    ├── scripts/composed_usage.py # Workbench's composed-usage adapter
+    ├── src/
+    │   ├── system_one_contract.py  # MACHINERY — the System One turn contract
+    │   ├── cog_core.py             # MACHINERY — prepare / finish / checks
+    │   ├── cog_cli.py              # MACHINERY — entry points
+    │   └── task_logic.py           # YOURS — state, questions, decide
+    └── tests/test_cog.py
+
+You write four functions:
+
+```python
+def state(bundle): ...                 # what the model evaluates (text or JSON)
+def questions(bundle, declared): ...   # usually `return declared`
+def decide(bundle, answers): ...       # typed answers -> $defs.decision
+def check_output(payload, bundle): ... # your contract checks
+```
+
+The payload is always `{decision, answers, answered_by}`. `answered_by`
+records the model that answered and its `answer_source`:
+`system-one-model` (a System One model such as Jev) or `llm-adapter` (an LLM
+asked for the same typed answers). The shapes are identical; the meaning is
+not — LLM-stated probabilities are not calibrated decisions, so tune and gate
+thresholds per source.
+
+The output schema's `$defs.answers` is derived from `questions.json`. After
+changing the questions, run `pixi run derive-schema`; `smith check` and
+`pixi run check` refuse drift. `questions(bundle, declared)` may reword
+instructions or rubrics per input (to point at fields in the state, say) but
+may not change ids, types, options or levels.
+
+A decision Cog never selects its provider. There is no `resolve` task and no
+default satisfier: a host admits a `system-one/decisions` binding (see
+cog-typesafe and cog-system-one-adapter) and composes it with the Cog:
+
+    # from cog-workbench (the host)
+    pixi run suite -- bind --provider cog-typesafe --request bind-request.json   # see cog-typesafe's examples/
+    pixi run suite -- activate-composition --context cog-example-router --binding-id binding-jev --revision 1
+    # from the decision Cog
+    pixi run ask-composed -- --request bundle.json
+
+Model-free work needs no binding: `pixi run prepare -- --bundle B` shows the
+turn that would be sent, and `pixi run replay -- --bundle B --result R`
+decides from a saved System One result (its binding says
+`provider_called: false`). Save real results as fixtures for the thresholds
+you care about and replay them in tests.
 
 ## 8. Validate before running a model
 

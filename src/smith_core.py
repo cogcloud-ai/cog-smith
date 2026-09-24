@@ -49,6 +49,30 @@ KIND_TEMPLATES = {"context": "context-cog", "code": "code-cog"}
 COG_KINDS = tuple(KIND_TEMPLATES)
 DEFAULT_KIND = "context"
 
+#: Cog classes: a starter for a recognisable shape WITHIN a kind. A class
+#: never changes the declared kind; it picks another template master with its
+#: own machinery lineage. `decision` (2026-09-24) is a context Cog whose
+#: context is a typed System One question set.
+CLASS_TEMPLATES = {"decision": "decision-cog"}
+CLASS_KINDS = {"decision": "context"}
+COG_CLASSES = tuple(CLASS_TEMPLATES)
+#: The DECLARED marker that puts a context Cog in the decision class.
+DECISION_EXTENSION = "system_one"
+#: Templates whose created Cogs name a default model-endpoint satisfier and
+#: serve a web-api endpoint (MODEL_COG_* and PORT are asked about).
+SATISFIER_TEMPLATES = {"context-cog"}
+
+
+def template_for(manifest):
+    """The template master whose machinery a package must carry. Declared,
+    never inferred from files: kind picks the lineage, and a context Cog is in
+    the decision class only when it carries the `system_one` extension."""
+    kind = manifest.get("kind")
+    extensions = manifest.get("extensions") or {}
+    if kind == "context" and isinstance(extensions, dict) and DECISION_EXTENSION in extensions:
+        return CLASS_TEMPLATES["decision"]
+    return KIND_TEMPLATES.get(kind, "context-cog")
+
 MANIFEST_FORMATS = ("pixi", "yaml")
 DEFAULT_MANIFEST_FORMAT = "pixi"
 MANIFEST_FILES = {"pixi": "pixi.toml", "yaml": "cog.yaml"}
@@ -97,9 +121,10 @@ def validate_request(tokens, template="context-cog"):
     Raises CreateError with every problem, not just the first.
 
     A code Cog answers fewer questions: it has no model dependency to name
-    and no served endpoint, so MODEL_COG_* and PORT are not asked about."""
+    and no served endpoint, so MODEL_COG_* and PORT are not asked about;
+    neither does a decision Cog, whose System One satisfier a host admits."""
     problems = []
-    model_backed = template != "code-cog"
+    model_backed = template in SATISFIER_TEMPLATES
 
     name = str(tokens.get("COG_NAME", ""))
     if not COG_NAME_RE.match(name):
@@ -167,12 +192,15 @@ def _serialization_tokens(tokens, template="context-cog"):
         if key in out:
             out[f"{key}_TOML"] = json.dumps(str(out[key]))
     # YAML double-quoted scalars for frontmatter lines:
-    out["DESCRIPTION_YAML"] = json.dumps(
-        f"Code Cog. {summary} No model in the loop; what it reaches outside "
-        f"the run is declared in the manifest."
-        if template == "code-cog" else
-        f"Context Cog. {summary} Depends on a Cog providing an "
-        f"OpenAI-compatible model endpoint.")
+    descriptions = {
+        "code-cog": f"Code Cog. {summary} No model in the loop; what it "
+                    f"reaches outside the run is declared in the manifest.",
+        "decision-cog": f"Decision Cog. {summary} A System One model answers "
+                        f"its typed questions; its code makes the decision.",
+    }
+    out["DESCRIPTION_YAML"] = json.dumps(descriptions.get(
+        template, f"Context Cog. {summary} Depends on a Cog providing an "
+                  f"OpenAI-compatible model endpoint."))
     out["SUMMARY"] = summary          # single-line; safe inside block scalars
     return out
 
@@ -220,6 +248,25 @@ def default_tokens(cog_name, **overrides):
     return tokens
 
 
+def _derive_decision_answers(root):
+    """A decision Cog's output schema carries `$defs.answers` derived from its
+    question set. When a request supplies questions or an output schema, the
+    derived part is recomputed here so created packages never start stale."""
+    import importlib.util
+    path = TEMPLATES / "decision-cog" / "src" / "system_one_contract.py"
+    spec = importlib.util.spec_from_file_location("smith_system_one_contract", path)
+    contract = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(contract)
+    questions = json.loads((root / "context" / "questions.json").read_text())
+    problems = contract._errors(questions, "questions")
+    if problems:
+        raise CreateError("invalid question set:\n  - " + "\n  - ".join(problems[:5]))
+    target = root / "context" / "output-schema.json"
+    schema = json.loads(target.read_text())
+    schema.setdefault("$defs", {})["answers"] = contract.answers_schema(questions)
+    target.write_text(json.dumps(schema, indent=2) + "\n")
+
+
 def create(dest, tokens, template="context-cog", validate=True, overlays=None,
            manifest_format=DEFAULT_MANIFEST_FORMAT):
     """Create a new Cog package at dest, atomically. The destination never
@@ -244,7 +291,8 @@ def create(dest, tokens, template="context-cog", validate=True, overlays=None,
     if not troot.is_dir():
         raise CreateError(f"unknown template {template!r}")
 
-    if validate and template in KIND_TEMPLATES.values():
+    if validate and template in (set(KIND_TEMPLATES.values())
+                                 | set(CLASS_TEMPLATES.values())):
         validate_request(tokens, template)
     tokens = _serialization_tokens(tokens, template)
     tokens = _manifest_tokens(tokens, troot, manifest_format)
@@ -294,6 +342,9 @@ def create(dest, tokens, template="context-cog", validate=True, overlays=None,
             out.write_text(str(text))
             if str(rel) not in written:
                 written.append(str(rel))
+
+        if template == CLASS_TEMPLATES["decision"] and overlays:
+            _derive_decision_answers(staging)
 
         staging.rename(dest)
     except Exception:

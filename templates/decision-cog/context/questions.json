@@ -1,0 +1,28 @@
+{
+  "department": {
+    "type": "choice",
+    "instructions": "Which team should handle this support ticket?",
+    "criteria": {
+      "billing": "Payments, invoices, refunds or subscription changes",
+      "technical": "Bugs, outages, errors or integration problems",
+      "sales": "Pricing, upgrades, quotes or new accounts"
+    }
+  },
+  "frustration": {
+    "type": "score",
+    "instructions": "How frustrated does the customer appear?",
+    "criteria": [
+      "Calm, just stating facts",
+      "Frustrated but civil",
+      "Very angry, strong language"
+    ]
+  },
+  "is_urgent": {
+    "type": "noul",
+    "instructions": "The ticket conveys urgency or time-sensitivity.",
+    "criteria": {
+      "true": "Explicitly time-sensitive, blocking, or losing money now",
+      "false": "No urgency expressed"
+    }
+  }
+}

@@ -374,7 +374,7 @@ def plan(root, to="pixi", machinery=True):
 
     # ---- machinery -----------------------------------------------------
     if machinery and (root / "src" / "cog_core.py").exists():
-        for master in smith_core.machinery_files():
+        for master in smith_core.machinery_files(smith_core.template_for(manifest)):
             target = root / "src" / master.name
             if not target.exists() or target.read_bytes() != master.read_bytes():
                 out["copies"].append((str(master), f"src/{master.name}"))
@@ -403,7 +403,8 @@ def plan(root, to="pixi", machinery=True):
                   TEMPLATE_REWRITES["pixi.toml"][0][1])
     if to == "pixi" and fmt != to:
         pending = {rel: text for rel, text in out["writes"].items()}
-        machinery_rels = {f"src/{m.name}" for m in smith_core.machinery_files()}
+        machinery_rels = {f"src/{m.name}" for m in
+                          smith_core.machinery_files(smith_core.template_for(manifest))}
         files = []
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = sorted(d for d in dirnames
