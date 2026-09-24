@@ -1,0 +1,93 @@
+"""Model-free suite for {{COG_NAME}} (created by cog-smith, decision Cog).
+
+Covers: manifest and question-set consistency, the prepared turn, deciding
+from saved answers, and refusal of answers that do not fit the questions.
+Extend it with saved results for the inputs your thresholds care about.
+"""
+import copy
+import json
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+import cog_core                          # noqa: E402
+import system_one_contract as contract   # noqa: E402
+import task_logic                        # noqa: E402
+
+
+def sample_bundle():
+    return json.loads((ROOT / "examples" / "sample-bundle.json").read_text())
+
+
+def sample_result():
+    return json.loads((ROOT / "examples" / "sample-result.json").read_text())
+
+
+class TestPackage(unittest.TestCase):
+    def test_self_check_is_clean(self):
+        self.assertEqual(cog_core.self_check(), [])
+
+    def test_output_schema_answers_follow_the_questions(self):
+        self.assertEqual(cog_core.OUTPUT_SCHEMA["$defs"]["answers"],
+                         contract.answers_schema(cog_core.QUESTIONS))
+
+    def test_requires_the_system_one_capability_and_names_no_satisfier(self):
+        required = cog_core.MANIFEST["requires"]
+        self.assertEqual([r["capability"] for r in required], [contract.CAPABILITY])
+        self.assertNotIn("satisfied_by", required[0])
+
+    def test_exactly_one_default_interface(self):
+        defaults = [i for i in cog_core.MANIFEST["interfaces"] if i.get("default")]
+        self.assertEqual(len(defaults), 1)
+
+
+class TestTurn(unittest.TestCase):
+    def test_prepare_renders_a_valid_turn(self):
+        prepared = cog_core.prepare(sample_bundle())
+        self.assertEqual(prepared["consumer"], cog_core.SELF_ID)
+        self.assertEqual(prepared["context"], [])
+        self.assertEqual(contract.task_problems(prepared["task"]), [])
+
+    def test_invalid_input_is_refused_before_any_turn(self):
+        with self.assertRaises(ValueError):
+            cog_core.prepare({"ticket_id": "x"})
+
+    def test_saved_answers_produce_a_clean_decision(self):
+        env = cog_core.finish(sample_bundle(), sample_result(), {"kind": "test"})
+        self.assertTrue(env["ok"], env)
+        self.assertEqual(env["problems"], [])
+        self.assertEqual(env["payload"]["answered_by"]["answer_source"], "system-one-model")
+        self.assertIsInstance(env["payload"]["decision"], dict)
+
+    def test_answers_that_do_not_fit_the_questions_fail(self):
+        result = sample_result()
+        question = next(iter(cog_core.QUESTIONS))
+        del result["answers"][question]
+        env = cog_core.finish(sample_bundle(), result, None)
+        self.assertFalse(env["ok"])
+        self.assertEqual(env["error"]["code"], "answers-invalid")
+
+    def test_question_wording_may_vary_but_not_the_answer_space(self):
+        original = task_logic.questions
+        try:
+            def widened(bundle, declared):
+                changed = copy.deepcopy(declared)
+                qid = next(iter(changed))
+                if changed[qid]["type"] == "noul":
+                    changed[qid] = {"type": "choice", "instructions": "x",
+                                    "criteria": {"a": None, "b": None}}
+                else:
+                    changed[qid] = {"type": "noul", "instructions": "x"}
+                return changed
+            task_logic.questions = widened
+            with self.assertRaises(ValueError):
+                cog_core.prepare(sample_bundle())
+        finally:
+            task_logic.questions = original
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "{{TITLE}} output",
+  "description": "The payload under envelope v1's `payload` key. `$defs.decision` is authored with task_logic.decide; `$defs.answers` is derived from context/questions.json by `pixi run derive-schema` and checked for drift.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "decision",
+    "answers",
+    "answered_by"
+  ],
+  "properties": {
+    "decision": {
+      "$ref": "#/$defs/decision"
+    },
+    "answers": {
+      "$ref": "#/$defs/answers"
+    },
+    "answered_by": {
+      "$ref": "#/$defs/answered_by"
+    }
+  },
+  "$defs": {
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ticket_id",
+        "route",
+        "escalate",
+        "reasons"
+      ],
+      "properties": {
+        "ticket_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route": {
+          "enum": [
+            "billing",
+            "technical",
+            "sales",
+            "human-review"
+          ]
+        },
+        "escalate": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "answered_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "answer_source"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "answer_source": {
+          "enum": [
+            "system-one-model",
+            "llm-adapter"
+          ]
+        }
+      }
+    },
+    "answers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "department",
+        "frustration",
+        "is_urgent"
+      ],
+      "properties": {
+        "department": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "choice",
+            "probabilities",
+            "confidence"
+          ],
+          "properties": {
+            "type": {
+              "const": "choice"
+            },
+            "choice": {
+              "enum": [
+                "billing",
+                "technical",
+                "sales"
+              ]
+            },
+            "probabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "billing",
+                "technical",
+                "sales"
+              ],
+              "properties": {
+                "billing": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "technical": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "sales": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "frustration": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "score",
+            "legend",
+            "probabilities",
+            "confidence"
+          ],
+          "properties": {
+            "type": {
+              "const": "score"
+            },
+            "score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "legend": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "0",
+                "1",
+                "2"
+              ],
+              "properties": {
+                "0": {},
+                "1": {},
+                "2": {}
+              }
+            },
+            "probabilities": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "0",
+                "1",
+                "2"
+              ],
+              "properties": {
+                "0": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "1": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "2": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "is_urgent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "noul"
+          ],
+          "properties": {
+            "type": {
+              "const": "noul"
+            },
+            "noul": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}

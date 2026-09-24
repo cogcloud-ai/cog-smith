@@ -111,7 +111,7 @@ def _prompt(label, default, explain=None):
 COG_REQUEST_KEYS = {"cog_request", "dir", "name", "id", "summary", "owner",
                      "license", "publisher", "port", "produces", "model_cog",
                      "prohibits", "cog_md", "context", "examples", "evals",
-                     "manifest"}
+                     "manifest", "class"}
 
 
 def _load_cog_request(path):
@@ -126,6 +126,10 @@ def _load_cog_request(path):
         raise smith_core.CreateError(
             f"manifest must be one of {list(smith_core.MANIFEST_FORMATS)}, "
             f"got {req.get('manifest')!r}")
+    if req.get("class") not in (None, *smith_core.COG_CLASSES):
+        raise smith_core.CreateError(
+            f"class must be one of {list(smith_core.COG_CLASSES)}, "
+            f"got {req.get('class')!r}")
     return req
 
 
@@ -169,6 +173,9 @@ def _request_overrides_overlays(req):
                   "context.output_schema")
     _json_overlay("context/output-example.json", ctx.get("output_example"),
                   "context.output_example")
+    # A decision Cog's question set; smith re-derives $defs.answers from it.
+    _json_overlay("context/questions.json", ctx.get("questions"),
+                  "context.questions")
     ex = req.get("examples") or {}
     _json_overlay("examples/sample-bundle.json", ex.get("sample_bundle"),
                   "examples.sample_bundle")
@@ -187,8 +194,20 @@ def cmd_new(args):
         req = _load_cog_request(args.from_request)
         req_overrides, overlays = _request_overrides_overlays(req)
 
-    kind = args.kind or smith_core.DEFAULT_KIND
-    template = smith_core.KIND_TEMPLATES[kind]
+    cog_class = args.cog_class or req.get("class")
+    if cog_class:
+        # A class picks a starter within a kind; it never changes the kind.
+        kind = smith_core.CLASS_KINDS[cog_class]
+        if args.kind and args.kind != kind:
+            raise smith_core.CreateError(
+                f"class {cog_class!r} is a {kind} Cog; it cannot be kind "
+                f"{args.kind!r}")
+        template = smith_core.CLASS_TEMPLATES[cog_class]
+    else:
+        kind = args.kind or smith_core.DEFAULT_KIND
+        template = smith_core.KIND_TEMPLATES[kind]
+    label = f"{cog_class} Cog" if cog_class else f"{kind} Cog"
+    serves = template in smith_core.SATISFIER_TEMPLATES
     # `smith new --kind code NAME` — the positional NAME names the Cog and,
     # when no --dir is given, is the destination directory (relative to the
     # working directory).
@@ -230,7 +249,7 @@ def cmd_new(args):
             print(f"error: {detail}", file=sys.stderr)
         return 2
     if not scripted and sys.stdin.isatty():
-        print(f"Creating {tokens['COG_ID']} ({kind} Cog) at {dest} — enter to "
+        print(f"Creating {tokens['COG_ID']} ({label}) at {dest} — enter to "
               f"accept defaults:")
         tokens["COG_ID"] = _prompt(
             "cog id", tokens["COG_ID"],
@@ -246,7 +265,7 @@ def cmd_new(args):
         tokens["LICENSE"] = _prompt(
             "license", tokens["LICENSE"],
             "SPDX license id for the package, e.g. Apache-2.0")
-        if kind != "code":
+        if serves:
             tokens["PORT"] = _prompt(
                 "web-api port", tokens["PORT"],
                 "loopback port the HTTP entry point listens on (pixi run serve)")
@@ -254,8 +273,9 @@ def cmd_new(args):
             "io.produces value", tokens["PRODUCES"],
             "lowercase token naming what this Cog produces, e.g. highlights "
             "— shown in the card's io line")
-        if kind != "code":
-            # A code Cog has no model dependency to satisfy.
+        if serves:
+            # A code Cog has no model dependency to satisfy, and a decision
+            # Cog's System One satisfier is admitted by a host.
             tokens["MODEL_COG_ID"] = _prompt(
                 "default model cog", tokens["MODEL_COG_ID"],
                 "default satisfier for the model-endpoint requirement; a "
@@ -283,6 +303,7 @@ def cmd_new(args):
             "dest": result["dest"],
             "cog_id": tokens["COG_ID"],
             "kind": kind,
+            "class": cog_class,
             "files": len(result["files"]),
             "manifest": result["manifest"],
             "machinery": result["machinery"],
@@ -293,10 +314,13 @@ def cmd_new(args):
         }, problems=_problems(findings), started=started))
         return 1 if errors else 0
 
-    print(f"created {tokens['COG_ID']} ({kind} Cog) -> {result['dest']}")
+    print(f"created {tokens['COG_ID']} ({label}) -> {result['dest']}")
     print(f"  {len(result['files'])} files; manifest: {result['manifest']}; "
           f"machinery: {', '.join(result['machinery'])}")
-    if kind == "code":
+    if cog_class == "decision":
+        print("  next: edit context/questions.json + src/task_logic.py, then:")
+        print("        pixi install && pixi run derive-schema && pixi run test")
+    elif kind == "code":
         print("  next: edit context/*.json + src/task_logic.py, then:")
         print("        pixi install && pixi run test && pixi run run -- "
               "--bundle examples/sample-bundle.json")
@@ -486,6 +510,10 @@ def main():
                    help="context (default): a Cog whose work a model does; "
                         "code: a model-free Cog whose work code does "
                         "(kind: code)")
+    p.add_argument("--class", dest="cog_class", choices=smith_core.COG_CLASSES,
+                   help="a starter within a kind: decision = a context Cog "
+                        "whose typed questions a System One model answers "
+                        "(requires system-one/decisions)")
     p.add_argument("--dir", help="destination directory (or the request's "
                                  "\"dir\"; a given flag wins)")
     p.add_argument("--from-request", dest="from_request", metavar="REQ.json",

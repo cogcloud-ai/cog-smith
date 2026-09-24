@@ -1,0 +1,75 @@
+# Created by cog-smith. Built against openteams/cog-manifest [0.1]; emits the
+# envelope-v1 result contract (Collab profile — see cog-smith/ENVELOPE.md).
+
+schema: openteams/cog-manifest [0.1]
+id: {{COG_ID}}
+version: "0.1.0"
+summary: >
+  {{SUMMARY}}
+license: {{LICENSE}}
+
+# A decision Cog is a context Cog whose context is a typed question set: a
+# System One model answers, and task_logic.decide turns answers into a decision.
+kind: context
+
+owner: {{OWNER}}
+frames: []
+
+context:
+  input_schema: context/input-schema.json
+  output_schema: context/output-schema.json
+  output_example: context/output-example.json
+
+# The requirement is a CAPABILITY. No default satisfier is named: a host
+# admits a System One binding (TypeSafe Jev, or an LLM through the System One
+# adapter) and composes it with this Cog. The input never selects it.
+requires:
+  - capability: system-one/decisions
+    locality: any
+
+interfaces:
+  - name: decide
+    kind: command
+    task: ask-composed
+    audience: usage
+    default: true
+  - name: composition
+    kind: command
+    task: composition
+    audience: lifecycle
+  - name: prepare
+    kind: command
+    task: prepare
+    audience: lifecycle
+  - name: replay
+    kind: command
+    task: replay
+    audience: lifecycle
+  - name: health
+    kind: command
+    task: check
+    audience: lifecycle
+
+io:
+  accepts: [task_request]
+  produces: [{{PRODUCES}}]
+
+memory: none
+
+prohibits:
+{{PROHIBITS_YAML}}
+
+extensions:
+  system_one:
+    contract: openteams/system-one-decision [0.1-draft]
+    questions: context/questions.json
+  workbench_composition:
+    contract: openteams/context-composition [0.1-draft]
+    capability: system-one/decisions
+    bridge_interface: composition
+    accepted_compositions: [model+harness, harness]
+    required_features: [choice, noul, score]
+    allowed_localities: [local, cloud]
+    tools: none
+    checks: packaged-before-and-after
+    evidence_scope: composed-system

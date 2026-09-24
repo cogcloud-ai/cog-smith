@@ -4,7 +4,9 @@
 hash on every created CONTEXT Cog (everything except the author-owned
 `task_logic.py`). A created **code** Cog carries the `templates/code-cog/src/`
 masters instead — `smith check` picks the lineage by the manifest's kind (see
-"Code-cog machinery" below). "Forge" below is the earlier internal package
+"Code-cog machinery" below) — and a **decision** Cog (a context Cog declaring
+`extensions.system_one`) carries `templates/decision-cog/src/` (see
+"Decision-cog machinery"). "Forge" below is the earlier internal package
 (not distributed) the context-cog machinery was derived from. Lineage:
 
 | File | Provenance |
@@ -297,6 +299,27 @@ fix has a regression test that failed before it (`tests/test_code_cog.py`).
   required steps are numbered in `task_logic.py`: skip a decided change,
   reconcile an `applying` one by ASKING THE TARGET, check the grant against a
   freshly fetched target hash, then journal-and-apply.
+
+## Decision-cog machinery (0.1.0, 2026-09-24): `templates/decision-cog/src/`
+
+A fourth lineage, on the same terms. A **decision Cog** is a context Cog in
+the `decision` class: its context is a typed System One question set, and
+the manifest declares it with `extensions.system_one`
+(`openteams/system-one-decision [0.1-draft]`). `smith check` picks these
+masters through `smith_core.template_for(manifest)` — kind first, then the
+declared class marker — and enforces them by hash. `cog_core.MACHINERY`
+names the lineage.
+
+| File | Provenance |
+|---|---|
+| `system_one_contract.py` | NEW — `openteams/system-one-turn [0.1-draft]`: the turn task (`state` + typed `questions`) and result (`model`, `answer_source`, `answers`, `usage`) as JSON Schema, following TypeSafe's public System One API; semantic result checks (every question answered once, declared options/levels only, distributions sum to 1, the choice is modal, score in range); `answers_schema(questions)` derives the strict answers schema. System One providers (cog-typesafe, cog-system-one-adapter) vendor this file byte-identically. |
+| `cog_core.py` | NEW — manifest load (same rules as the other lineages), `prepare(bundle)` renders the Workbench turn (`consumer`, empty `context`, `task`), `finish(bundle, result, provenance)` checks answers against the questions and builds envelope v1 with `payload = {decision, answers, answered_by}`; `questions_for` lets task logic vary wording but not the answer space; `self_check` refuses output-schema drift from the questions. Never selects or calls a provider. |
+| `cog_cli.py` | NEW — `bridge prepare\|finish --request` (the Workbench composition bridge; always an envelope on exit 0), `prepare --bundle` (dry run), `replay --bundle --result` (decide from saved answers; `binding.kind = replay`, `provider_called: false`), `derive-schema [--write]`, `--check` |
+| `task_logic.py` | AUTHOR-OWNED — `state`, `questions`, `decide`, plus `check_input` / `check_output`; ships with a support-ticket triage starter |
+
+The package also carries `scripts/composed_usage.py`, copied verbatim from
+cog-workbench's canonical `bridges/composed_usage.py` (Workbench owns it).
+No new runtime dependencies: python, pyyaml, jsonschema.
 
 ## Op machinery (0.5.0, 2026-09-17): `templates/op/src/`
 
