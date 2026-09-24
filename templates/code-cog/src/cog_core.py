@@ -17,7 +17,7 @@ owner's ambient credentials. A grant is not an enforced sandbox: it is a
 document the Op runner issues and THIS CODE checks before it reaches outside
 the run. The Cog refuses to act without a valid grant, and reports every
 attempted operation. Nothing here may be described as an enforced restricted
-environment (phase 2 contract §0).
+environment.
 """
 import hashlib
 import json
@@ -39,7 +39,7 @@ except ImportError:                                    # pragma: no cover
 
 #: The code-cog machinery lineage (cog-smith MACHINERY.md). Reported in
 #: every envelope's `binding`, so a saved result names the code that made it.
-MACHINERY_VERSION = "0.1.4"
+MACHINERY_VERSION = "0.1.5"
 
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
 
@@ -151,7 +151,7 @@ class Journal:
     torn: `read()` ignores it, and `append()` REPAIRS it first — the
     fragment is cut and a `{"phase": "torn"}` entry records that it was —
     so the next real entry starts on a line of its own and can never be
-    swallowed by the fragment (review B6).
+    swallowed by the fragment.
     """
 
     def __init__(self, path):
@@ -203,7 +203,7 @@ class Journal:
         The tail is cut as BYTES, at the last newline, before anything is
         decoded: a crash halfway through a multibyte character would
         otherwise make decoding the whole file raise `UnicodeDecodeError`
-        and lose the records before it (contract §9b, finding 4). Each
+        and lose the records before it. Each
         complete line is then decoded strictly, so a line that is not UTF-8
         is corruption with a name rather than a traceback."""
         if not self.path.exists():
@@ -269,7 +269,7 @@ def load_grant(path):
 
 #: The two hash fields a granted change carries. They are EXCLUDED from the
 #: change's own content hash: the hash covers what the change says to do,
-#: not the hashes stated beside it (contract §9).
+#: not the hashes stated beside it.
 CHANGE_HASHES = ("content_sha256", "target_sha256")
 
 
@@ -289,7 +289,7 @@ def change_content_sha256(change):
     Compute this from the change you are ABOUT TO APPLY and pass it to
     `write_allowed`. Never forward the `content_sha256` a bundle carries:
     forwarding it only checks that the bundle agrees with itself, so content
-    edited under an approved id would pass (contract §9b, finding 2)."""
+    edited under an approved id would pass."""
     if not isinstance(change, dict):
         raise TypeError("a change is a JSON object")
     return canonical_sha256({k: v for k, v in change.items()
@@ -319,7 +319,7 @@ def check_grant(grant, run_id=None, now=None, cog_id=None,
     Checked before any external call: a grant for another run, another Cog,
     or a moment that has passed is refused by THIS Cog. Nothing here fails
     open — a grant whose run binding disagrees with itself, or an invocation
-    that carries no `--run-id`, is `grant-invalid` (review B4)."""
+    that carries no `--run-id`, is `grant-invalid`."""
     cog_id = cog_id or SELF_ID["id"]
     if not isinstance(grant, dict):
         return "grant-invalid", "the grant is not a JSON object"
@@ -396,7 +396,7 @@ def read_allowed(grant, target, resource="github", run_id=None, now=None):
     `repositories` must be a LIST OF STRINGS. A grant that states a bare
     string is refused by name — never membership-tested, which would
     authorize every substring of it — and any other type is refused rather
-    than raising (contract §9b, finding 4)."""
+    than raising."""
     ok, detail = _usable(grant, run_id, now)
     if not ok:
         return False, detail
@@ -439,7 +439,7 @@ def write_allowed(grant, change_id, target_sha256, content_sha256=None,
                   resource="github", run_id=None, now=None):
     """(ok, detail) for writing CHANGE_ID.
 
-    TWO hashes, and neither may be null (contract §9):
+    TWO hashes, and neither may be null:
 
     - `target_sha256` is the content hash of the target item as the Op READ
       it. Pass the hash you just fetched FRESH from the target: if it
@@ -504,7 +504,7 @@ def validate_input(bundle):
     The package's checker runs ONLY over a bundle the declared schema
     accepted: a `check_input` written against the declared shape may assume
     it, and a bundle that violates the schema is reported as schema problems
-    rather than crashing the author's callback (review S7)."""
+    rather than crashing the author's callback."""
     if not isinstance(bundle, dict):
         return [problem("input", "input is not an object")]
     problems = _schema_problems(bundle, INPUT_SCHEMA, "input")
@@ -613,7 +613,7 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
     # CONTENT cannot be trusted; `journal-unreadable` is one this process
     # cannot read or create at all — a permission, a directory where a file
     # belongs, a vanished mount. Both are structured ok:false envelopes:
-    # neither is a traceback (contract §9c, review 3 finding 5).
+    # neither is a traceback.
     if journal is not None:
         try:
             journal.read()
@@ -637,7 +637,7 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
                      "task_logic.run must return (payload, problems)")
     payload, task_problems = result
     # The package's output checker runs inside the SAME exception boundary as
-    # `run` (contract §9d): a checker that trips over a payload it did not
+    # `run`: a checker that trips over a payload it did not
     # expect is a named ok:false envelope, never a traceback out of the CLI.
     # It gets its own code because "the task is broken" and "the task's
     # self-check is broken" are different repairs.

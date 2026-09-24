@@ -152,8 +152,8 @@ def check(root, run_tests=False):
             "loop; if it needs a model it is a context Cog")
 
     # `reaches` — what a Cog touches OUTSIDE the run. Declared, never
-    # inferred; it is what a grant is checked against (phase 3 contract §1).
-    # In phase 3 only code Cogs carry it; context Cogs get it when
+    # inferred; it is what a grant is checked against.
+    # Today only code Cogs carry it; context Cogs get it when
     # tool-using Cogs arrive.
     reaches = m.get("reaches")
     if reaches is not None and not is_code:
@@ -338,7 +338,7 @@ def _check_model_descriptor(m, err, warn):
     if not model.get("descriptor"):
         warn("profile", "descriptor",
              "model.descriptor: true marker absent — the profile marks "
-             "deployment descriptors explicitly (review 2026-08-22, F5)")
+             "deployment descriptors explicitly")
 
     defaults = [i for i in m.get("interfaces") or [] if i.get("default")]
     if len(defaults) != 1:

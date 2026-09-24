@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""(cog-smith machinery: derived from cog-forge @7fe8aca; envelope-v1 deltas marked.)
+"""(cog-smith machinery: derived from an earlier internal package;
+envelope-v1 deltas marked.)
 Run this Cog's declared evaluation fixtures against the bound model.
 
     pixi run eval                  # every fixture declared in the manifest
@@ -17,7 +18,8 @@ test`). This runner is the manifest's `evaluation.fixtures` block made
 executable against a live binding; --baseline retains the report (with the full
 binding identity and a content hash) as comparison evidence across routes.
 The judged half of evaluation belongs to the independent-reviewer Cog.
-Byte-identical across the cog-forge Cogs; tools/check_copies.py enforces it.
+Byte-identical across the Cogs that vendor it; `smith check` enforces it
+by hash.
 """
 import argparse
 import hashlib
@@ -194,13 +196,13 @@ def run_fixture(path):
               bool(parsed.get("abstained")) == bool(want_abstain),
               f"abstain_reason={parsed.get('abstain_reason')!r}")
 
-    # `fields` asserts the STRUCTURED RESULT (machinery 0.4.2, contract §11b).
+    # `fields` asserts the STRUCTURED RESULT (machinery 0.4.2).
     # Outside the not-abstained block on purpose: an abstention is a result
     # with fields too. A fixture that can only forbid a token asserts what the
     # Cog must not SAY, never what it must DECIDE — a response that assigned
     # P2 while citing some other grounded passage passed the review-priority
     # fixture, and a correct `unrated` answer that explained why the
-    # reviewer's marker was ineligible FAILED it (Codex review 9).
+    # reviewer's marker was ineligible FAILED it.
     for key, want in (expect.get("fields") or {}).items():
         got = (parsed or {}).get(key)
         check(f"{key} == {want!r}", got == want, f"got {got!r}")

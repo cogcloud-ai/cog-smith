@@ -59,7 +59,7 @@ def main(argv=None):
         # Creating the journal is the first thing that can fail with an
         # OSError, and it fails with a NAME: a Cog that cannot open the
         # record of its external effects prints a structured envelope, not a
-        # traceback (contract §9c).
+        # traceback.
         try:
             journal = cog_core.Journal(args.journal)
         except OSError as exc:

@@ -816,7 +816,7 @@ construct and the phase that adds it — never discovered mid-run:
 | `tool:` step | never — deterministic work is a Cog of `kind: code`, invoked as a `cog:` step |
 | `human:` step | never — a human Gate is a policy on a step, `gate: {policy: human}` |
 | `state:` | phase 4 |
-| `authority` on a `foreach` step | phase 3 issues no per-element grants |
+| `authority` on a `foreach` step | the runner issues no per-element grants |
 | `on_fail: retry-once` on a step with `authority` or a reaching Cog | a reaching Cog recovers by resume and journal reconciliation |
 | `repeat` on a step with `authority`, a reaching Cog, or `gate.policy: human` | an effectful step is never repeated; a human decides about one set of proposals |
 | `gate.decides` outside `changes`/`artifact`, or `decides`/`artifact` on a non-human Gate | only a human Gate decides about something |
@@ -828,7 +828,7 @@ construct and the phase that adds it — never discovered mid-run:
 | a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
 | two write requirements reading different human gates | one gate per writing step |
 | `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `run.lock` or `track.json` | the runner's control entries are reserved |
-| `authority` on a step whose Cog is not `kind: code` | phase 3 supports authority on code Cogs only |
+| `authority` on a step whose Cog is not `kind: code` | the runner supports authority on code Cogs only |
 | a requirement outside the Cog's declared `reaches` | the Cog does not declare it |
 | a step that names a reaching Cog and requires nothing | a reaching Cog runs only under a grant |
 | a write requirement that reads no human decision | a write is authorized by a human decision |

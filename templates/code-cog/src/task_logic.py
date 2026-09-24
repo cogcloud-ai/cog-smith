@@ -69,7 +69,7 @@ decided change or reconciling by reads reports no write.
         # is an ERROR-severity problem with a name of its own, so the step's
         # Gate fails, the run stops there and `op run --resume` invokes this
         # Cog again to reconcile. A step that has not finished must not let
-        # a later step record a final state (contract §9e).
+        # a later step record a final state.
         if unresolved:
             problems.append(cog_core.problem(
                 "write-back-unresolved", "still uncertain: " + ", ".join(unresolved)))

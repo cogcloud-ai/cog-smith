@@ -20,7 +20,8 @@ unpinned rather than silently unversioned.
 Contract checks enforced here (the Cog's own rules, not system Guards), before anything is written:
   - locality: the manifest's requires[].locality constraint must admit the preset
   - transport: plain HTTP to a non-loopback host is refused without --insecure-http
-Byte-identical across the cog-forge Cogs; tools/check_copies.py enforces it.
+Byte-identical across the Cogs that vendor it; `smith check` enforces it
+by hash.
 """
 import argparse
 import json

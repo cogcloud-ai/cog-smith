@@ -1,5 +1,5 @@
-"""Shared binding-record machinery. Byte-identical across the cog-forge Cogs;
-tools/check_copies.py enforces the sync.
+"""Shared binding-record machinery. Byte-identical across the Cogs that vendor
+it; `smith check` enforces the sync by hash.
 
 One binding-record shape for BOTH paths (`resolve` and `use`), and ONE
 fail-closed normalization for everything that can influence the binding —
@@ -24,8 +24,8 @@ RECORD_SCHEMA = "openteams/binding-record [0.1]"
 
 # The caller's deadline for one model call is a BINDING fact, not a constant:
 # a 3B model on loopback and a cloud model asked to read 160k characters do not
-# share a deadline (phase 3 live sweep: a 161,000-character request outran a
-# hard-coded 180 s). It is written by `use --timeout` / `resolve --timeout`,
+# share a deadline (a live sweep in which a 161,000-character request outran
+# a hard-coded 180 s). It is written by `use --timeout` / `resolve --timeout`,
 # carried in the record, and overridable for one call by `cog_cli --timeout`.
 REQUEST_TIMEOUT_DEFAULT = 180
 REQUEST_TIMEOUT_MIN = 10
@@ -337,7 +337,7 @@ def load_record(root, environ=None):
 
     Fail-closed invariants, enforced here for EVERY path:
       - a malformed model.json is a violation, never a silent fallback to a
-        different model (cog-demo finding 1: silent model drift);
+        different model (an earlier finding: silent model drift);
       - an endpoint override invalidates the pin and satisfier, recomputes
         locality (loopback -> local, else COG_MODEL_LOCALITY or cloud), and
         downgrades a json_schema decoder guarantee it can no longer promise;

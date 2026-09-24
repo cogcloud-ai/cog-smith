@@ -7,7 +7,7 @@ reported, the Gate decision for each step, the model bindings those
 envelopes carried, and the output artifacts. It is rewritten after every
 step, so a crash leaves a readable partial Track.
 
-Shape lifted from op-video-transcription's track.json and extended with
+Shape lifted from an earlier internal Op's track.json and extended with
 step status, attempts, foreach elements, and repeats.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ def new_run_id():
 def contained(path, base):
     """PATH, checked to resolve INSIDE base through no link at all. The
     runner's own control files (the Track, grants, pending, decisions,
-    journals) go through this (contract §9, §9b; review S1, finding 3).
+    journals) go through this.
 
     Two rules, because resolving alone is not enough:
 
@@ -100,7 +100,7 @@ def ensure_dir(path):
     entry is fsynced in its own parent. `mkdir(parents=True)` alone leaves a
     newly created directory unpersisted, so a power loss could leave a
     durable Track pointing at a grants or journal directory that is not
-    there (review finding 5)."""
+    there."""
     path = Path(path)
     missing, probe = [], path
     while not probe.exists():
@@ -139,7 +139,7 @@ def touch_durable(path, base=None):
 # alone and an earlier attempt's file sat exactly where a recovery would look.
 # The reservation and the deletion were two durable operations, not one: a
 # crash between them left the new digests on the Track with the OLD answer on
-# disk (Codex review 6, finding 1). 0.6.6 removes the reason instead of the
+# disk. 0.6.6 removes the reason instead of the
 # file — every attempt owns an immutable path that names it, so nothing a run
 # wrote is ever deleted or overwritten.
 
@@ -188,11 +188,11 @@ def new_track(spec, run_id, input_request, status="running"):
         "input_request": str(Path(input_request).resolve()),
         # Where the request was READ from: relative `$path` operands resolve
         # against it, so a resume must resolve them the same way the first
-        # run did (review S4).
+        # run did.
         "request_dir": None,
         "spec_sha256": spec.sha256(),
         "records": (spec.track or {}).get("records") or DEFAULT_RECORDS,
-        # Authority (phase 3 §5): the admission this run was started with,
+        # Authority: the admission this run was started with,
         # every grant it issued (scope and provenance, never a credential),
         # and every time a human resumed it. A resume entry carries `at`, the
         # `decision` it applied, the `changed_cogs` it is keeping results
@@ -203,7 +203,7 @@ def new_track(spec, run_id, input_request, status="running"):
         "grants": [],
         "resumes": [],
         # The step a stopping verdict ended the run at — the resume point of
-        # a failed run (contract §9e). `None` while the run is live.
+        # a failed run. `None` while the run is live.
         "failed_step": None,
         "steps": [],
     }
@@ -303,7 +303,7 @@ def step_record(step, status, **fields):
         # slot never writes over the first budget's files. On a `foreach` step
         # this stays null and each ELEMENT carries its own.
         "retired_repeats": None,
-        # Authority (phase 3 §5): the grant this step was issued, the
+        # Authority: the grant this step was issued, the
         # journal it recorded its external effects in, what it reported
         # attempting, and — for a human Gate — the decision it carries.
         "grant": None,

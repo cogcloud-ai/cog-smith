@@ -1,7 +1,7 @@
 """Shared core for this Cog's interfaces (cog-smith machinery, generic).
 
-Derived from cog-forge @7fe8aca (engineering-gates PASS). Deltas from the
-forge original are deliberate and documented in cog-smith's
+Derived from an earlier internal package (not distributed). Deltas from that
+original are deliberate and documented in cog-smith's
 MACHINERY.md: (1) all task-specific logic lives in task_logic.py — this file
 is byte-identical across created Cogs and copy-sync-checked by `smith check`;
 (2) input validation runs against the manifest-declared input schema;
@@ -60,7 +60,7 @@ def problem(check, detail, severity="error"):
 
 def load_context():
     """System prompt: instructions + a fully WORKED EXAMPLE (small models copy
-    examples reliably and interpret schemas poorly — cog-demo finding 3).
+    examples reliably and interpret schemas poorly — an earlier finding).
     output-schema.json remains the normative contract."""
     system = (ROOT / "context" / "system.md").read_text()
     example = (ROOT / "context" / "output-example.json").read_text()
@@ -190,7 +190,7 @@ def health(timeout=3, deep=False, deep_timeout=None):
     explicit override (`cog_cli --check --deep --timeout N`) and is used as
     stated. Without one the deep probe keeps its own floor of 30 s. Before
     0.4.1 the override was accepted and silently dropped, so a completion
-    probe that needed 40 s reported DOWN (Codex review 9).
+    probe that needed 40 s reported DOWN.
     """
     base = ENDPOINT.rstrip("/")
     if deep:
@@ -349,7 +349,7 @@ def invoke(bundle, timeout=None, task="ask"):
 
     parsed = extract_json(text)
     if parsed is None:
-        # F3 (review 2026-08-22): content that exists but is not parseable
+        # Content that exists but is not parseable
         # JSON is a malformed upstream response — documented error code and
         # a 5xx at the HTTP layer, never a bare 200. Raw text retained.
         env = _fail(task, "model-response-malformed",

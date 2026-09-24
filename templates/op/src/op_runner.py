@@ -13,16 +13,16 @@ the usage task that Cog declares, gates the envelope it gets back, and
 writes the durable Track. It never imports a Cog's Python and never calls a
 model itself.
 
-Gate semantics are lifted from op-video-transcription/src/run_op.py: three
+Gate semantics come from an earlier internal Op: three
 states (pass, pass-with-problems, fail) with the reasons listed. The Gate
 decides; the Cog never decides its own acceptance.
 
-Authority (phase 3): a step declares what it `requires`, the runner issues
+Authority: a step declares what it `requires`, the runner issues
 the grant immediately before the invocation — from the run's admission
 (`--authority`) for a read, and from a human Gate's decision for a write —
 and passes `--grant`, `--run-id` and `--journal` to the Cog. The Cog checks
 that grant itself before it reaches outside the run: this runner sequences
-and records, it does not enforce a restricted environment (contract §0).
+and records, it does not enforce a restricted environment.
 
 A step with `gate: {policy: human}` pauses the run once its Cog has passed
 the ordinary envelope Gate: the proposed changes are written to
@@ -63,8 +63,8 @@ propose: a step with `authority`, a human Gate, or a Cog that declares
 before the next one is invoked (0.6.1), so a resume reuses a passed repeat
 only when it answered the question the step is asking now.
 
-`repeat.mode` says how many of the `count` repeats actually run (0.6.4,
-narrowing contract §14). `all` — the default, and today's behaviour — runs
+`repeat.mode` says how many of the `count` repeats actually run (0.6.4).
+`all` — the default, and today's behaviour — runs
 all `count` and unions the answers: for a step whose RECALL varies run to
 run. `until-required` runs them one at a time and STOPS as soon as `require`
 have passed, so `{count: 4, require: 1, mode: until-required}` costs one
@@ -88,7 +88,7 @@ they were paid for, so a resume that finds a budget spent refuses that
 element by name and `--renew-budget STEP` is the explicit, recorded
 (`resumes[].renewed_budgets`) way to buy a new one after a fix.
 
-Every attempt OWNS AN IMMUTABLE FILE (0.6.6, Codex review 6). The envelope
+Every attempt OWNS AN IMMUTABLE FILE (0.6.6). The envelope
 path names its attempt — `envelopes/<step>[/<index>].r<slot>.a<attempt>.json`,
 `attempt` counting every invocation ever made for that slot in this run — and
 a reservation records the exact path it will write, so recovery reads only the
@@ -119,7 +119,7 @@ so one union never mixes two versions of a Cog or two models. A step that alread
 never re-run for a changed Cog: the resume entry's `changed_cogs` records
 which version produced what, and fix-and-resume keeps working.
 
-A FAILED run resumes too (contract §9e): the step that stopped it — the one
+A FAILED run resumes too: the step that stopped it — the one
 the Track names in `failed_step` — is the resume point, so a Cog that
 reports unfinished work (a write left uncertain, say) is re-run and finishes
 it, and the steps after it then run for the first time. Steps that passed
@@ -216,7 +216,7 @@ ARGPARSE_EXIT = 2
 
 def _rejected_flag(completed, flag):
     """True when the Cog's CLI refused FLAG by name WITHOUT DOING ANY WORK,
-    so trying the next flag cannot run an effectful Cog twice (contract §0).
+    so trying the next flag cannot run an effectful Cog twice.
 
     Three conditions, all required: argparse's own exit code (2), the
     diagnostic on STDERR (where argparse writes it) naming this exact flag,
@@ -310,7 +310,7 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
     """Run one declared Cog task and return its envelope.
 
     `grant_path`, `run_id` and `journal_path` are the invocation context a
-    granted step gets (phase 3 §2): they are passed as `--grant`, `--run-id`
+    granted step gets: they are passed as `--grant`, `--run-id`
     and `--journal` BESIDE the request, never inside it, and only for a step
     the runner issued a grant to.
 
@@ -322,8 +322,7 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
     malformed envelope all arrive the same way.
 
     The run lock's descriptor is passed to the child (`pass_fds`): while a
-    Cog is running, the run stays locked even if this runner dies (contract
-    §9b)."""
+    Cog is running, the run stays locked even if this runner dies."""
     cog_dir = Path(cog_dir)
     inherited = tuple(fd for fd in (LOCK_FD,) if fd is not None)
     previous = []
@@ -440,7 +439,7 @@ def combine_gates(gates):
 
 def combine_repeat_gates(gates, require):
     """One Gate decision over the repeats of a step, or of one `foreach`
-    element (narrowing contract §2).
+    element.
 
     `fail` when fewer than `require` repeats passed — the step did not get
     the evidence it asked for; otherwise `pass-with-problems` when any repeat
@@ -476,7 +475,7 @@ STEP_STATUS = {"pass": "passed", "pass-with-problems": "passed-with-problems",
 # Three documents, all validated by their `schema` string BY NAME. None of
 # them carries a credential, and none of them can be built by a mapping
 # expression: authority is trusted invocation context, separate from the
-# request document (phase 2 contract §0, phase 3 §2).
+# request document.
 
 AUTHORITY_SCHEMA = "openteams/op-authority [0.1]"
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
@@ -498,7 +497,7 @@ class Denied(Exception):
     never invoked; `on_fail` then applies as it does for a failure."""
 
 
-#: One run, one process (contract §9, §9b). Two resumes of the same paused
+#: One run, one process. Two resumes of the same paused
 #: run would each accept the decision, issue the same grant, read the same
 #: empty journal, and apply the same change twice: atomically replacing the
 #: Track orders the WRITES, not the executions. The lock does.
@@ -507,7 +506,7 @@ LOCK_NAME = "run.lock"
 #: The open descriptor of the lock this process holds, if any. It is passed
 #: to every Cog subprocess (`pass_fds`), so the lock outlives a runner that
 #: dies with a Cog still running: the kernel drops it only when the LAST
-#: holder exits (contract §9b).
+#: holder exits.
 LOCK_FD = None
 
 
@@ -521,11 +520,10 @@ class RunLock:
     dies releases it because the kernel closes its descriptors; a process
     that is alive holds it because the kernel says so. The file's JSON (pid,
     time) is INFORMATIONAL — it says who to look for, and is never the
-    thing consulted to decide (review finding 1).
+    thing consulted to decide.
 
     The lock FILE is a control file like the Track: contained in the run
-    and opened `O_NOFOLLOW`, so it is never a link to something else
-    (contract §9c).
+    and opened `O_NOFOLLOW`, so it is never a link to something else.
 
     The descriptor is inherited by every Cog this runner launches, so a
     runner killed mid-invocation keeps the run locked until its Cog is
@@ -544,8 +542,8 @@ class RunLock:
         The lock file is a CONTROL FILE, opened like every other one: the
         path is contained in the run directory (no link out, no alias
         inside), and the open itself is `O_NOFOLLOW`, so `run.lock` pointing
-        at `track.json` is refused rather than followed and truncated
-        (contract §9c, review 3 finding 3). Containment is checked before
+        at `track.json` is refused rather than followed and truncated.
+        Containment is checked before
         the descriptor exists; `O_NOFOLLOW` closes the window between the
         check and the open.
 
@@ -664,7 +662,7 @@ COG_DIGEST_DIRS = ("context", "src")
 #: is gitignored installation state and carries the endpoint and the name of
 #: the credential's environment variable; neither is part of what produced an
 #: answer, and neither is ever hashed here. The model that answered, and the
-#: response format it was asked for, are (narrowing contract §10).
+#: response format it was asked for, are.
 BINDING_DIGEST_KEYS = ("model", "response_format")
 
 #: Directory names the digest walk never descends into (machinery 0.6.3).
@@ -702,7 +700,7 @@ def _digest_entries(base, cog_dir):
 
 def cog_package_sha256(cog_dir):
     """The digest of the Cog a step invokes, taken immediately before THAT
-    invocation (machinery 0.6.3, narrowing contract §10 and §11).
+    invocation (machinery 0.6.3).
 
     A result belongs to a Cog as well as to a request: two answers are
     evidence of the same thing only when the same Cog produced them. The
@@ -743,8 +741,8 @@ def cog_package_sha256(cog_dir):
     return canonical_sha256({"files": files, "binding": binding})
 
 
-#: A change carries TWO hashes, and they answer different questions
-#: (contract §9). `content_sha256` is the hash of the change OBJECT — what
+#: A change carries TWO hashes, and they answer different questions.
+#: `content_sha256` is the hash of the change OBJECT — what
 #: the human approved, recomputed on an edit, checked by the runner at
 #: issuance. `target_sha256` is the content hash of the TARGET ITEM as the Op
 #: read it — the staleness precondition the write Cog checks against a fresh
@@ -763,10 +761,10 @@ def change_content_sha256(change):
 #: A content hash is 64 hexadecimal characters. Checked, not assumed: a
 #: grant that carried `target_sha256: "yes"` would authorize a write whose
 #: staleness precondition no fetch can ever match — or, worse, one a Cog
-#: comparing loosely would treat as satisfied (contract §9b).
+#: comparing loosely would treat as satisfied.
 #: `fullmatch`, never `match`: with `re.match`, `"<64 hex>\n"` passed —
 #: `$` also matches before a trailing newline, so a digest with a newline
-#: glued to it was accepted as a content hash (review 3, finding 1).
+#: glued to it was accepted as a content hash.
 HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -887,7 +885,7 @@ def grant_document(step, run_id, operations, provenance, ttl_minutes,
 def _change_id(value):
     """The change id of a requested entry, as a STRING, or None. A list- or
     object-valued id is not an id: it is refused by name rather than raising
-    an unhashable-value error inside a set lookup (review S7)."""
+    an unhashable-value error inside a set lookup."""
     cid = value.get("change_id") if isinstance(value, dict) else value
     return cid if isinstance(cid, str) and cid else None
 
@@ -906,7 +904,7 @@ def granted_change(change):
 def _next_grant_index(run_dir, sid):
     """The next issuance number for this step. Every issuance gets its OWN
     id and file: a reissue after an interruption never overwrites the grant
-    an earlier Track entry points at (review S6)."""
+    an earlier Track entry points at."""
     directory = Path(run_dir) / "grants" / sid
     index = 0
     while (directory / f"{index}.json").exists():
@@ -917,7 +915,7 @@ def _next_grant_index(run_dir, sid):
 def cog_version(step, package_root):
     """The recipient's version: the spec's when it states one, otherwise the
     version the Cog's own manifest declares — a grant names the recipient it
-    has, never a null it could have read (review S6)."""
+    has, never a null it could have read."""
     declared = (step.get("cog") or {}).get("version")
     if declared:
         return declared
@@ -991,7 +989,7 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions,
                         raise Denied(problem)
                 # The runner recomputes what it is about to authorize: the
                 # grant's `content_sha256` is the hash of THIS object, not a
-                # digest copied along with it (contract §9b, finding 2).
+                # digest copied along with it.
                 recomputed = change_content_sha256(change)
                 if change["content_sha256"] != recomputed:
                     raise Denied(f"change {cid!r} carries content_sha256 "
@@ -1056,15 +1054,15 @@ def pending_changes(payload, sid):
 
     Change ids are unique STRINGS. Two proposals sharing an id would collapse
     into one entry the moment they were indexed, so one approval would
-    silently authorize both: a duplicate refuses the pause (review S2).
+    silently authorize both: a duplicate refuses the pause.
 
-    HASHES ARE NEVER REPAIRED (contract §9c). Every proposal states its own
+    HASHES ARE NEVER REPAIRED. Every proposal states its own
     `content_sha256`, and here — at the pause, before a human ever sees it —
     that digest must EQUAL the canonical hash of the object it arrived on,
     and `target_sha256` must be 64 hex characters. A proposal carrying
     `"content_sha256": "placeholder"` used to pass the pause and be
     laundered into a valid digest at approval; now the pause is refused by
-    name (review 3, finding 1)."""
+    name."""
     changes = payload.get("changes") if isinstance(payload, dict) else None
     if not isinstance(changes, list) or any(
             not isinstance(c, dict) or not isinstance(c.get("change_id"), str)
@@ -1098,7 +1096,7 @@ def pending_changes(payload, sid):
     if unhashed:
         # A proposal with no content hash is not repaired into one: the hash
         # is what the human's approval is ABOUT, so a Cog that states none
-        # has not produced something decidable (contract §9b, finding 2).
+        # has not produced something decidable.
         raise op_spec.OpSpecError(
             f"Op step {sid!r} proposes change(s) {unhashed} with no "
             f"content_sha256; a proposed change states the hash of its own "
@@ -1110,8 +1108,7 @@ def pending_changes(payload, sid):
             f"ids are unique.")
     if misstated:
         # Refused, never recomputed: the digest a proposal states is the
-        # thing the approval is ABOUT, so a wrong one is a wrong proposal
-        # (contract §9c).
+        # thing the approval is ABOUT, so a wrong one is a wrong proposal.
         raise op_spec.OpSpecError(
             [f"Op step {sid!r} proposes change {cid!r} carrying {field} "
              f"{value!r}, {why}; hashes are checked at the pause and never "
@@ -1163,8 +1160,8 @@ def cell(value):
     `[owner/repo#1](https://example.invalid)` hides the real target behind
     link text, a pipe shifts the columns, a newline invents a row, `:smile:`
     becomes a picture, and `owner/repo#1<U+200B>0` READS as `owner/repo#10`
-    while being a different string (Codex review 9 blocker 3; review 10
-    finding 1). Two rules, both checkable without a renderer:
+    while being a different string. Two rules, both checkable without a
+    renderer:
 
     1. Every ASCII punctuation character is backslash-escaped. That disables
        every GFM construct at once -- autolinks, `@mentions`, `#references`,
@@ -1184,7 +1181,7 @@ def cell(value):
     survive, and the literal text `U+200B` is indistinguishable from an
     encoded U+200B.
 
-    WHAT THIS DOES NOT DO (machinery 0.5.9, Codex review 11 finding 4).
+    WHAT THIS DOES NOT DO (machinery 0.5.9).
     Rule 2 covers the categories it names and no more; it is not a general
     guarantee about invisibility, and it is not a confusable-character
     defense:
@@ -1246,10 +1243,10 @@ def render_pending(doc):
     lines = [f"# Decision needed: {cell(doc['step'])}", "",
              f"Run: {cell(doc['run_id'])}", f"Asked: {cell(doc['asked_at'])}", "",
              # The sheet is a READING AID, and the header says only what the
-             # code above actually does (machinery 0.5.9, review 11 finding
-             # 4): 0.5.8's "an invisible character shows as U+XXXX" claimed a
-             # general property the encoding does not have, and "punctuation
-             # shows a backslash" is not how an escape renders.
+             # code above actually does (machinery 0.5.9): 0.5.8's "an
+             # invisible character shows as U+XXXX" claimed a general property
+             # the encoding does not have, and "punctuation shows a backslash"
+             # is not how an escape renders.
              f"The authority is `{cell(doc['step'])}.json` beside this file: "
              "it holds each change in full, the digests are over it, and "
              "string equality is decided there — not by how a cell looks. "
@@ -1347,7 +1344,7 @@ def write_pending(run_dir, run_id, sid, payload, artifact=None):
     md_path = Path(run_dir) / "pending" / f"{sid}.md"
     op_track.write_json(json_path, doc, base=run_dir)
     # The human's copy is written the same way as the JSON: a half-written
-    # decision sheet is a half-read decision (review S9).
+    # decision sheet is a half-read decision.
     op_track.write_atomic(md_path, render_pending(doc), base=run_dir)
     return doc, json_path, md_path
 
@@ -1363,8 +1360,7 @@ def normalized_change(change):
     Only an edit is re-hashed. An approval or a rejection carries the digest
     the proposal stated — checked at the pause against the object it arrived
     on, and checked again at issuance — because recomputing it here would
-    turn any digest, however wrong, into a valid-looking one (contract §9c,
-    review 3 finding 1)."""
+    turn any digest, however wrong, into a valid-looking one."""
     change = dict(change)
     change["content_sha256"] = change_content_sha256(change)
     return change
@@ -1373,8 +1369,7 @@ def normalized_change(change):
 def edited_change_problems(edit, proposed, where):
     """Why an edited change is not the SAME KIND of change as the one it
     replaces. An edit may change content; it may not change what the change
-    IS, the item it targets, or the state it was approved against (review
-    S2, contract §9)."""
+    IS, the item it targets, or the state it was approved against."""
     problems = []
     unknown = sorted(str(k) for k in set(edit) - set(proposed))
     if unknown:
@@ -1474,7 +1469,7 @@ def apply_decision(pending, decision):
                         "else.")
     for field in ("decided_by", "decided_at"):
         # `strip()`: a whitespace-only identity names nobody, and a Track
-        # that records one says nothing about who decided (review S2).
+        # that records one says nothing about who decided.
         if not isinstance(decision.get(field), str) or not decision[field].strip():
             problems.append(f"the decision declares {field} "
                             f"{decision.get(field)!r}; a decision record says "
@@ -1527,7 +1522,7 @@ def apply_decision(pending, decision):
             continue
         if verdict == "approve":
             # The SUPPLIED digest, preserved: it is what the pause checked
-            # and what the human approved (contract §9c).
+            # and what the human approved.
             change = dict(proposed[cid])
             approved.append(change)
         elif verdict == "reject":
@@ -1560,8 +1555,8 @@ def apply_decision(pending, decision):
     if problems:
         raise op_spec.OpSpecError(problems)
     # `decided_by`/`decided_at` travel with the decision so a downstream step
-    # can record WHO decided and WHEN without reading the decision file
-    # (contract §9d); `approved` carries the effective objects, which for an
+    # can record WHO decided and WHEN without reading the decision file;
+    # `approved` carries the effective objects, which for an
     # edited change is the EDITED one.
     return {"approved": approved, "rejected": rejected, "edited": edited,
             "history": history,
@@ -1607,13 +1602,13 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
     when the caller has just taken it for its reuse check; it is then the
     digest of the first attempt, taken immediately before it.
 
-    **Every attempt owns an immutable file** (machinery 0.6.6, Codex review 6
-    finding 1). `first_attempt` is the number this invocation takes — the one
+    **Every attempt owns an immutable file** (machinery 0.6.6). `first_attempt`
+    is the number this invocation takes — the one
     after every attempt already on the Track for this slot — and `path_for`
     maps an attempt number to its own path, so nothing is ever overwritten and
     an older attempt's answer can never be read back as a newer one's.
 
-    **A retry is an attempt like any other** (finding 2): `reserve`, when
+    **A retry is an attempt like any other**: `reserve`, when
     given, is called with `(attempt, path, cog_sha256, attempts_so_far)`
     BEFORE each invocation — the retry included — so the Track carries the
     retry's own digests and its own path before it is paid for."""
@@ -1807,7 +1802,7 @@ def _envelope_on_disk(entry):
     """The envelope a repeat record points at, or None when the file is
     gone, unreadable, or not envelope v1.
 
-    None is never a refund (machinery 0.6.5, Codex review 5 blocker 1):
+    None is never a refund (machinery 0.6.5):
     deleting an envelope does not un-spend the attempt that wrote it. It only
     means the answer cannot be read back, so the slot counts as a failed one."""
     path = (entry or {}).get("envelope")
@@ -1827,8 +1822,8 @@ def _spent_record(entry, reason):
     answer cannot be used: the attempt is kept on the Track with a failing
     Gate that says why, and it contributes `null` downstream.
 
-    Spending is a ledger, not a cache (machinery 0.6.5, Codex review 5
-    should-fix 1). A changed Cog or request invalidates REUSE of an earlier
+    Spending is a ledger, not a cache (machinery 0.6.5). A changed Cog or
+    request invalidates REUSE of an earlier
     answer; it never invalidates the record that the answer was bought."""
     gate = {"policy": op_spec.GATE_POLICY, "status": "fail",
             "reasons": [reason], "decided_at": op_track.utc_now(),
@@ -1842,13 +1837,13 @@ def _reusable(entry, request_sha256, cog_sha256):
     """The record of a repeat or element an earlier attempt already PASSED
     over this same request and this same Cog, or None.
 
-    A resume re-runs only what failed (narrowing contract §2): a passed
+    A resume re-runs only what failed: a passed
     answer's envelope is on disk and is read back rather than paid for again.
     But an answer belongs to the question it answered AND to the Cog that
     answered it — between the failed run and the resume an upstream envelope
     may have changed, and so may the Cog's own code, context or model. So the
     record is reused only when its envelope is still there and both digests
-    match (machinery 0.6.1 and 0.6.2, narrowing contract §8 and §10)."""
+    match (machinery 0.6.1 and 0.6.2)."""
     if not isinstance(entry, dict) or not entry.get("envelope"):
         return None
     # A RESERVATION is not a result: an attempt that never completed has no
@@ -1903,15 +1898,13 @@ def _from_the_ledger(prior, index, request_sha256, cog_sha256,
       read back from its envelope rather than bought again (0.6.1, 0.6.2);
     - **recovered** — a RESERVATION whose envelope is on disk and is a valid
       envelope for this same question: the ask was paid for, so the result is
-      taken from the file and gated as usual, without a second ask (0.6.5,
-      Codex review 5 blocker 1);
+      taken from the file and gated as usual, without a second ask (0.6.5);
     - **spent** — any other record at this index, under `until-required`: an
       interrupted attempt, a failed one, one whose envelope has gone, or one
       that answered a question this run is no longer asking. The slot stays
       on the ledger with a failing Gate that says which (0.6.5, should-fix 1);
     - **None** — nothing was ever reserved here, or the mode is `all`, where
-      a failed repeat is a missing answer the union still wants and is re-run
-      (narrowing contract §2, §14 open item 6).
+      a failed repeat is a missing answer the union still wants and is re-run.
 
     A failed attempt whose envelope is still readable keeps its own record,
     so its problems stay in the step's evidence exactly as before."""
@@ -1963,17 +1956,17 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
                  request_sha256, prior=None, progress=None, name=None,
                  step_id=None):
     """Invoke ONE request `count` times, sequentially, and gate each repeat
-    on its own (narrowing contract §2).
+    on its own.
 
     Returns `(records, gate, payloads, envelopes, all_envelopes, elapsed)`. A
     repeat whose Gate failed contributes `None` to the payloads and to the
     envelopes, so what a later step reads is the same list a resumed run
     restores; `all_envelopes` is what actually came back, failed repeats
-    included, which is what the step's problems are read from (finding 6).
+    included, which is what the step's problems are read from.
 
     `progress`, when given, is called with the records so far after EVERY
     completed repeat, before the next one is invoked: a repeat that finished
-    is durable before anything else is paid for (finding 5).
+    is durable before anything else is paid for.
 
     The Cog is digested afresh for EVERY repeat (machinery 0.6.3): the
     digest is taken immediately before the repeat's first invocation, is what
@@ -1983,7 +1976,7 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
     records instead of one digest covering both.
 
     **`mode: until-required` stops as soon as `require` repeats have passed**
-    (machinery 0.6.4, narrowing contract §14). `count` is then a budget of
+    (machinery 0.6.4). `count` is then a budget of
     attempts, not a number of answers: the lists are of the repeats that
     ACTUALLY RAN, so their length is between `require` and `count`, and a
     repeat that never ran is absent rather than null. One clean first answer
@@ -1991,24 +1984,24 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
     step. A reused pass counts toward `require` and a failed attempt already
     on the Track has spent its slot, so the budget holds across a resume.
 
-    **An attempt is RESERVED before it is paid for** (machinery 0.6.5, Codex
-    review 5 blocker 1): the record goes on the Track with `phase: asking`,
+    **An attempt is RESERVED before it is paid for** (machinery 0.6.5): the
+    record goes on the Track with `phase: asking`,
     its request and Cog digests and its slot index, BEFORE `invoke_cog`, and
     is completed after. A crash in that window leaves an `asking` record, and
     the resume reads it as SPENT — recovering the answer from the envelope on
     disk when there is one, and simply losing the slot when there is not.
     Nothing refunds an attempt: a missing envelope only makes it unreadable.
 
-    **Every attempt owns an immutable file** (machinery 0.6.6, Codex review 6
-    findings 1 and 2): the reservation names `<base>.r<j>.a<n>.json`, `n`
+    **Every attempt owns an immutable file** (machinery 0.6.6): the
+    reservation names `<base>.r<j>.a<n>.json`, `n`
     counting every invocation ever made for that slot in this run, and a retry
     reserves its own number, its own digests and its own path before it is
     invoked. Nothing is ever deleted or overwritten, so the recovery reads
     ONLY the file its reservation named and an older attempt's answer can
     never be taken for a newer one.
 
-    **In `until-required`, `count` is the ceiling on INVOCATIONS** (0.6.5,
-    blocker 2): `retry-once` does not run inside a slot here, because the
+    **In `until-required`, `count` is the ceiling on INVOCATIONS** (0.6.5):
+    `retry-once` does not run inside a slot here, because the
     next slot IS the retry — an `ok: false` answer fails its slot like any
     other bad ask and the loop asks again, up to `count` times. In `all` the
     ceiling stays `count` SLOTS, each of which `retry-once` may run twice.
@@ -2018,7 +2011,7 @@ def _run_repeats(cog_dir, task, request_path, base, on_fail, seam, repeat,
     element and says how to renew it."""
     count, require = repeat["count"], repeat["require"]
     until_required = repeat.get("mode") == op_spec.REPEAT_UNTIL_REQUIRED
-    # The slot is the retry (finding 2): `retry-once` would multiply the
+    # The slot is the retry: `retry-once` would multiply the
     # ceiling, so it is not applied inside a slot in this mode.
     invoke_on_fail = None if until_required else on_fail
     records, gates, payloads, envelopes = [], [], [], []
@@ -2113,7 +2106,7 @@ def _repeat_fields(records, envelopes):
     `envelopes` is every envelope the repeats produced, a FAILED repeat's
     included: the step's `problems` are the audit of what the Cogs reported,
     and the null that masks a failed repeat's payload downstream never
-    silences what it said (finding 6)."""
+    silences what it said."""
     return {
         "binding": next((r.get("binding") for r in records if r.get("binding")),
                         None),
@@ -2138,7 +2131,7 @@ def _plan(spec, track, run_dir, context):
             request_path = str(path.resolve())
         # The plan says how many times each step will run: a step that
         # repeats is a step that costs k invocations, and a dry run is where
-        # that is read (narrowing contract §2).
+        # that is read.
         track["steps"].append(
             op_track.step_record(step, "planned", request=request_path,
                                  repeat=op_spec.repeat_spec(step)))
@@ -2151,7 +2144,7 @@ def _plan(spec, track, run_dir, context):
 
 def not_reached_element(index):
     """An element the loop never got to, because an earlier one finally
-    failed (machinery 0.6.2, narrowing contract §10). It has no request and
+    failed (machinery 0.6.2). It has no request and
     no envelope: nothing was built for it and nothing was paid for. A resume
     runs it for the first time."""
     return {"index": index, "status": "not-reached", "request": None,
@@ -2167,10 +2160,10 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
     With `repeat`, each ELEMENT is repeated: the element's request is written
     once and invoked k times, the element's payload is the list of its repeat
     payloads, and its Gate is the repeat Gate — so the step's payload is a
-    list of lists (narrowing contract §2).
+    list of lists.
 
-    **The loop stops at the first finally-failed element** (machinery 0.6.2,
-    narrowing contract §10): when an element's Gate is `fail` after its
+    **The loop stops at the first finally-failed element** (machinery 0.6.2):
+    when an element's Gate is `fail` after its
     repeats and its retries are exhausted, the step has already failed —
     every later element could only ever be work bought for a verdict that is
     settled. The remaining elements are recorded `not-reached`, the completed
@@ -2230,7 +2223,7 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
         if repeat is None:
             # An element that already passed over this same request and this
             # same Cog is read back, not paid for again — the same reuse rule
-            # a repeat has had since 0.6.1 (narrowing contract §10).
+            # a repeat has had since 0.6.1.
             reused = _reusable(prior_element or {}, request_sha256, cog_sha256)
             if reused is not None:
                 envelope = json.loads(Path(reused["envelope"]).read_text())
@@ -2262,7 +2255,7 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
         else:
             # Each completed repeat of THIS element joins the elements this
             # step has already finished, and the Track is rewritten before
-            # the next repeat is invoked (finding 5).
+            # the next repeat is invoked.
             element_progress = None
             if progress is not None:
                 done_elements = list(elements)
@@ -2299,7 +2292,7 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
         elements.append(element)
         if progress is not None:
             # An element that finished is durable before the next one is
-            # invoked, repeated or not (narrowing contract §10).
+            # invoked, repeated or not.
             progress({"elements": list(elements)})
         # The breaker: this element's repeats and retries are exhausted and
         # its Gate says fail, so the step fails whatever the rest would say.
@@ -2394,7 +2387,7 @@ def _run_single(step, cog_dir, run_dir, context, seam=None,
 def _element_envelopes(record):
     """The envelopes of a foreach step, in element order. An EMPTY aggregate
     is a real result: `elements: []` restores as `[]`, never as an attempt to
-    read the step's envelope DIRECTORY as a file (review S4)."""
+    read the step's envelope DIRECTORY as a file."""
     envelopes = []
     for element in record["elements"]:
         if element.get("status") == "not-reached" \
@@ -2413,7 +2406,7 @@ def _element_envelopes(record):
 def _repeat_envelopes(record):
     """The envelopes of one repeated step or element, in repeat order. A
     repeat whose Gate failed restores as None — exactly what the live run put
-    in the context (narrowing contract §2)."""
+    in the context."""
     envelopes = []
     for entry in record["repeats"]:
         if (entry.get("gate") or {}).get("status") == "fail" \
@@ -2482,7 +2475,7 @@ def _restore_context(track, context):
 def _kept_by_index(key, existing, value):
     """What a checkpoint writes for one field: for `repeats` and `elements`,
     the records this attempt has produced followed by every record at a LATER
-    index it has not revisited (machinery 0.6.2, narrowing contract §10).
+    index it has not revisited (machinery 0.6.2).
 
     A checkpoint says what has happened so far, not what the step will end up
     with. Shortening these lists threw away durable evidence — a repeat that
@@ -2522,8 +2515,7 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
     from `done` and runs again.
 
     `previous` holds the records an earlier attempt left for the steps that DO
-    run again, so a repeated step re-runs only the repeats that failed
-    (narrowing contract §2)."""
+    run again, so a repeated step re-runs only the repeats that failed."""
     done = done or {}
     previous = previous or {}
     decisions = dict(decisions or {})
@@ -2531,8 +2523,7 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
     blocked = set()
     track["steps"] = []
     # This attempt has not stopped anywhere yet. `failed_step` names the step
-    # a `stop` ended the run at, so a resume knows where to pick it up again
-    # (contract §9e).
+    # a `stop` ended the run at, so a resume knows where to pick it up again.
     track["failed_step"] = None
 
     for position, step in enumerate(spec.ordered):
@@ -2603,7 +2594,7 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             journal_path = Path(run_dir) / "journal" / f"{sid}.jsonl"
             # Created DURABLY: the Track is about to name this journal as the
             # evidence for an external effect, so its directory entry has to
-            # survive the same power loss the Track does (finding 5).
+            # survive the same power loss the Track does.
             op_track.touch_durable(journal_path, base=run_dir)
             seam = {"grant_path": str(Path(grant_path).resolve()),
                     "run_id": run_id,
@@ -2612,13 +2603,13 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         # ---- durability: the Track says the step is RUNNING, with the grant
         # and journal it was given, BEFORE the Cog is launched. Nothing
         # external can happen that the run directory does not already
-        # describe (contract §9, review B1).
+        # describe.
         position_in_track = len(track["steps"])
         repeat_spec = op_spec.repeat_spec(step)
         # A repeat that already completed stays on the record when the step
         # is marked `running` again: rewriting it as a bare `running` record
         # would throw away work a crash left durable, and the resume would
-        # pay for it a second time (finding 5).
+        # pay for it a second time.
         earlier = previous.get(sid) or {}
         carried = {}
         if earlier.get("repeats") is not None \
@@ -2634,13 +2625,13 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         def checkpoint(partial, _at=position_in_track):
             """Rewrite the RUNNING record with what this step has finished so
             far. Called between repeats, so a completed repeat is on disk
-            before the next one is invoked (finding 5).
+            before the next one is invoked.
 
             A checkpoint never DISCARDS a record it has not revisited: the
             repeats and elements this attempt has not yet replaced are still
             the earlier attempt's, each with its original `request_sha256` and
             Cog digest, so a second crash cannot lose a repeat that passed
-            (machinery 0.6.2, narrowing contract §10). Normal reuse validation
+            (machinery 0.6.2). Normal reuse validation
             still applies to what is kept: a preserved record whose request or
             Cog has changed is re-run when the loop reaches it."""
             record = track["steps"][_at]
@@ -2651,9 +2642,9 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
         cog_dir = (package_root / step["cog"]["source"]).resolve()
         # The Cog as it is AT INVOCATION: what answers belongs to the version
         # that answered, and a resume reuses an answer only from the same one
-        # (machinery 0.6.2, narrowing contract §10). The digest is taken
+        # (machinery 0.6.2). The digest is taken
         # inside the runners, immediately before each invocation, never once
-        # for the step — a step is many invocations (0.6.3, contract §11).
+        # for the step — a step is many invocations (0.6.3).
         if step.get("foreach") is not None:
             fields, payload, envelopes = _run_foreach(
                 spec, step, cog_dir, run_dir, context, seam,
@@ -2703,14 +2694,13 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
                               # human was asked. A human approving proposals
                               # does not erase the problems the Cog reported
                               # making them: the step keeps
-                              # `passed-with-problems` (contract §9b,
-                              # finding 6).
+                              # `passed-with-problems`.
                               "envelope_status": gate["status"],
                               "asked_at": pending["asked_at"],
                               # The hash the TRACK remembers: a resume
                               # re-hashes the pending payload and compares it
                               # with this, not with the hash the pending file
-                              # carries beside it (review B5).
+                              # carries beside it.
                               "payload_sha256": pending["payload_sha256"],
                               # And the artifact's, for the same reason
                               # (0.7.0): the acceptance is about THESE bytes.
@@ -2786,7 +2776,7 @@ def run(package_root, request_path, dry_run=False, runs_dir=None,
     # `status: running`. The same is true of a step that requires authority
     # this run was never admitted to have. (These are DECLARATION and
     # ADMISSION checks; the code Cog checks its own grant before it reaches
-    # outside the run — see the contract's §0 amendment.) A dry run is
+    # outside the run.) A dry run is
     # portable and checks neither.
     if not dry_run:
         problems = (op_spec.declaration_problems(spec, package_root)
@@ -2800,8 +2790,7 @@ def run(package_root, request_path, dry_run=False, runs_dir=None,
     # Through `ensure_dir`, not `mkdir(parents=True)`: the run directory's
     # OWN entry is fsynced in its parent. Every control directory beneath it
     # is created durably, and a Track, grant or journal whose containing
-    # directory did not survive a power loss is not durable either (contract
-    # §9c, review 3 finding 2).
+    # directory did not survive a power loss is not durable either.
     op_track.ensure_dir(run_dir)
     input_request = run_dir / "input-request.json"
     op_track.write_json(input_request, request_doc, base=run_dir)
@@ -2836,9 +2825,9 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None,
 
     Steps already `passed` are never re-run; a step left `running` by a
     crash runs again (a Cog with a journal reconciles first), and the step
-    that STOPPED a failed run runs again too (contract §9e). A repeat that
+    that STOPPED a failed run runs again too. A repeat that
     passed is never re-run either: only the failed repeats of that step are
-    invoked again (narrowing contract §2).
+    invoked again.
 
     `renew_budgets` names the steps whose `until-required` repeat budget this
     resume BUYS AGAIN (machinery 0.6.5): spending is a ledger, so no edit
@@ -2851,8 +2840,7 @@ def resume(package_root, run_dir, decision_path=None, authority_path=None,
         raise op_spec.OpSpecError(f"{run_dir} carries no track.json; there is "
                                   f"no run to resume there.")
     # The lock is taken BEFORE the Track is read: two resumes that both read
-    # `awaiting-decision` would both accept the decision and both write
-    # (review B3).
+    # `awaiting-decision` would both accept the decision and both write.
     lock = RunLock(run_dir).acquire()
     try:
         return _resume(package_root, run_dir, track_path, decision_path,
@@ -2872,7 +2860,7 @@ def _stopping_step(track):
 
 def _changed_cogs(spec, package_root, done):
     """`[{step, cog, was, now}]` for every step this resume will NOT re-run
-    whose Cog has changed since it ran (machinery 0.6.2, §10).
+    whose Cog has changed since it ran (machinery 0.6.2).
 
     A step that passed keeps its result: re-running it would throw away work
     the run already paid for, and a resume exists to finish a run, not to
@@ -2905,7 +2893,7 @@ def _renewable_budgets(spec, renew_budgets):
     `count` slot is asked on every attempt, so there is nothing to renew, and
     a step that does not repeat at all has nothing to renew either. Naming
     one is a mistake about what the run did, so it is refused rather than
-    ignored (machinery 0.6.5, Codex review 5 should-fix 1)."""
+    ignored (machinery 0.6.5)."""
     named = list(dict.fromkeys(renew_budgets or []))
     if not named:
         return []
@@ -2930,9 +2918,9 @@ def _retired(record):
     """A record whose spent repeats are RETIRED: off the ledger the new
     budget is measured against, but still on the Track (machinery 0.6.6).
 
-    §15 cleared them outright, which threw away both the expenditure's detail
-    and the attempt numbering. Codex review 6 finding 1: a renewal keeps the
-    old attempts on the Track and their files on disk — it opens a new budget
+    Earlier machinery cleared them outright, which threw away both the
+    expenditure's detail and the attempt numbering. A renewal keeps the old
+    attempts on the Track and their files on disk — it opens a new budget
     only — so numbering continues from them and a renewed slot's first ask
     cannot land on the file the first budget's first ask still owns."""
     return dict(record,
@@ -2975,7 +2963,7 @@ def _refuse_pre_0_6_6(track):
     an attempt left no number on the Track. 0.6.6 cannot safely continue such
     a run: its own attempt 1 would write over the file the old attempt 1
     owns, and a recovery could read an older attempt's answer as this one's —
-    the very failure Codex review 6 found. Refusing is the small, honest
+    the very failure that review found. Refusing is the small, honest
     option; translating old paths would be guessing which file belonged to
     which attempt. The run's results are all still on disk; what is refused
     is continuing it in place.
@@ -3044,8 +3032,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
 
     # A resume is a RUN: the same load-time refusals apply. A Cog's manifest
     # may have changed while the run was paused, and a run that was never
-    # admitted for what its remaining steps require must not reach them
-    # (review S3).
+    # admitted for what its remaining steps require must not reach them.
     problems = (op_spec.declaration_problems(spec, package_root)
                 + admission_problems(spec, authority))
     if problems:
@@ -3059,7 +3046,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
         "run": {"dir": str(run_dir), "id": track["run_id"]},
         # Relative `$path` operands resolved against the ORIGINAL request
         # directory on the first run, and resolve against it again here
-        # (review S4); older Tracks fall back to where the copy lives.
+        # older Tracks fall back to where the copy lives.
         "request": {"dir": track.get("request_dir")
                     or str(Path(track["input_request"]).parent)},
     }
@@ -3068,7 +3055,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
     done = {r["id"]: r for r in track.get("steps") or []
             if r["status"] in ("passed", "passed-with-problems", "skipped",
                                "blocked", "denied", "awaiting-decision")}
-    # The step that stopped a FAILED run is the resume point (contract §9e):
+    # The step that stopped a FAILED run is the resume point:
     # a Cog that reported unfinished work — a write left uncertain — is
     # invoked again so it can finish it, and the steps after it run for the
     # first time. A `failed` record is not in `done` to begin with; a
@@ -3110,7 +3097,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
         op_track.write_json(decision_copy, decision, base=run_dir)
         digest = sha256_file(decision_copy)
         # The human decided about the proposals; the ENVELOPE Gate's verdict
-        # on the step that made them stands (contract §9b, finding 6).
+        # on the step that made them stands.
         envelope_status = (record.get("gate") or {}).get("envelope_status")
         record["status"] = STEP_STATUS.get(envelope_status, "passed")
         rejected = value.get("verdict") == "reject"
@@ -3146,7 +3133,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
     entry = {"at": op_track.utc_now(),
              "decision": str(decision_copy.resolve()) if decision_copy else None,
              # Which Cogs are not the ones that produced this run's kept
-             # results (machinery 0.6.2, narrowing contract §10). A step that
+             # results (machinery 0.6.2). A step that
              # PASSED is never re-run — fix-and-resume is how a run is
              # finished — so the change is recorded instead, and the evidence
              # says which version produced what.
@@ -3173,12 +3160,12 @@ def _resume(package_root, run_dir, track_path, decision_path,
                    "run_dir": str(run_dir), "track": track_path}
     track["status"] = "running"
     track["ended_at"] = None
-    # Durability order (contract §9): the accepted decision and the resume are
+    # Durability order: the accepted decision and the resume are
     # on disk BEFORE any grant is issued or any Cog is invoked.
     op_track.save(track, run_dir)
     # What the earlier attempt left for the steps that run again: a repeated
     # step re-runs only the repeats that FAILED, and reads the rest back from
-    # the envelopes already on disk (narrowing contract §2).
+    # the envelopes already on disk.
     previous = {r["id"]: r for r in track.get("steps") or [] if r.get("id")}
     for sid in renewed:
         if previous.get(sid) is not None:

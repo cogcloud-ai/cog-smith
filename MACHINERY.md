@@ -159,6 +159,20 @@ too. `forbid_tokens` is unchanged and remains the right tool for a canary.
 Additive: every existing fixture is unaffected. Rolled out to the nine
 carriers with 0.4.1; BUILDING_COGS §7 says when to reach for which.
 
+## 0.4.3 (2026-09-23): comments made self-contained for the public suite
+
+Comment/docstring-only; no behaviour change, no new key, no test change.
+The context-cog sources (`cog_binding.py`, `cog_core.py`, `cog_eval.py`,
+`cog_resolve.py`, `cog_use.py`) cited internal reviews, design notes and
+packages that are not distributed. Every citation is removed and the
+sentence it hung on stands on its own; every technical statement is kept.
+Provenance docstrings now say "derived from an earlier internal package"
+and "Byte-identical across the Cogs that vendor it; `smith check` enforces
+it by hash". The satisfier preset labels in `cog_use.py` are data, not
+comments, and are unchanged. The hashes change, so this is a version:
+rolled out by copy-sync to cog-op-designer, cog-author and
+cog-build-evaluator.
+
 ## Code-cog machinery (0.1.0, 2026-09-17): `templates/code-cog/src/`
 
 A third lineage, on the same terms. `templates/code-cog/src/cog_core.py` and
@@ -177,6 +191,17 @@ envelope's `binding`.
 The honesty rule is part
 of the machinery's doc comments and stays there: the grant is checked by the
 Cog's OWN code; the local host is not an enforced restricted environment.
+
+### Code-cog 0.1.5 (2026-09-23) — comments made self-contained for the public suite
+
+Comment/docstring-only; no behaviour change. `cog_core.py` and `cog_cli.py`
+(and the comments in the author-owned `task_logic.py` starter) cited
+internal reviews and design notes that are not distributed. Every citation
+is removed and the sentence it hung on stands on its own; every technical
+statement is kept. `MACHINERY_VERSION` is 0.1.5 because the hashes change.
+Rolled out by copy-sync to cog-build-candidate, cog-verify-candidate and
+cog-merge-findings-candidate (`cog_core.py` and `cog_cli.py` only —
+`task_logic.py` is author-owned in a created Cog).
 
 ### Code-cog 0.1.4 (2026-09-18) — the package checker joins the boundary
 
@@ -291,6 +316,26 @@ Semantics implemented from an internal Op-runner contract (a design note,
 not distributed). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.7.1 — comments made self-contained for the public suite (2026-09-23)
+
+Comment/docstring-only; no behaviour change, no spec change, and every
+0.7.0 Track loads unchanged. `op_runner.py`, `op_spec.py` and `op_track.py`
+cited internal reviews, design notes and packages that are not distributed.
+Every citation is removed and the sentence it hung on stands on its own;
+every technical statement is kept. Three refusal messages that named a
+design phase are reworded, keeping the substrings the tests assert:
+
+- `authority` on a `foreach` step: "… the runner issues no per-element
+  grants."
+- two write requirements reading different human gates: "… the runner
+  issues one grant per step, from ONE human gate."
+- `authority` on a step whose Cog is not `kind: code`: "… the runner
+  supports authority on code Cogs only."
+
+A PATCH bump because the hashes change. Rolled out by copy-sync to
+op-cog-builder and op-builder-smoke, plus two internal Ops outside the
+suite.
 
 ### 0.7.0 — a human decides about an ARTIFACT (2026-09-23)
 

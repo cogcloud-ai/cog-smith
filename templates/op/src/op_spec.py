@@ -32,7 +32,7 @@ SCHEMA_STRING = "openteams/op-manifest [0.1]"
 GATE_POLICY = "envelope-ok-no-error-problems"
 #: A human Gate is a POLICY on a step, never a step of its own: the step
 #: runs its Cog, the envelope goes through the ordinary policy, and only a
-#: passing envelope reaches the human (phase 3 contract §3).
+#: passing envelope reaches the human.
 HUMAN_GATE_POLICY = "human"
 GATE_POLICIES = (GATE_POLICY, HUMAN_GATE_POLICY)
 #: WHAT a human Gate decides about (machinery 0.7.0). `changes` — the
@@ -65,13 +65,13 @@ COG_KEYS = {"id", "version", "source", "task"}
 INPUT_KEYS = {"name", "description", "required", "default", "schema"}
 FOREACH_KEYS = {"items", "as"}
 #: `repeat: {count, require, mode}` — the same request invoked `count` times,
-#: of which `require` must pass (machinery 0.6.0, narrowing contract §2). The
+#: of which `require` must pass (machinery 0.6.0). The
 #: ceiling is small on purpose: repetition is evidence, not a budget.
 REPEAT_KEYS = {"count", "require", "mode"}
 MAX_REPEAT = 5
-#: How many of the `count` repeats actually run (machinery 0.6.4, narrowing
-#: contract §14). `all` asks every time and unions the answers — for a step
-#: whose RECALL varies run to run. `until-required` stops as soon as
+#: How many of the `count` repeats actually run (machinery 0.6.4). `all`
+#: asks every time and unions the answers — for a step whose RECALL varies
+#: run to run. `until-required` stops as soon as
 #: `require` repeats have passed — for a step that wants ONE clean answer and
 #: must not end a 150-batch run because one answer was rejected.
 REPEAT_ALL = "all"
@@ -79,7 +79,7 @@ REPEAT_UNTIL_REQUIRED = "until-required"
 REPEAT_MODES = (REPEAT_ALL, REPEAT_UNTIL_REQUIRED)
 GATE_KEYS = {"policy", "guards", "decides", "artifact"}
 TRACK_KEYS = {"records"}
-#: Authority vocabulary (phase 3 contract §2). Top level: how long a grant
+#: Authority vocabulary. Top level: how long a grant
 #: this Op issues stays valid. Per step: what the step REQUIRES — a step
 #: never grants itself anything.
 AUTHORITY_TOP_KEYS = {"ttl_minutes"}
@@ -116,7 +116,7 @@ OPERATOR_NAMES = ("$from, $from/$default, $path, $run_dir, $stem, $literal, "
                   "$sha256")
 #: Every `$`-prefixed name the closed vocabulary knows. A `$` key that is not
 #: one of these is an unknown operator WHEREVER it appears — sibling keys do
-#: not turn `$join` into ordinary data (contract §2).
+#: not turn `$join` into ordinary data.
 KNOWN_DOLLAR_KEYS = frozenset({"$from", "$default", "$path", "$run_dir",
                                "$stem", "$literal", "$sha256"})
 PATH_ROOTS = ("inputs", "steps", "run", "request")
@@ -125,7 +125,7 @@ PATH_ROOTS = ("inputs", "steps", "run", "request")
 STEP_PATHS = ("payload", "envelope", "decision")
 #: Roots refused BY NAME. A grant is trusted invocation context: it never
 #: travels inside a request document and no mapping expression can read or
-#: build one (phase 3 contract §2).
+#: build one.
 REFUSED_PATH_ROOTS = {
     "grants": ("a grant is never readable from a mapping expression: "
                "authority travels beside the request, never inside it"),
@@ -133,7 +133,7 @@ REFUSED_PATH_ROOTS = {
 #: The run directory's CONTROL entries: the runner owns them, and no mapping
 #: expression may name one. `$run_dir` makes a place for a Cog's OUTPUT; a
 #: Cog handed `runs/<id>/grants` as an output directory could overwrite the
-#: very documents that authorize it (contract §9, review S1).
+#: very documents that authorize it.
 RESERVED_RUN_SUBPATHS = ("grants", "pending", "decisions", "journal",
                          "run.lock", "track.json")
 
@@ -194,7 +194,7 @@ def operator_keys(expr):
     """The operator key set of a mapping-expression object, or None when the
     object is an ordinary one to walk recursively.
 
-    Only an EXACT recognized key set is an operator (contract §2). Any other
+    Only an EXACT recognized key set is an operator. Any other
     object is walked — `{"$from": "literal text", "label": "x"}` and
     `{"$from": "inputs.note", "$stem": "x"}` are both ordinary data — EXCEPT
     that a `$`-prefixed key naming no operator at all (`{"$join": [...]}`,
@@ -216,7 +216,7 @@ def normalized_subpath(subpath):
 
     The reserved-name check reads this, never the text as written: a
     dynamic operand of `outputs/../grants` names `grants` however it is
-    spelled (contract §9b, review finding 3)."""
+    spelled."""
     return os.path.normpath(str(subpath or "."))
 
 
@@ -258,7 +258,7 @@ def run_dir_path(subpath, run_dir):
                           f"this run.")
     # No component may be a link, even one pointing back inside the run: an
     # alias is how a step would be handed the runner's own control entries
-    # under another name (contract §9b).
+    # under another name.
     current = base
     for part in candidate.parts:
         current = current / part
@@ -582,7 +582,7 @@ def repeat_spec(step):
     is the SAME EXECUTION WITH ONE ADDED FIELD, not a byte-for-byte identical
     artifact: the Track record and the `--dry-run` plan now read
     `{count: 3, require: 1, mode: "all"}` where they read
-    `{count: 3, require: 1}` (Codex review 5, nit 1). A golden comparison
+    `{count: 3, require: 1}`. A golden comparison
     against a pre-0.6.4 Track sees that one key."""
     declared = (step or {}).get("repeat")
     if not isinstance(declared, dict):
@@ -600,7 +600,7 @@ def repeat_spec(step):
 
 
 def _repeat_problems(step, sid, problems):
-    """Every problem with one step's `repeat:` block (narrowing contract §2).
+    """Every problem with one step's `repeat:` block.
 
     Repetition is for steps that only READ and only propose: a step that
     carries `authority`, or whose Gate is a human one, is refused here, and a
@@ -629,7 +629,7 @@ def _repeat_problems(step, sid, problems):
                         f"step repeats between 1 and {MAX_REPEAT} times.")
     # Only OMISSION defaults (`require` reads as `count`). A declared
     # `require` is an integer or it is refused — `require: null` is a
-    # malformed declaration, not a way to spell "all of them" (finding 11).
+    # malformed declaration, not a way to spell "all of them".
     require = declared.get("require", count)
     required = isinstance(require, int) and not isinstance(require, bool)
     if "require" in declared and not required:
@@ -673,7 +673,7 @@ def ttl_minutes(doc):
     return DEFAULT_TTL_MINUTES
 
 
-#: What a write requirement's `changes` must read, exactly (contract §9).
+#: What a write requirement's `changes` must read, exactly.
 #: Only the APPROVED list can produce a grant, so only the approved list may
 #: be asked for: any other expression is refused at LOAD, by name, rather
 #: than becoming a denial at issuance time.
@@ -696,7 +696,7 @@ def decision_step(requirement):
 
 def _authority_problems(step, sid, step_ids, human_steps, problems,
                         artifact_steps=()):
-    """Every problem with one step's `authority:` block (phase 3 §2).
+    """Every problem with one step's `authority:` block.
 
     `artifact_steps` are the human Gates that decide about an ARTIFACT
     (0.7.0): their decision is one verdict, not an approved list, so no
@@ -712,9 +712,9 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
         problems.append(f"unknown key {key!r} under Op step {sid!r}'s "
                         f"authority:; the authority vocabulary is closed.")
     if step.get("foreach") is not None:
-        # Phase 3 issues one grant per step, not one per element.
+        # The runner issues one grant per step, not one per element.
         problems.append(f"Op step {sid!r} declares authority on a foreach "
-                        f"step; phase 3 issues no per-element grants.")
+                        f"step; the runner issues no per-element grants.")
     declared = authority.get("requires")
     if not isinstance(declared, list) or not declared:
         problems.append(f"Op step {sid!r} declares authority with no requires "
@@ -722,7 +722,7 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
                         f"runner issues the grant.")
         return
     if step.get("on_fail") == "retry-once":
-        # Phase 2 §0: an effectful step recovers by RESUME plus journal
+        # An effectful step recovers by RESUME plus journal
         # reconciliation, never by re-invoking a Cog that may already have
         # acted. Refused at load, not discovered after a double write.
         problems.append(
@@ -760,8 +760,8 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
                 problems.append(
                     f"{where} reads the decision of step {target!r} while "
                     f"another requirement on this step reads "
-                    f"{sorted(gates - {target})[0]!r}; phase 3 issues one "
-                    f"grant per step, from ONE human gate.")
+                    f"{sorted(gates - {target})[0]!r}; the runner issues "
+                    f"one grant per step, from ONE human gate.")
             if target not in step_ids:
                 problems.append(f"{where} reads the decision of step "
                                 f"{target!r}, which the Op spec does not "
@@ -810,7 +810,7 @@ def _order(steps, problems):
 
     ONE step at a time: the earliest ready step in spec order runs next, so a
     step that becomes ready mid-batch still runs before a later independent
-    step (contract §3, "ties break by spec order")."""
+    step ("ties break by spec order")."""
     ids = [s.get("id") for s in steps]
     pending = list(steps)
     done, ordered = set(), []
@@ -1274,7 +1274,7 @@ def _authority_findings(step, sid, cog, manifest):
     that invokes a reaching Cog must declare what it requires.
 
     A DECLARATION check. Nothing here enforces anything at run time: the
-    code Cog checks its own grant before every external call (§0)."""
+    code Cog checks its own grant before every external call."""
     findings = []
     declared = requirements(step)
     reaches = manifest.get("reaches") or []
@@ -1291,7 +1291,7 @@ def _authority_findings(step, sid, cog, manifest):
     if declared and manifest.get("kind") != "code":
         findings.append(("error", f"Op step {sid!r} declares authority on "
                                   f"{manifest.get('id')!r}, which is kind "
-                                  f"{manifest.get('kind')!r} — phase 3 "
+                                  f"{manifest.get('kind')!r} — the runner "
                                   f"supports authority on code Cogs only."))
         return findings
     covered = {(entry.get("resource"), action)
@@ -1348,8 +1348,7 @@ def cog_step_findings(step, source_dir):
     if step.get("repeat") is not None and (manifest.get("reaches") or []):
         # The same rule as the `authority` refusal in `_repeat_problems`,
         # from the other side: the Cog's OWN declaration says it reaches
-        # outside the run, so running it k times could repeat an effect
-        # (narrowing contract §2).
+        # outside the run, so running it k times could repeat an effect.
         findings.append(("error", f"Op step {sid!r} names "
                                   f"{manifest.get('id')!r}, which reaches "
                                   f"outside the run, and declares repeat; an "

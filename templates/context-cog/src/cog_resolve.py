@@ -32,7 +32,8 @@ Response-format negotiation: `model-endpoint/openai-compatible` does NOT imply
 schema-constrained decoding — that is a llama.cpp extension, not part of the
 capability. The resolver grants json_schema only when the satisfier's declared
 runtime is known to support it, and falls back to json_object otherwise.
-Byte-identical across the cog-forge Cogs; tools/check_copies.py enforces it.
+Byte-identical across the Cogs that vendor it; `smith check` enforces it
+by hash.
 """
 import argparse
 import hashlib
@@ -70,7 +71,7 @@ def served_model_pin(model):
       - simple weights:   model.weights.sha256           -> digest pin
       - deployment:       model.revision                 -> revision pin
       - composed/derived: model.base.sha256 + model.specialization.sha256 +
-                          effective_id (the cog-demo LoRA shape) -> an
+                          effective_id (a LoRA-derived model id) -> an
                           effective digest over every load-bearing lineage
                           component. Lineage is recorded, not flattened away.
 
