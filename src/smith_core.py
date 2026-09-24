@@ -1,7 +1,7 @@
 """cog-smith core: cog-request validation, format-aware rendering, and
 atomic creation.
 
-Review 2026-08-22 hardening (F2): builder answers are TYPED and VALIDATED
+Internal-review hardening (F2): builder answers are TYPED and VALIDATED
 before anything touches disk; values that land in structured formats are
 inserted through format-aware serialization tokens (``*_TOML``, ``*_YAML``
 variants produced here with json/yaml serializers), never raw; creating is
@@ -12,7 +12,7 @@ destination is never half-created.
 A created Cog = rendered templates (identity, context, examples, tests) +
 verbatim machinery (everything in templates/<t>/src/ except task_logic.py,
 which the author owns). `smith check` verifies machinery against these
-masters — the same copy-sync discipline as cog-forge.
+masters — the same copy-sync discipline as the forge lineage it came from.
 
 Manifest format (cog-execution ADR D9): the profile manifest is written into
 ``pixi.toml`` under ``[tool.cog]`` by default, or into a standalone
@@ -199,7 +199,7 @@ def _manifest_tokens(tokens, troot, manifest_format):
 
 def default_tokens(cog_name, **overrides):
     """Answer set for a package creation. cog_name is the directory / short name
-    (e.g. 'cog-meeting-highlights')."""
+    (e.g. 'cog-my-worker')."""
     short = cog_name[4:] if cog_name.startswith("cog-") else cog_name
     tokens = {
         "COG_NAME": cog_name,

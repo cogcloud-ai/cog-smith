@@ -17,7 +17,7 @@ def card(root):
     tasks = (pixi_doc or {}).get("tasks") or {}
 
     interfaces = m.get("interfaces") or []
-    # F7 (review 2026-08-22): audience is contextual, not lexical — a
+    # F7 (internal review): audience is contextual, not lexical — a
     # DECLARED audience wins; the lifecycle-name set is only the fallback.
     usage, lifecycle, inferred = set(), set(), False
     for i in interfaces:

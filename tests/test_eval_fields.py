@@ -1,8 +1,8 @@
 """Context-cog machinery 0.4.2: an eval fixture can assert the RESULT.
 
-Codex review 9 (contract §11b). A fixture's vocabulary could say what a Cog
-must not SAY (`forbid_tokens`) but not what it must DECIDE. The
-`cog-issue-classifier` review-priority fixture was therefore passed by a
+From an internal review. A fixture's vocabulary could say what a Cog
+must not SAY (`forbid_tokens`) but not what it must DECIDE. A
+review-priority fixture was therefore passed by a
 response that assigned `P2` while citing some other grounded passage from
 the bundle, and FAILED by a correct `unrated` answer whose `priority_reason`
 explained that the reviewer's "Blocking (P2)" marker was ineligible — the
@@ -86,7 +86,7 @@ class EvalFieldsTests(unittest.TestCase):
         self.assertTrue(report["passed"], report["checks"])
 
     def test_the_wrong_decision_fails_even_with_the_token_avoided(self):
-        """Codex's first residual, exactly: an answer that assigns P2 while
+        """The reviewer's first residual, exactly: an answer that assigns P2 while
         citing a different grounded passage never says the forbidden token,
         and a token ban therefore passes it."""
         wrong = dict(self.ANSWER, priority="P2",
@@ -103,7 +103,7 @@ class EvalFieldsTests(unittest.TestCase):
         self.assertFalse(asserted["passed"], asserted["checks"])
 
     def test_the_right_decision_fails_a_token_ban_and_passes_fields(self):
-        """Codex's second residual: the correct answer EXPLAINS why the
+        """The reviewer's second residual: the correct answer EXPLAINS why the
         reviewer's marker is ineligible, and so contains it."""
         banned = self.run_fixture(
             {"error": False, "parsed": True,

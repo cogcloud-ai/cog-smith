@@ -32,7 +32,7 @@ def grant(**overrides):
         "issued_at": cog_core.utc_now(),
         "issued_by": {"kind": "admission"},
         "operations": [{"resource": "github", "action": "read",
-                        "repositories": ["openteams-ai/apollo-desktop"]}],
+                        "repositories": ["example-org/example-repo"]}],
         "valid": {"expires_at": (datetime.now(timezone.utc)
                                  + timedelta(hours=1)).isoformat(),
                   "run_id": "run-1"},
@@ -82,7 +82,7 @@ class TestInvoke(unittest.TestCase):
         `ok` and the payload are asserted in the SAME test as the schema
         claim: a `task-failed` envelope carries no schema problem either, so
         the schema assertion alone passes vacuously on an early failure
-        (Codex review 9, nit 1)."""
+        ."""
         env = cog_core.invoke(sample_bundle())
         self.assertTrue(env["ok"], env)
         self.assertIsInstance(env.get("payload"), dict)
@@ -130,7 +130,7 @@ class TestGrantChecks(unittest.TestCase):
         self.assertEqual(code, "grant-wrong-recipient")
 
     def test_reads_and_writes_are_checked_against_the_grant(self):
-        ok, _ = cog_core.read_allowed(grant(), "openteams-ai/apollo-desktop")
+        ok, _ = cog_core.read_allowed(grant(), "example-org/example-repo")
         self.assertTrue(ok)
         ok, detail = cog_core.read_allowed(grant(), "someone/else")
         self.assertFalse(ok)

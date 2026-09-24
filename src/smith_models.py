@@ -1,7 +1,6 @@
 """`smith generate-descriptors` — generate deployment-descriptor model Cogs from a
 model catalog config. This is how a hosting environment's model offering
-becomes ordinary, resolvable satisfiers (see output/model-cogs-hub-offering.md
-in coglab): one descriptor cog per served model, created from config, with
+becomes ordinary, resolvable satisfiers: one descriptor cog per served model, created from config, with
 metering/audit attaching at the binding record.
 
 Config shape (YAML):
@@ -165,7 +164,7 @@ def generate_from_config(config_path, out_dir, manifest_format=None):
 
     # Preflight: validate EVERY entry and reject duplicates before any
     # write, so an invalid late entry can never leave a partial catalog
-    # (review 2026-08-22, F8).
+    # (internal review, F8).
     plan, seen = [], set()
     for entry in models:
         name, tokens = _entry_tokens(entry, defaults)

@@ -1,7 +1,6 @@
 """`smith op new` and `smith op check`: creation, collisions, machinery
 hashes, and step declarations checked against the Cogs they name.
 
-Contract: planning/current/phase2-op-runner-contract.md §1 and §6.
 """
 import json
 import subprocess
@@ -373,7 +372,7 @@ class CliTests(SmithOpCase):
 
 
 class ReviewRegressionTests(SmithOpCase):
-    """Codex review 2026-09-17, findings 5 and 15: the CLI's paths and its
+    """An internal review (2026-09-17), findings 5 and 15: the CLI's paths and its
     exit code for an invalid spec."""
 
     def smith(self, *args, cwd=None):
@@ -433,7 +432,7 @@ class ReviewRegressionTests(SmithOpCase):
 
 
 class VerificationRoundTests(SmithOpCase):
-    """Codex verification round, item 3: a malformed spec type reaches the
+    """An internal verification round, item 3: a malformed spec type reaches the
     CLI as exit 2 and one sentence — never a traceback."""
 
     def smith(self, *args, cwd=None):

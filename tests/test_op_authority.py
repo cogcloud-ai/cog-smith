@@ -1,13 +1,12 @@
 """Authority, the human Gate, resume: the phase 3 runner semantics.
 
-Contract: planning/current/phase3-contract.md §2, §3, §5 and the cog-smith
-bullets of §7. The Cog seam is faked (`invoke_cog` is monkeypatched), so
+The Cog seam is faked (`invoke_cog` is monkeypatched), so
 these tests are about the Op layer's decisions: what it issues, what it
 denies, what it pauses for, and what it records. What a Cog does with a
 grant is tests/test_code_cog.py.
 
 Nothing here is enforcement: the runner issues and records, and the code Cog
-checks its own grant before it reaches outside the run (contract §0).
+checks its own grant before it reaches outside the run (the internal contract).
 """
 import contextlib
 import io
@@ -27,15 +26,15 @@ OTHER_REPO = "someone-else/private"
 
 
 def spec_doc(**extra):
-    """read-github -> compose (human Gate) -> write-github."""
-    read = fx.cog_step("read-github", authority={
+    """example-reader -> compose (human Gate) -> example-writer."""
+    read = fx.cog_step("example-reader", authority={
         "requires": [{"resource": "github", "action": "read",
                       "repositories": {"$from": "inputs.repositories"}}]})
     read["input"] = {"repositories": {"$from": "inputs.repositories"}}
-    compose = fx.cog_step("compose", depends_on=["read-github"],
+    compose = fx.cog_step("compose", depends_on=["example-reader"],
                           gate={"policy": "human", "guards": []})
-    compose["input"] = {"items": {"$from": "steps.read-github.payload"}}
-    write = fx.cog_step("write-github", depends_on=["compose"], authority={
+    compose["input"] = {"items": {"$from": "steps.example-reader.payload"}}
+    write = fx.cog_step("example-writer", depends_on=["compose"], authority={
         "requires": [{"resource": "github", "action": "write",
                       "changes": {"$from": "steps.compose.decision.approved"}}]})
     write["input"] = {"changes": {"$from": "steps.compose.decision.approved"}}
@@ -75,10 +74,10 @@ class AuthorityCase(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.package = self.root / "op-test"
         self.real_invoke = op_runner.invoke_cog
-        fx.write_cog(self.root, "read-github",
+        fx.write_cog(self.root, "example-reader",
                      reaches=[{"resource": "github", "actions": ["read"]}])
         fx.write_cog(self.root, "compose")
-        fx.write_cog(self.root, "write-github",
+        fx.write_cog(self.root, "example-writer",
                      reaches=[{"resource": "github", "actions": ["write"]}])
 
     def tearDown(self):
@@ -138,7 +137,7 @@ class AuthorityTests(AuthorityCase):
     def test_a_configured_repository_read_is_issued(self):
         code, output, track = self.start()
         self.assertEqual(code, op_runner.PAUSED_EXIT)      # pauses at compose
-        record = self.step(track, "read-github")
+        record = self.step(track, "example-reader")
         self.assertEqual(record["status"], "passed")
         grant = json.loads(Path(record["grant"]).read_text())
         self.assertEqual(grant["schema"], op_runner.GRANT_SCHEMA)
@@ -146,7 +145,7 @@ class AuthorityTests(AuthorityCase):
                          [{"resource": "github", "action": "read",
                            "repositories": [REPO]}])
         self.assertEqual(grant["recipient"]["cog"]["id"],
-                         "openteams/cog-read-github")
+                         "openteams/cog-example-reader")
         self.assertEqual(grant["issued_by"]["kind"], "admission")
         self.assertEqual(grant["valid"]["run_id"], track["run_id"])
         # the grant reaches the Cog BESIDE the request, never inside it
@@ -159,7 +158,7 @@ class AuthorityTests(AuthorityCase):
         _, output, track = self.start()
         self.assertEqual(len(track["grants"]), 1)
         recorded = track["grants"][0]
-        self.assertEqual(recorded["step"], "read-github")
+        self.assertEqual(recorded["step"], "example-reader")
         self.assertEqual(recorded["operations"],
                          [{"resource": "github", "action": "read", "count": 1}])
         self.assertEqual(recorded["issued_by"]["kind"], "admission")
@@ -169,7 +168,7 @@ class AuthorityTests(AuthorityCase):
     def test_an_out_of_scope_read_is_denied_and_the_step_never_invoked(self):
         code, output, track = self.start(repositories=(REPO, OTHER_REPO))
         self.assertEqual(code, 1)
-        record = self.step(track, "read-github")
+        record = self.step(track, "example-reader")
         self.assertEqual(record["status"], "denied")
         self.assertIn(OTHER_REPO, record["gate"]["reasons"][0])
         self.assertEqual(self.fake.calls, [])
@@ -180,7 +179,7 @@ class AuthorityTests(AuthorityCase):
         with self.assertRaises(op_spec.OpSpecError) as caught:
             self.start(authority=False)
         text = "\n".join(caught.exception.problems)
-        self.assertIn("read-github", text)
+        self.assertIn("example-reader", text)
         self.assertIn("requires github read", text)
         self.assertIn("admitted with none", text)
 
@@ -199,7 +198,7 @@ class AuthorityTests(AuthorityCase):
 
     def test_a_write_that_does_not_depend_on_its_gate_is_refused_at_load(self):
         doc = spec_doc()
-        doc["steps"][2]["depends_on"] = ["read-github"]
+        doc["steps"][2]["depends_on"] = ["example-reader"]
         with self.assertRaises(op_spec.OpSpecError) as caught:
             op_spec.validate(doc)
         self.assertIn("without depending on it",
@@ -234,7 +233,7 @@ class AuthorityTests(AuthorityCase):
         # whose writes came from two human gates could only record one of
         # them, so the spec is refused at load instead (review S6).
         doc = spec_doc()
-        second = fx.cog_step("compose-more", depends_on=["read-github"],
+        second = fx.cog_step("compose-more", depends_on=["example-reader"],
                              gate={"policy": "human", "guards": []})
         doc["steps"].insert(2, second)
         write = doc["steps"][3]
@@ -249,7 +248,7 @@ class AuthorityTests(AuthorityCase):
 
     def test_a_list_valued_repository_is_a_denial_not_a_crash(self):
         code, output, track = self.start(request={"repositories": [["a"]]})
-        record = self.step(track, "read-github")
+        record = self.step(track, "example-reader")
         self.assertEqual(record["status"], "denied")
         self.assertIn("not a list of repositories", record["gate"]["reasons"][0])
         self.assertEqual(self.fake.calls, [])
@@ -293,7 +292,7 @@ class AuthorityTests(AuthorityCase):
 
     def test_grants_is_not_a_mapping_root(self):
         doc = spec_doc()
-        doc["steps"][2]["input"] = {"g": {"$from": "grants.write-github"}}
+        doc["steps"][2]["input"] = {"g": {"$from": "grants.example-writer"}}
         with self.assertRaises(op_spec.OpSpecError) as caught:
             op_spec.validate(doc)
         self.assertIn("a grant is never readable from a mapping expression",
@@ -309,7 +308,7 @@ class AuthorityTests(AuthorityCase):
                       "\n".join(caught.exception.problems))
 
     def test_authority_on_a_non_code_cog_is_refused_by_name(self):
-        fx.write_cog(self.root, "read-github", kind="context",
+        fx.write_cog(self.root, "example-reader", kind="context",
                      reaches=[{"resource": "github", "actions": ["read"]}])
         with self.assertRaises(op_spec.OpSpecError) as caught:
             self.start()
@@ -317,7 +316,7 @@ class AuthorityTests(AuthorityCase):
                       "\n".join(caught.exception.problems))
 
     def test_a_requirement_outside_the_cogs_reaches_is_refused(self):
-        fx.write_cog(self.root, "read-github",
+        fx.write_cog(self.root, "example-reader",
                      reaches=[{"resource": "github", "actions": ["write"]}])
         with self.assertRaises(op_spec.OpSpecError) as caught:
             self.start()
@@ -344,7 +343,7 @@ class WriteGrantTests(AuthorityCase):
         code, output, track = self.approve_and_continue(
             {"c-a": "approve", "c-b": "reject"})
         self.assertEqual(code, 0, output)
-        record = self.step(track, "write-github")
+        record = self.step(track, "example-writer")
         self.assertEqual(record["status"], "passed")
         grant = json.loads(Path(record["grant"]).read_text())
         write = grant["operations"][0]
@@ -355,7 +354,7 @@ class WriteGrantTests(AuthorityCase):
                          op_runner.sha256_file(grant["issued_by"]["decision"]))
 
     def test_the_grant_lists_only_the_approved_changes(self):
-        # §7's "a step requiring B is denied" is two tests after contract §9.
+        # "A step requiring B is denied" is two tests further down.
         # This is the runner's half: whatever the step's own input says, the
         # GRANT is exactly the approved list. (The Cog's half — a change id
         # or a target hash that is not in the grant is denied — is
@@ -368,7 +367,7 @@ class WriteGrantTests(AuthorityCase):
         code, out, track = self.resume(output, decision)
         self.assertEqual(code, 0, out)
         grant = json.loads(
-            Path(self.step(track, "write-github")["grant"]).read_text())
+            Path(self.step(track, "example-writer")["grant"]).read_text())
         self.assertEqual(
             [c["change_id"] for c in grant["operations"][0]["changes"]],
             ["c-a"])
@@ -382,7 +381,7 @@ class WriteGrantTests(AuthorityCase):
                                                         changes=("c-a",))
         self.assertEqual(code, 0, output)
         grant = json.loads(
-            Path(self.step(track, "write-github")["grant"]).read_text())
+            Path(self.step(track, "example-writer")["grant"]).read_text())
         granted = grant["operations"][0]["changes"][0]
         self.assertEqual(granted["target_sha256"], "1" * 64)
         self.assertEqual(granted["content_sha256"],
@@ -390,7 +389,7 @@ class WriteGrantTests(AuthorityCase):
         self.assertEqual(granted["repository"], REPO)
 
     def test_a_change_without_a_target_hash_refuses_the_pause(self):
-        # Review 3, finding 1: the hashes are checked where the human meets
+        # An internal review, finding 1: the hashes are checked where the human meets
         # them — at the pause — not only at issuance.
         naked = fx.change("c-a")
         del naked["target_sha256"]
@@ -411,27 +410,27 @@ class WriteGrantTests(AuthorityCase):
     def test_each_issuance_gets_its_own_grant_id_and_file(self):
         code, output, track = self.approve_and_continue({"c-a": "approve"},
                                                         changes=("c-a",))
-        first = Path(self.step(track, "write-github")["grant"])
+        first = Path(self.step(track, "example-writer")["grant"])
         self.assertEqual(first.name, "0.json")
         # plant an interruption: the write step is re-run by a second resume
-        record = self.step(track, "write-github")
+        record = self.step(track, "example-writer")
         record["status"] = "running"
         Path(output["track"]).write_text(json.dumps(track))
         code, out2, track2 = self.resume(output)
-        second = Path(self.step(track2, "write-github")["grant"])
+        second = Path(self.step(track2, "example-writer")["grant"])
         self.assertNotEqual(second, first)
         self.assertTrue(first.exists())            # never overwritten
         self.assertEqual(json.loads(first.read_text())["grant_id"],
-                         f"{track['run_id']}/write-github/0")
+                         f"{track['run_id']}/example-writer/0")
         self.assertEqual(json.loads(second.read_text())["grant_id"],
-                         f"{track['run_id']}/write-github/1")
+                         f"{track['run_id']}/example-writer/1")
 
     def test_the_grant_names_the_recipient_version_from_the_manifest(self):
         doc = spec_doc()
         del doc["steps"][0]["cog"]["version"]
         code, output, track = self.start(doc=doc)
         grant = json.loads(
-            Path(self.step(track, "read-github")["grant"]).read_text())
+            Path(self.step(track, "example-reader")["grant"]).read_text())
         self.assertEqual(grant["recipient"]["cog"]["version"], "0.1.0")
 
     def test_an_edited_change_is_re_hashed_and_that_hash_is_granted(self):
@@ -440,7 +439,7 @@ class WriteGrantTests(AuthorityCase):
             {"c-a": edited, "c-b": "reject"})
         self.assertEqual(code, 0, output)
         grant = json.loads(
-            Path(self.step(track, "write-github")["grant"]).read_text())
+            Path(self.step(track, "example-writer")["grant"]).read_text())
         granted = grant["operations"][0]["changes"][0]
         self.assertEqual(granted["change_id"], "c-a")
         self.assertEqual(granted["content_sha256"],
@@ -460,10 +459,10 @@ class WriteGrantTests(AuthorityCase):
         self.assertEqual(code, 0, out)
         self.step(track, "compose")["decision"]["value"]["approved"][0][
             "summary"] = "something else entirely"
-        self.step(track, "write-github")["status"] = "not-reached"
+        self.step(track, "example-writer")["status"] = "not-reached"
         Path(out["track"]).write_text(json.dumps(track))
         code, out2, track2 = self.resume(out)
-        record = self.step(track2, "write-github")
+        record = self.step(track2, "example-writer")
         self.assertEqual(record["status"], "denied")
         self.assertIn("its content hashes to", record["gate"]["reasons"][0])
 
@@ -476,10 +475,10 @@ class WriteGrantTests(AuthorityCase):
         code, out, track = self.resume(output, decision)
         self.assertEqual(code, 0, out)
         tamper(self.step(track, "compose")["decision"]["value"]["approved"][0])
-        self.step(track, "write-github")["status"] = "not-reached"
+        self.step(track, "example-writer")["status"] = "not-reached"
         Path(out["track"]).write_text(json.dumps(track))
         code, out2, track2 = self.resume(out)
-        return self.step(track2, "write-github")
+        return self.step(track2, "example-writer")
 
     def test_a_change_whose_target_hash_is_not_a_sha256_refuses_the_pause(self):
         answers = {"ask": [fx.envelope(payload={"items": []}),
@@ -491,7 +490,7 @@ class WriteGrantTests(AuthorityCase):
         self.assertIn("not a sha256", "\n".join(caught.exception.problems))
 
     def test_a_target_hash_with_a_trailing_newline_refuses_the_pause(self):
-        # Review 3, finding 1, reproduced: `re.match` with `$` accepted
+        # An internal review, finding 1, reproduced: `re.match` with `$` accepted
         # 64 hex characters followed by a newline. `fullmatch` does not.
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [fx.change(
@@ -519,7 +518,7 @@ class WriteGrantTests(AuthorityCase):
                              fx.envelope(payload={})]})
         decision = self.decide(output, {"c-a": "approve"})
         code, out, track = self.resume(output, decision)
-        record = self.step(track, "write-github")
+        record = self.step(track, "example-writer")
         self.assertEqual(record["status"], "denied")
         self.assertIn("not admitted to write", record["gate"]["reasons"][0])
 
@@ -530,13 +529,13 @@ class WriteGrantTests(AuthorityCase):
         # rewrite the copied decision record and resume again from scratch
         copied = Path(self.step(track, "compose")["decision"]["decision"])
         copied.write_text(copied.read_text() + "\n")
-        record = self.step(track, "write-github")
+        record = self.step(track, "example-writer")
         record["status"] = "not-reached"      # pretend the write never ran
         Path(out["track"]).write_text(json.dumps(track))
         code, out2, track2 = self.resume(out)
-        self.assertEqual(self.step(track2, "write-github")["status"], "denied")
+        self.assertEqual(self.step(track2, "example-writer")["status"], "denied")
         self.assertIn("changed since the Track recorded it",
-                      self.step(track2, "write-github")["gate"]["reasons"][0])
+                      self.step(track2, "example-writer")["gate"]["reasons"][0])
 
     def test_a_failed_gate_releases_no_downstream_write_grant(self):
         answers = {"ask": [fx.envelope(payload={"items": []}),
@@ -545,27 +544,27 @@ class WriteGrantTests(AuthorityCase):
         code, output, track = self.start(answers=answers)
         self.assertEqual(code, 1)
         self.assertEqual(self.step(track, "compose")["status"], "failed")
-        self.assertEqual(self.step(track, "write-github")["status"],
+        self.assertEqual(self.step(track, "example-writer")["status"],
                          "not-reached")
-        self.assertEqual([g["step"] for g in track["grants"]], ["read-github"])
+        self.assertEqual([g["step"] for g in track["grants"]], ["example-reader"])
         self.assertFalse((Path(output["run_dir"]) / "grants"
-                          / "write-github.json").exists())
+                          / "example-writer.json").exists())
 
     def test_a_denied_read_releases_no_downstream_write_grant(self):
         doc = spec_doc()
         doc["steps"][0]["on_fail"] = "skip"
         code, output, track = self.start(doc=doc,
                                          repositories=(OTHER_REPO,))
-        self.assertEqual(self.step(track, "read-github")["status"], "denied")
-        self.assertEqual(self.step(track, "write-github")["status"], "blocked")
+        self.assertEqual(self.step(track, "example-reader")["status"], "denied")
+        self.assertEqual(self.step(track, "example-writer")["status"], "blocked")
         self.assertEqual(track["grants"], [])         # neither step got one
 
     def test_the_journal_is_created_for_a_granted_step_and_recorded(self):
         code, output, track = self.approve_and_continue({"c-a": "approve",
                                                          "c-b": "reject"})
-        record = self.step(track, "write-github")
+        record = self.step(track, "example-writer")
         self.assertTrue(Path(record["journal"]).exists())
-        self.assertEqual(Path(record["journal"]).name, "write-github.jsonl")
+        self.assertEqual(Path(record["journal"]).name, "example-writer.jsonl")
         seam = self.fake.calls[-1]["seam"]
         self.assertEqual(seam["journal_path"], record["journal"])
 
@@ -596,7 +595,7 @@ class HumanGateTests(AuthorityCase):
         self.assertEqual(record["gate"]["status"], "pending")
         self.assertTrue(record["gate"]["asked_at"])
         # the write step was never reached, and no write grant exists
-        self.assertEqual(self.step(track, "write-github")["status"],
+        self.assertEqual(self.step(track, "example-writer")["status"],
                          "not-reached")
         self.assertEqual(len(self.fake.calls), 2)
 
@@ -751,7 +750,7 @@ class PendingSheetTests(unittest.TestCase):
 
 
 HOSTILE_CELLS = [
-    # Codex review 10, finding 1, verbatim plus review 9's originals.
+    # From an internal review, verbatim, plus the earlier round's originals.
     "owner/repo#1​0",                     # zero-width space
     "‮reversed‬ text",               # bidi override and pop
     "before\u001b[31mred\u001b[0m after",      # terminal escape
@@ -795,8 +794,8 @@ def invisible_characters(text):
 class PendingSheetLiteralTextTests(unittest.TestCase):
     """Every cell satisfies the literal-text INVARIANT (Op machinery 0.5.8).
 
-    Codex review 9, blocker 3: a valid `content_sha256` says nothing about
-    how a proposal READS. Review 10, finding 1: escaping a chosen list of
+    an internal review, blocker 3: a valid `content_sha256` says nothing about
+    how a proposal READS. An internal review, finding 1: escaping a chosen list of
     metacharacters left `:emoji:`, `@mentions`, bare autolinks and — worse —
     every invisible character alive, so `owner/repo#1<U+200B>0` still read as
     `owner/repo#10`.
@@ -850,7 +849,7 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
         return [p.strip() for p in parts[1:-1]]
 
     def test_every_cell_of_a_hostile_row_satisfies_the_invariant(self):
-        """The whole point, over every input Codex named: each cell of a row
+        """The whole point, over every input the reviewer named: each cell of a row
         built from hostile strings is literal text by the invariant."""
         for hostile in HOSTILE_CELLS:
             with self.subTest(hostile=hostile):
@@ -867,7 +866,7 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
         self.assertEqual(invisible_characters(sheet.replace("\n", " ")), [])
 
     def test_a_zero_width_space_is_shown_as_its_codepoint(self):
-        """Review 10 finding 1: `owner/repo#1<U+200B>0` READ as
+        """An internal review, finding 1: `owner/repo#1<U+200B>0` READ as
         `owner/repo#10`. It must now say what it contains."""
         cells = self.cells(change_id="c-1", change_type="add_label",
                            target="owner/repo#1​0", summary="plain")
@@ -945,7 +944,7 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
     def test_an_entity_is_escaped_once_and_not_twice(self):
         """0.5.7 HTML-escaped as well, so `&#124;` came out `&amp;\\#124;`
         — escaped twice, and read as an entity for `&`. The backslash rule
-        alone covers it (review 10, finding 1's entity check)."""
+        alone covers it (an internal review, finding 1's entity check)."""
         cells = self.cells(change_id="c-1", change_type="add_label",
                            target="nexus#1", summary="&#124; &lt;script&gt;")
         self.assertEqual(cells[3],
@@ -975,7 +974,7 @@ class PendingSheetLiteralTextTests(unittest.TestCase):
         self.assertIn("reading aid", head)
 
     def test_the_header_claims_no_general_invisibility(self):
-        """Machinery 0.5.9 (Codex review 11, finding 4). 0.5.8's header said
+        """Machinery 0.5.9 (an internal review, finding 4). 0.5.8's header said
         "an invisible character shows as `U+XXXX`", which is not true in
         general: combining marks (U+034F) and variation selectors (U+FE0F)
         are `Mn`, look-alike letters are ordinary letters, and none of them
@@ -1060,7 +1059,7 @@ class PendingAndDecisionTests(AuthorityCase):
                       "\n".join(caught.exception.problems))
 
     def test_a_placeholder_content_hash_refuses_the_pause(self):
-        # Review 3, finding 1, reproduced: a proposal carrying
+        # An internal review, finding 1, reproduced: a proposal carrying
         # `"content_sha256": "placeholder"` used to pass the pause and be
         # LAUNDERED into a valid canonical digest at approval, which then
         # passed issuance. The pause refuses it by name instead.
@@ -1089,7 +1088,7 @@ class PendingAndDecisionTests(AuthorityCase):
                       "\n".join(caught.exception.problems))
 
     def test_approval_preserves_the_supplied_digest_and_only_edits_rehash(self):
-        # Review 3, finding 1: an approval or a rejection carries the digest
+        # An internal review, finding 1: an approval or a rejection carries the digest
         # the proposal stated (the pause already checked it against the
         # object); ONLY an edit is re-hashed. Recomputing at approval is
         # what turned `"placeholder"` into a valid-looking hash.
@@ -1216,8 +1215,8 @@ class PendingAndDecisionTests(AuthorityCase):
             self.assertEqual(entry["target_sha256"], "1" * 64)
 
     def test_the_exposed_decision_carries_decided_by_and_decided_at(self):
-        # Review 4, S3: the run record could not say WHO decided or WHEN,
-        # because the exposed decision value carried neither (contract §9d,
+        # An internal review, S3: the run record could not say WHO decided or WHEN,
+        # because the exposed decision value carried neither (the internal contract,
         # Op machinery 0.5.4).
         code, output, _ = self.start(answers=envelopes(("c-a",)))
         decision_path = self.decide(output, {"c-a": "approve"},
@@ -1230,7 +1229,7 @@ class PendingAndDecisionTests(AuthorityCase):
         self.assertEqual(value["decided_at"], "2026-09-18T10:00:00+00:00")
 
     def test_the_exposed_approved_list_carries_the_edited_change_object(self):
-        # Review 4, S3: an edited change must reach a downstream step as the
+        # An internal review, S3: an edited change must reach a downstream step as the
         # EDITED object, not as the original proposal.
         code, output, _ = self.start(answers=envelopes(("c-a",)))
         edited = dict(fx.change("c-a"), summary="a better summary")
@@ -1265,7 +1264,7 @@ class ResumeValidationTests(AuthorityCase):
         code, output, _ = self.start()
         decision = self.decide(output, {"c-a": "approve"})
         # the write Cog stops declaring that it reaches github
-        fx.write_cog(self.root, "write-github")
+        fx.write_cog(self.root, "example-writer")
         with self.assertRaises(op_spec.OpSpecError) as caught:
             self.resume(output, decision)
         self.assertIn("does not declare in its reaches",
@@ -1287,9 +1286,9 @@ class ResumeValidationTests(AuthorityCase):
     def test_a_resume_restores_an_earlier_steps_envelope(self):
         doc = spec_doc()
         doc["steps"][2]["input"] = {
-            "ok": {"$from": "steps.read-github.envelope.ok"},
+            "ok": {"$from": "steps.example-reader.envelope.ok"},
             "changes": {"$from": "steps.compose.decision.approved"}}
-        doc["steps"][2]["depends_on"] = ["compose", "read-github"]
+        doc["steps"][2]["depends_on"] = ["compose", "example-reader"]
         code, output, _ = self.start(doc=doc)
         decision = self.decide(output, {"c-a": "approve"})
         code, out, track = self.resume(output, decision)
@@ -1423,7 +1422,7 @@ class DocumentTests(unittest.TestCase):
 
     def test_the_grant_carries_no_credentials(self):
         grant = op_runner.grant_document(
-            {"id": "write", "cog": {"id": "openteams/cog-write-github",
+            {"id": "write", "cog": {"id": "openteams/cog-example-writer",
                                     "version": "0.1.0"}},
             "run-1", [{"resource": "github", "action": "write",
                        "changes": []}], {"kind": "admission"}, 60)
@@ -1433,7 +1432,7 @@ class DocumentTests(unittest.TestCase):
 
 
 class RunDirectoryDurabilityTests(AuthorityCase):
-    """Review 3, finding 2: the run directory is created like every control
+    """An internal review, finding 2: the run directory is created like every control
     directory under it — through `ensure_dir`, so its OWN entry is fsynced
     in `runs/`. A Track inside a directory whose entry never reached the
     disk is not durable."""
@@ -1571,7 +1570,7 @@ class ControlFileTests(unittest.TestCase):
 
 class RunLockTests(unittest.TestCase):
     """One run, one process — an advisory `flock` on an open descriptor, not
-    a pid file (contract §9b, verification finding 1). `flock` is bound to
+    a pid file (the internal contract, verification finding 1). `flock` is bound to
     the OPEN FILE DESCRIPTION, so a second acquire conflicts even in this
     process: the tests need no second interpreter to prove it."""
 
@@ -1623,7 +1622,7 @@ class RunLockTests(unittest.TestCase):
         self.assertTrue(self.take().held)
 
     def test_a_symlinked_lock_file_is_refused_not_followed(self):
-        # Review 3, finding 3, reproduced: `run.lock` pointing at
+        # An internal review, finding 3, reproduced: `run.lock` pointing at
         # `track.json` was opened and TRUNCATED — the resume destroyed the
         # Track before reading it.
         track = self.run_dir / "track.json"
@@ -1668,7 +1667,7 @@ class RunLockTests(unittest.TestCase):
         # The metadata is written AFTER the lock is held; if that write
         # fails, the descriptor is released before the exception leaves —
         # an embedding process that catches it is not left holding a lock
-        # it does not know about (review 3, finding 3).
+        # it does not know about (an internal review, finding 3).
         real = op_runner.os.write
 
         def boom(fd, data):
@@ -1726,7 +1725,7 @@ class TtlTests(AuthorityCase):
         doc = spec_doc(authority={"ttl_minutes": 1})
         code, output, track = self.start(doc=doc)
         grant = json.loads(
-            Path(self.step(track, "read-github")["grant"]).read_text())
+            Path(self.step(track, "example-reader")["grant"]).read_text())
         issued = datetime.fromisoformat(grant["issued_at"])
         expires = datetime.fromisoformat(grant["valid"]["expires_at"])
         self.assertAlmostEqual((expires - issued).total_seconds(), 60, delta=5)

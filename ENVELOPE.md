@@ -2,7 +2,7 @@
 
 Every Cog created by cog-smith emits this envelope from its task entry
 points. This is the concrete form of two decisions the spec deliberately
-left to hosting environments (see `op-cog-seam.md` and the capability-list
+left to hosting environments (the Op–Cog seam and the capability-list
 framing): the payload key and the pass/fail surface. It is **the Collab
 profile's** answer — other environments may require otherwise; a Cog that
 emits this envelope is compatible with Collab's seam.
@@ -33,7 +33,7 @@ Field rules:
 
 - **`envelope`** — the version discriminator for this contract (`1` today);
   consumers detect the envelope version here, not by sniffing field shapes.
-- **`payload`** — the fixed key (closes cog-client GAPS #1). The value's
+- **`payload`** — the fixed key. The value's
   shape is the Cog's own `context/output-schema.json`; `null` when the run
   errored or output did not parse.
 - **`ok`** — transport-level success: the invocation completed and produced

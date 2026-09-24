@@ -1,7 +1,6 @@
 """Code Cogs (`kind: code`): creation, the checker rules, and the seam.
 
-Contract: planning/current/phase3-contract.md §1 and the grant/journal parts
-of §2 and §4. The created Cog is exercised as a PROCESS (`python
+The created Cog is exercised as a PROCESS (`python
 src/cog_cli.py ...`), which is how an Op reaches it, so nothing here depends
 on importing a created package's machinery into this interpreter.
 """
@@ -70,7 +69,7 @@ def grant(cog_id, run_id="run-1", operations=None, expires_in_minutes=60,
         "issued_by": {"kind": "admission"},
         "operations": operations if operations is not None else [
             {"resource": "github", "action": "read",
-             "repositories": ["openteams-ai/apollo-desktop"]}],
+             "repositories": ["example-org/example-repo"]}],
         "valid": {"expires_at": expires.isoformat(), "run_id": run_id},
     }
 
@@ -247,11 +246,11 @@ class TestTheSeam(unittest.TestCase):
                                .read_bytes()).hexdigest())
 
     def test_a_crashing_output_checker_is_a_named_envelope(self):
-        # Review 4, S6, reproduced: the package's `check_output` ran OUTSIDE
+        # Reproduced from an internal review: the package's `check_output` ran OUTSIDE
         # the machinery's task exception boundary, so a checker that tripped
         # over a payload it did not expect raised a traceback out of the CLI
         # after the task had already run. It is a named ok:false envelope
-        # now (contract §9d, code-cog machinery 0.1.4).
+        # now (the internal contract, code-cog machinery 0.1.4).
         with tempfile.TemporaryDirectory() as tmp:
             dest = create_code_cog(tmp)
             path = dest / 'src' / 'task_logic.py'
@@ -268,8 +267,8 @@ class TestTheSeam(unittest.TestCase):
                              'output-check-failed')
 
 
-#: A package checker that trips over its own payload: what review 4's S6
-#: found in cog-record-run, reduced to one line.
+#: A package checker that trips over its own payload: what an internal review
+#: found in a real package, reduced to one line.
 CRASHING_CHECKER = """
 
 
@@ -330,7 +329,7 @@ class TestGrantChecks(unittest.TestCase):
         expired = grant("openteams/cog-widget", expires_in_minutes=-1)
         ok, detail = probe(
             self.dest,
-            'cog_core.read_allowed(grant, "openteams-ai/apollo-desktop", '
+            'cog_core.read_allowed(grant, "example-org/example-repo", '
             'run_id="run-1")', expired)
         self.assertFalse(ok)
         self.assertIn("grant-expired", detail)
@@ -338,7 +337,7 @@ class TestGrantChecks(unittest.TestCase):
     def test_read_allowed_re_checks_the_run_binding_on_every_call(self):
         ok, detail = probe(
             self.dest,
-            'cog_core.read_allowed(grant, "openteams-ai/apollo-desktop", '
+            'cog_core.read_allowed(grant, "example-org/example-repo", '
             'run_id="run-somewhere-else")', self.doc())
         self.assertFalse(ok)
         self.assertIn("grant-wrong-run", detail)
@@ -373,7 +372,7 @@ class TestGrantChecks(unittest.TestCase):
                                     "repositories": 7}])
         ok, detail = probe(
             self.dest,
-            'cog_core.read_allowed(grant, "openteams-ai/apollo-desktop", '
+            'cog_core.read_allowed(grant, "example-org/example-repo", '
             'run_id="run-1")', doc)
         self.assertFalse(ok)
         self.assertIn("LIST of repository strings", detail)
@@ -560,7 +559,7 @@ WRITE_BACK_OUTPUT_SCHEMA = {
 
 
 def write_back_cog(tmp):
-    dest = create_code_cog(tmp, name="cog-write-github")
+    dest = create_code_cog(tmp, name="cog-example-writer")
     declare_reaches(dest, actions=("write",))
     (dest / "src" / "task_logic.py").write_text(WRITE_BACK_TASK_LOGIC)
     (dest / "context" / "input-schema.json").write_text(
@@ -575,7 +574,7 @@ TARGET_SHA = "1" * 64
 
 def content_hash(change):
     """The change object's own hash, the way the runner computes it: canonical
-    JSON over everything EXCEPT the two hash fields (contract §9)."""
+    JSON over everything EXCEPT the two hash fields (the internal contract)."""
     body = {k: v for k, v in change.items()
             if k not in ("content_sha256", "target_sha256")}
     return hashlib.sha256(
@@ -587,7 +586,7 @@ def bundle_change(change_id, body="original"):
     """A change as it travels in the BUNDLE. Its `content_sha256` is a
     STATED digest: the Cog computes the hash from the object and never reads
     this field, so a bundle cannot agree with itself into an approval
-    (contract §9b, verification finding 2)."""
+    (the internal contract, verification finding 2)."""
     return {"change_id": change_id, "kind": "label", "body": body,
             "content_sha256": content_hash({"change_id": change_id,
                                             "kind": "label",
@@ -596,13 +595,13 @@ def bundle_change(change_id, body="original"):
 
 def write_grant(tmp, change_ids, target_sha256=TARGET_SHA, body="original",
                 **over):
-    """A write grant carrying BOTH hashes per change (contract §9)."""
+    """A write grant carrying BOTH hashes per change (the internal contract)."""
     path = Path(tmp) / "grant.json"
     path.write_text(json.dumps(grant(
-        "openteams/cog-write-github",
+        "openteams/cog-example-writer",
         operations=[{"resource": "github", "action": "write",
                      "changes": [{"change_id": c,
-                                  "repository": "openteams-ai/apollo-desktop",
+                                  "repository": "example-org/example-repo",
                                   "content_sha256": content_hash(
                                       bundle_change(c, body)),
                                   "target_sha256": target_sha256}
@@ -640,7 +639,7 @@ def run_write_back(dest, tmp, bundle, env_extra=None, journal=None):
 PROPOSE_TASK_LOGIC = '''
 """Proposes one change for a human to decide about."""
 
-REPOSITORY = "openteams-ai/apollo-desktop"
+REPOSITORY = "example-org/example-repo"
 
 
 def run(bundle, grant, journal):
@@ -678,14 +677,14 @@ def propose_cog(tmp):
 
 # A write-back that leaves its change UNRESOLVED the first time, and a
 # recorder that counts its invocations: the pair the runner-level resume test
-# of contract §9e needs. The first write invocation journals `uncertain` (the
+# of the internal contract needs. The first write invocation journals `uncertain` (the
 # request went out, the answer was lost) and reports `write-back-unresolved`
 # at ERROR severity, so the Gate fails and the run stops there. The next
 # invocation reads the journal, asks the fake GitHub whether the effect
 # landed, records `applied` and passes.
 
 UNRESOLVED_WRITE_TASK_LOGIC = '''
-"""A fake write-back whose first attempt ends uncertain (contract §9e)."""
+"""A fake write-back whose first attempt ends uncertain (the internal contract)."""
 import json
 import os
 from pathlib import Path
@@ -743,7 +742,7 @@ def run(bundle, grant, journal):
 
 
 def unresolved_write_cog(tmp):
-    dest = create_code_cog(tmp, name="cog-write-github")
+    dest = create_code_cog(tmp, name="cog-example-writer")
     declare_reaches(dest, actions=("write",))
     (dest / "src" / "task_logic.py").write_text(UNRESOLVED_WRITE_TASK_LOGIC)
     (dest / "context" / "input-schema.json").write_text(
@@ -771,7 +770,7 @@ def run(bundle, grant, journal):
 
 
 def record_cog(tmp):
-    dest = create_code_cog(tmp, name="cog-record-run")
+    dest = create_code_cog(tmp, name="cog-example-recorder")
     (dest / "src" / "task_logic.py").write_text(RECORD_TASK_LOGIC)
     (dest / "context" / "input-schema.json").write_text(json.dumps(
         {"$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -823,7 +822,7 @@ class TestJournalAndWriteBack(unittest.TestCase):
 
     def test_a_stale_target_is_denied_by_the_cog(self):
         # The grant's target_sha256 is the state the human approved against;
-        # the world moved, so this change is not applied (contract §9).
+        # the world moved, so this change is not applied (the internal contract).
         with tempfile.TemporaryDirectory() as tmp:
             dest = write_back_cog(tmp)
             write_grant(tmp, ["c-1"])
@@ -960,7 +959,7 @@ class TestJournalAndWriteBack(unittest.TestCase):
             self.assertEqual(self.calls(tmp), [])
 
     def test_an_unreadable_journal_is_a_structured_envelope(self):
-        # Review 3, finding 5, reproduced: a journal this process cannot
+        # Reproduced from an internal review: a journal this process cannot
         # READ raised PermissionError out of the preflight — a traceback
         # where an ok:false envelope belongs. `journal-corrupt` is about
         # CONTENT; this is `journal-unreadable`.

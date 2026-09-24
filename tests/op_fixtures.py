@@ -116,7 +116,7 @@ class FakeCog:
 
 AUTHORITY_SCHEMA = "openteams/op-authority [0.1]"
 DECISION_SCHEMA = "openteams/op-decision [0.1]"
-REPO = "openteams-ai/apollo-desktop"
+REPO = "example-org/example-repo"
 
 COG_MANIFEST = """[workspace]
 name = "cog-{name}"

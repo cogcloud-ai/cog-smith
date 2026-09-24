@@ -27,7 +27,7 @@ different layers:
 
 | Layer | What it defines | Where to look |
 |---|---|---|
-| **CogSpec core** | The portable artifact: COG.md, its frontmatter, and the manifest it identifies | [CogSpec](../cog-spec/SPEC.md) |
+| **CogSpec core** | The portable artifact: COG.md, its frontmatter, and the manifest it identifies | [CogSpec](https://github.com/cogcloud-ai/cog-spec/blob/main/SPEC.md) |
 | **OpenTeams/Collab profile** | The current manifest fields, entry-point conventions, result envelope, binding, and hosting expectations used by this workspace | [Envelope](ENVELOPE.md) and the generated manifest (`[tool.cog]` in pixi.toml, or cog.yaml) |
 | **A particular Cog** | One worker's purpose, inputs, outputs, instructions, contract checks, tests, and declared dependencies | Its COG.md, manifest, context/, and task_logic.py |
 
@@ -77,7 +77,7 @@ CogSpec describes three broad kinds:
 | **model** | No | Yes, including the software needed to execute it |
 | **complete** | Yes | Yes |
 
-A fourth kind, **code**, was decided on 2026-09-17 for the triage Op's phase 3:
+A fourth kind, **code**, was decided on 2026-09-17:
 a package with the Cog shape (manifest, entry points, envelope v1, contract
 checks, catalog card, machinery by hash) whose work is done by code with no
 model in the loop. Its schemas and rules describe a program's work contract;
@@ -333,8 +333,8 @@ The Op layer only needs four things from a Cog:
 
 The Cog owns its model binding, internal machinery, and its contract checks.
 The Op layer owns sequencing, human approvals, gates, independent Guards, and
-durable workflow state. See
-[The Op–Cog seam](../output/op-cog-seam.md) for the current architecture note.
+durable workflow state. See [Building Ops](BUILDING_OPS.md) for the Op side
+of that seam.
 
 ## 5. Anatomy of a Cog Smith context Cog
 
@@ -647,20 +647,20 @@ payload keys and the values the answer must carry:
 A `forbid_tokens:` list says what the Cog must not SAY, which is the right
 tool for a canary and the wrong one for an outcome: it passes any answer that
 avoids the token, including a wrong one, and fails a correct answer that
-explains why the token was ineligible (Codex review 9).
+explains why the token was ineligible.
 
 Evaluation against a live model complements deterministic tests. It does not
 replace them.
 
 ## 7b. Build a code Cog
 
-    pixi run smith -- new cog-read-github --kind code --yes
+    pixi run smith -- new cog-example-reader --kind code --yes
 
 A code Cog implements a bounded programmatic job through the shared Cog seam.
 First check [why and when to use this type](#why-code-cogs-exist-and-when-to-use-one).
 What you get:
 
-    cog-read-github/
+    cog-example-reader/
     ├── COG.md
     ├── pixi.toml             # [tool.cog] manifest; tasks: run, check, test
     ├── context/
@@ -717,7 +717,7 @@ that this Cog is its recipient (`grant-invalid`, `grant-expired`,
 `--run-id` is `grant-invalid`) — and gives you the per-call checks:
 
 ```python
-ok, detail = cog_core.read_allowed(grant, "openteams-ai/apollo-desktop")
+ok, detail = cog_core.read_allowed(grant, "example-org/example-repo")
 ok, detail = cog_core.write_allowed(
     grant, change_id,
     fetch_target_sha256(change),                      # fetched NOW
@@ -1092,17 +1092,16 @@ Remember that a runtime override does not rewrite the portable manifest.
 
 Read these in order:
 
-1. [CogSpec README](../cog-spec/README.md) — short public-core overview.
-2. [CogSpec v0.1](../cog-spec/SPEC.md) — normative core rules.
+1. [CogSpec README](https://github.com/cogcloud-ai/cog-spec/blob/main/README.md) — short public-core overview.
+2. [CogSpec v0.1](https://github.com/cogcloud-ai/cog-spec/blob/main/SPEC.md) — normative core rules.
 3. [Cog Smith README](README.md) — command summary.
 4. [Envelope v1](ENVELOPE.md) — current Collab result contract.
 5. [Machinery provenance](MACHINERY.md) — ownership and shared-code lineage.
-6. [Meeting Highlights example](../cog-meeting-highlights/COG.md) — an older
-   illustrative domain adaptation; useful for its work contract, but not a
-   source for current shared machinery.
-7. [The Op–Cog seam](../output/op-cog-seam.md) — how Ops consume Cogs.
-8. [Cog Smith review](../output/cog-smith-review-2026-08-22.md) — design and
-   usability findings that led to the current hardening work.
+6. [Building Ops](BUILDING_OPS.md) — how Ops consume Cogs: the spec, the
+   runner, and the Track.
+
+The design and usability findings that drove the current hardening came from
+an internal review (not distributed); MACHINERY.md records where each landed.
 
 ## Closing principle
 

@@ -1,6 +1,6 @@
 """The Op spec: what it refuses by name, and what its mapping expressions mean.
 
-Contract: planning/current/phase2-op-runner-contract.md §2 and §6. Every
+Every
 construct outside the runner subset must be refused AT LOAD, named, with the
 phase that adds it — never discovered mid-run.
 """
@@ -38,7 +38,7 @@ class RefusalTests(unittest.TestCase):
 
     def test_human_step_is_refused_pointing_at_the_gate_policy(self):
         # There is no human: step kind: a human Gate is a POLICY on the step
-        # that produces what the human decides about (phase 3 §3).
+        # that produces what the human decides about (an internal contract note).
         step = fx.cog_step("first")
         step["human"] = {"prompt": "approve?"}
         text = one(fx.spec_doc([step]))
@@ -310,7 +310,7 @@ class OrderTests(unittest.TestCase):
 
 
 class ReviewRegressionTests(unittest.TestCase):
-    """Codex review 2026-09-17 (phase2-codex-review-1-cog-smith.md), findings
+    """An internal review (2026-09-17), findings
     3, 7, 8, 11, 13, 14 — the spec half."""
 
     def setUp(self):
@@ -475,7 +475,7 @@ class ReviewRegressionTests(unittest.TestCase):
 
 
 class VerificationRoundTests(unittest.TestCase):
-    """Codex verification round (phase2-codex-review-3-cog-smith-verification.md),
+    """An internal verification round,
     items 2 and 3 — the spec half."""
 
     def ctx(self, values):
@@ -518,7 +518,7 @@ class VerificationRoundTests(unittest.TestCase):
 
 
 class FinalRoundTests(unittest.TestCase):
-    """Codex final round (phase2-codex-review-4-cog-smith-final.md), item 1 —
+    """The final internal review round, item 1 —
     a loop variable may not name a run-context root."""
 
     def test_a_foreach_as_that_collides_with_a_path_root_is_refused(self):
@@ -537,7 +537,7 @@ class FinalRoundTests(unittest.TestCase):
 
 
 class RepeatTests(unittest.TestCase):
-    """`repeat: {count, require}` — narrowing contract §2 (machinery 0.6.0).
+    """`repeat: {count, require}` — an internal design note (machinery 0.6.0).
 
     Everything a repeated step may NOT be is refused at LOAD, by name: the
     bounds, the types, the unknown keys, and the three shapes of step that
@@ -629,7 +629,7 @@ class RepeatTests(unittest.TestCase):
         self.assertIn("never repeated", text)
 
     def test_both_modes_load(self):
-        """Machinery 0.6.4, narrowing contract §14."""
+        """Machinery 0.6.4, an internal design note."""
         for mode in ("all", "until-required"):
             self.assertEqual(
                 problems(fx.spec_doc([self.step({"count": 4, "require": 1,
@@ -660,7 +660,7 @@ class RepeatTests(unittest.TestCase):
 
 class RepeatDeclarationTests(unittest.TestCase):
     """The refusal that needs the COG's manifest: a Cog that declares
-    `reaches` is never repeated (narrowing contract §2)."""
+    `reaches` is never repeated (an internal design note)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

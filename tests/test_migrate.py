@@ -46,7 +46,7 @@ def migrate(root, **kw):
     return p
 
 
-COMPLETE = {   # the shape of the coglab "complete" cogs: nested model,
+COMPLETE = {   # the shape of a "complete" Cog: nested model,
     "schema": "openteams/cog-manifest [0.1]",   # requires with credential, io
     "id": "openteams/cog-complete-toy",
     "version": "0.3.1",

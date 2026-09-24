@@ -12,7 +12,7 @@ the single source of the machinery every created Cog carries.
   §7b). No `resolve`, no binding record; a declared `reaches` and the grant
   it is checked against; machinery masters are picked by KIND.
 - Create from a request: `pixi run new -- --from-request req.json` — the
-  drafting-cog seam (builder-op note item 3): one JSON doc of builder
+  drafting-cog seam: one JSON doc of builder
   answers + drafted context overlays, created atomically then checked;
   flags override request values; overlays never touch src/. Format:
   examples/cog-request.json.
@@ -23,7 +23,7 @@ the single source of the machinery every created Cog carries.
   enforced by hash the same way Cog machinery is; an Op package carries no
   per-Op Python at all.
 - Card: `pixi run card -- <path> [--json | --envelope]`
-- `--envelope` emits envelope v1 for Op consumption (builder-op note):
+- `--envelope` emits envelope v1 for Op consumption:
   binding null (deterministic tooling cog), findings in `problems`,
   ok-with-problems semantics; exit codes unchanged.
 - Model catalog: `pixi run generate-descriptors -- --config <yaml> --out-dir <dir>`
@@ -58,13 +58,13 @@ the single source of the machinery every created Cog carries.
    system-side verifiers of the SYSTEM's requirements — never call in-cog
    checks guards. (Machinery wording was swept in 0.2.0 and manifest reading changed in 0.3.0; fix any future
    drift only with a machinery version bump, never inside a created Cog.)
-6. **Checker layers (review 2026-08-22, F1):** findings are labeled
+6. **Checker layers (from an internal review):** findings are labeled
    core / profile / runtime and the layers must never blur — the manifest
    file (`[tool.cog]` in pixi.toml by default, or cog.yaml; exactly one,
    named by COG.md's `manifest:` pointer) is a PROFILE convention, not a
    core rule. Known gap, queued: compose the CogSpec reference validator
    into the core layer.
-7. **Lockfile policy (F6):** pixi.lock files are generated ONLY on
+7. **Lockfile policy:** pixi.lock files are generated ONLY on
    Trent's Mac (conda-forge is 403-blocked in the sandbox and device VM)
    and committed once generated; created Cogs follow the same policy.
 8. Fast-follow queue (do not start without Trent): derive-schema; draft

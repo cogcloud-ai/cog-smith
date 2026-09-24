@@ -185,7 +185,7 @@ def check(root, run_tests=False):
     # ---- model cogs without smith machinery ------------------------------
     # Classification is DECLARED, never inferred (the same F7 rule as
     # interface audience): descriptor rules apply only when the manifest
-    # carries the F5 marker. A weight-carrying model cog (e.g. cog-qwen3b:
+    # carries the F5 marker. A weight-carrying model cog (one with
     # model.weights.source + a serving task) is not a descriptor and must
     # not be judged by descriptor rules.
     if m.get("kind") == "model" and not (root / "src").exists():

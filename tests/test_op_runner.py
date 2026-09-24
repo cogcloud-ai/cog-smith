@@ -1,6 +1,6 @@
 """Runner semantics: order, gates, foreach, on_fail, retries, dry run, Track.
 
-Contract: planning/current/phase2-op-runner-contract.md §3, §4, §6. The Cog
+The Cog
 seam is faked (`invoke_cog` is monkeypatched) — these tests are about the Op
 layer's decisions, not about any Cog.
 """
@@ -389,7 +389,7 @@ class ForeachTests(RunnerCase):
 
 
 class RepeatTests(RunnerCase):
-    """`repeat: {count, require}` — narrowing contract §2 (machinery 0.6.0).
+    """`repeat: {count, require}` — an internal design note (machinery 0.6.0).
 
     The same request, invoked k times; a Gate per repeat; the step's payload
     is the LIST of them; the step's Gate needs n of them to have passed."""
@@ -547,7 +547,7 @@ class RepeatTests(RunnerCase):
 
 class RepeatForeachTests(RunnerCase):
     """`repeat` inside a `foreach`: each ELEMENT is repeated, so the step's
-    payload is a list of lists (narrowing contract §2)."""
+    payload is a list of lists (an internal design note)."""
 
     def doc(self, count=2, require=1, with_consumer=False):
         step = fx.cog_step("detect", task="detect",
@@ -621,7 +621,7 @@ class RepeatForeachTests(RunnerCase):
 
 class RepeatResumeTests(RunnerCase):
     """A resume never re-runs a repeat that passed; it re-runs the failed
-    repeats of the step that stopped the run (narrowing contract §2)."""
+    repeats of the step that stopped the run (an internal design note)."""
 
     def doc(self):
         draft = fx.cog_step("draft", task="draft",
@@ -679,7 +679,7 @@ class RepeatResumeTests(RunnerCase):
 
 class RepeatRequestIdentityTests(RunnerCase):
     """A repeat result belongs to the REQUEST it answered (machinery 0.6.1,
-    narrowing contract §8, finding 2).
+    an internal design note).
 
     Between a failed run and its resume an upstream envelope can change on
     disk. Reuse used to go by position alone, so a passed repeat's answer to
@@ -807,7 +807,7 @@ class RepeatRequestIdentityTests(RunnerCase):
 
 class RepeatDurabilityTests(RunnerCase):
     """Every completed repeat is on disk before the next one is invoked
-    (machinery 0.6.1, narrowing contract §8, finding 5).
+    (machinery 0.6.1, an internal design note).
 
     A repeat that finished is evidence that was paid for. A crash between
     repeats used to leave the Track holding only the step's `running`
@@ -937,7 +937,7 @@ class RepeatDurabilityTests(RunnerCase):
 
 class RepeatProblemsTests(RunnerCase):
     """The step's `problems` aggregate EVERY repeat's envelope, the failed
-    ones included (machinery 0.6.1, narrowing contract §8, finding 6).
+    ones included (machinery 0.6.1, an internal design note).
 
     A failed repeat contributes `null` to the payload a later step reads.
     That null is a downstream masking decision; it never erases what the Cog
@@ -984,7 +984,7 @@ CONTRACT_FAILED = {"check": "citation-coverage", "severity": "error",
 
 def contract_failed(payload=None):
     """An envelope that is `ok` and whose Cog's own contract check REJECTED
-    the answer (narrowing contract §14, the live failure): the Gate fails and
+    the answer (an internal design note): the Gate fails and
     `retry-once` does not apply, because nothing went wrong with the model or
     the transport — the model gave a bad answer."""
     return fx.envelope(payload=payload or {"findings": []},
@@ -993,7 +993,7 @@ def contract_failed(payload=None):
 
 class RepeatUntilRequiredTests(RunnerCase):
     """`repeat.mode: until-required` — one bad answer should not end a
-    150-batch run (machinery 0.6.4, narrowing contract §14).
+    150-batch run (machinery 0.6.4, an internal design note).
 
     The repeats run one at a time and the step STOPS asking as soon as
     `require` of them have passed, never asking more than `count` times. A
@@ -1091,7 +1091,7 @@ class RepeatUntilRequiredTests(RunnerCase):
     # ------------------------------------------------------- with retries --
 
     def test_the_next_slot_is_the_retry(self):
-        """`count` is the ceiling on INVOCATIONS here (Codex review 5,
+        """`count` is the ceiling on INVOCATIONS here (an internal review,
         blocker 2): `retry-once` does not run inside a slot, because an
         `ok: false` answer spends a slot like any other failed ask and the
         NEXT slot is the retry."""
@@ -1268,7 +1268,7 @@ class RepeatUntilRequiredTests(RunnerCase):
 
     def crash_after_the_envelope(self, at, answers, task="draft"):
         """A runner whose invocation numbered `at` writes its envelope and
-        THEN dies — the paid-but-uncheckpointed window (Codex review 5,
+        THEN dies — the paid-but-uncheckpointed window (an internal review,
         blocker 1). `_attempt` has already written the envelope file when it
         returns, so raising here is a crash between the answer and the
         completion checkpoint."""
@@ -1287,7 +1287,7 @@ class RepeatUntilRequiredTests(RunnerCase):
         return script
 
     def spend_then_crash_on_the_last(self, count=4, unreadable=False):
-        """Codex's scenario: `count - 1` rejected asks checkpointed, the last
+        """the reviewer's scenario: `count - 1` rejected asks checkpointed, the last
         one's envelope written and then a crash."""
         fx.write_package(self.package, self.doc(count=count, require=1))
         path = fx.write_request(self.root / "request.json", {"note": "hi"})
@@ -1393,7 +1393,7 @@ class RepeatUntilRequiredTests(RunnerCase):
         return cog, output["run_dir"]
 
     def test_a_changed_cog_does_not_replenish_the_budget(self):
-        """Spending is a LEDGER, not a cache (Codex review 5, should-fix 1).
+        """Spending is a LEDGER, not a cache (an internal review, should-fix 1).
 
         A changed Cog invalidates the REUSE of the earlier answers; it never
         invalidates the record that they were paid for. So an edit-and-resume
@@ -1470,7 +1470,7 @@ class RepeatUntilRequiredTests(RunnerCase):
 
 class RepeatModeDefaultTests(RunnerCase):
     """`mode: all` is the default AND today's behaviour: every repeat runs,
-    whatever the early answers said (narrowing contract §14)."""
+    whatever the early answers said (an internal design note)."""
 
     def doc(self, mode=None):
         repeat = {"count": 3, "require": 1}
@@ -1859,7 +1859,7 @@ class ForeachBoundaryTests(RunnerCase):
                               if c["task"] == "classify"]), 2)
 
     def test_a_failed_element_stops_the_later_elements(self):
-        """Machinery 0.6.2 (narrowing contract §10): a `foreach` stops at its
+        """Machinery 0.6.2 (an internal design note): a `foreach` stops at its
         first finally-failed element. The step has already failed, so every
         later element could only buy invocations for a settled verdict — a
         systematic outage used to exhaust the whole list."""
@@ -1883,7 +1883,7 @@ class ForeachBoundaryTests(RunnerCase):
 
 class FlagNegotiationTests(unittest.TestCase):
     """Verification round, item 1: an effectful Cog must never be invoked
-    twice by accident (contract §0). A second flag is tried only for a real
+    twice by accident (the internal contract). A second flag is tried only for a real
     argument-parser rejection that produced no result."""
 
     class Result:
@@ -2090,7 +2090,7 @@ class PreflightOrderTests(RunnerCase):
 
 
 class RunDirContainmentTests(RunnerCase):
-    """Codex final round, item 1: an element carrying `dir` must not redirect
+    """The final internal review round, item 1: an element carrying `dir` must not redirect
     `$run_dir`. `as: run` is refused at load (test_op_spec), and an ordinary
     loop variable leaves the run context alone."""
 
@@ -2135,7 +2135,7 @@ def interrupting(answers, calls, task_name):
 
 class ForeachStopTests(RunnerCase):
     """A `foreach` stops at its first finally-failed element (machinery
-    0.6.2, narrowing contract §10; Codex review 3, residual 3).
+    0.6.2, an internal design note; an internal review, residual 3).
 
     Retry is per element and the Gate used to be combined only after every
     element had run, so a systematic outage exhausted the whole batch list —
@@ -2267,7 +2267,7 @@ class ForeachStopTests(RunnerCase):
 
 class RepeatTailDurabilityTests(RunnerCase):
     """A checkpoint keeps the records it has not revisited (machinery 0.6.2,
-    narrowing contract §10; Codex review 3, residual 4).
+    an internal design note; an internal review, residual 4).
 
     A checkpoint says what has happened so far, not what the step will end up
     with. Rewriting the repeat list with a prefix threw away a repeat that
@@ -2367,7 +2367,7 @@ def write_code_cog(root, cog_id, task, logic="print('hi')\n", context=None,
 
 class CogPackageDigestTests(unittest.TestCase):
     """What a Cog's package digest covers, and what it must never cover
-    (machinery 0.6.2, narrowing contract §10)."""
+    (machinery 0.6.2, an internal design note)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -2519,7 +2519,7 @@ class CogPackageDigestTests(unittest.TestCase):
 class PerInvocationDigestTests(RunnerCase):
     """The Cog digest is taken immediately before EVERY invocation — every
     element, every repeat, every retry attempt — and recorded on the record
-    that invocation produced (machinery 0.6.3, narrowing contract §11).
+    that invocation produced (machinery 0.6.3, an internal design note).
 
     0.6.2 hashed once per STEP, so a binding changed between two repeats, or
     between two elements of a 140-batch sweep, sat under one digest: the
@@ -2667,7 +2667,7 @@ class PerInvocationDigestTests(RunnerCase):
 
 class CogIdentityTests(RunnerCase):
     """A result belongs to a Cog as well as to a request (machinery 0.6.2,
-    narrowing contract §10; Codex review 3, residual 5).
+    an internal design note; an internal review, residual 5).
 
     Reuse used to compare the request alone, so a Cog could change at the
     same source path while a passed repeat was reused beside a failed one
@@ -2795,7 +2795,7 @@ class CogIdentityTests(RunnerCase):
 
 
 class AttemptOwnershipTests(RunnerCase):
-    """Every attempt owns an immutable file (machinery 0.6.6, Codex review 6
+    """Every attempt owns an immutable file (machinery 0.6.6, an internal review,
     findings 1 and 2).
 
     An envelope path names its attempt, a reservation records the exact path
@@ -2851,7 +2851,7 @@ class AttemptOwnershipTests(RunnerCase):
 
     def crash_on_the_reservation(self, answers, step="draft"):
         """A runner that dies the instant a reservation is DURABLE and before
-        anything else happens — Codex's exact window (finding 1): the Track
+        anything else happens — the reviewer's exact window (finding 1): the Track
         carries the new question while the slot's old answer is still on
         disk."""
         script = fx.FakeCog(answers)
@@ -2872,7 +2872,7 @@ class AttemptOwnershipTests(RunnerCase):
         op_track.save = save
         return script
 
-    # ------------------------------------------------- Codex's scenario --
+    # ---------------------------------------------- the reviewer's scenario --
 
     def test_a_renewed_reservation_never_accepts_the_old_pass(self):
         """An unfinished `require: 2` step with an old passing envelope; the

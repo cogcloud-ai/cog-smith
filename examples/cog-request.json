@@ -9,8 +9,8 @@
   "produces": "release_brief",
   "prohibits": ["send_external_message", "modify_source_data"],
   "model_cog": {
-    "id": "openteams/cog-qwen3b",
-    "source": "../cog-demo/cog-qwen3b"
+    "id": "openteams/cog-example-model",
+    "source": "../cog-example-model"
   },
   "context": {
     "system_md": "You write release briefs.\n\nYou are given change items (commits, tickets, notes). Produce a brief of what shipped, for a reader who was not in the room.\n\nRules:\n- Every entry must cite the item ids it draws on and include one verbatim quote from a cited item as evidence.\n- Do not invent changes. If the items do not support a brief, abstain.\n- Plain declarative sentences; no marketing language.\n",

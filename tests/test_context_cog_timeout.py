@@ -1,6 +1,6 @@
 """Context-cog machinery 0.4.0: the caller deadline is a binding fact.
 
-Phase 3 live sweep (contract §11 item 3): a 161,000-character dependency
+A live sweep: a 161,000-character dependency
 request outran a caller deadline hard-coded at 180 s in `cog_core.invoke`,
 and there was nowhere to say otherwise. The deadline now lives in the binding
 record (`request_timeout_s`, default 180, bounds 10–1800), written by
@@ -188,7 +188,7 @@ class TestInvokeReadsTheBinding(unittest.TestCase):
                              cog_binding.REQUEST_TIMEOUT_DEFAULT)
 
     # The written record must reach the SOCKET, not merely a module constant
-    # (Codex review 9, nit 2: printing `REQUEST_TIMEOUT_S` would pass even if
+    # (an internal review noted that printing `REQUEST_TIMEOUT_S` would pass even if
     # `invoke` ignored it). This probe runs a full invocation in the created
     # Cog's own process with the model replaced, and reports the deadline the
     # HTTP call was actually given.
@@ -249,7 +249,7 @@ class TestInvokeReadsTheBinding(unittest.TestCase):
 
 
 class TestDeepHealthHonorsTheOverride(unittest.TestCase):
-    """Context-cog machinery 0.4.1 (Codex review 9): `--check --deep
+    """Context-cog machinery 0.4.1: `--check --deep
     --timeout 600` was parsed, bounds-checked and then dropped — `health`
     was called with no deadline at all and `cog_core` used 30 s, so a
     completion probe taking 40 s reported DOWN despite the explicit

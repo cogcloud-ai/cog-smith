@@ -5,7 +5,7 @@ weight-carrying model cog (weights + serving task, no smith machinery)
 must not be judged by descriptor rules (locality, install-time address,
 api_key_env), and a kind: model manifest that declares neither weights
 nor the marker gets a warning asking it to say which it is. Regression
-for the cog-qwen3b misclassification found 2026-08-23.
+for a weight-carrying model Cog misclassification found 2026-08-23.
 """
 import sys
 import tempfile

@@ -3,13 +3,18 @@
 **Audience:** Op builders, reviewers, and coding agents
 **Last verified:** 2026-09-19 against cog-smith Op machinery 0.5.6
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
-proposal, implemented from `planning/current/phase2-op-runner-contract.md`.
+proposal, implemented from an internal Op-runner contract (a design note,
+not distributed).
 It is a runner SUBSET on purpose: durable state is refused by name, with the
 phase that adds it. There is no `tool:` step kind and never will be:
 deterministic work in an Op is a model-free Cog of `kind: code`, invoked as
 an ordinary `cog:` step (decided 2026-09-17). There is no `human:` step kind
 either: a human Gate is a POLICY on the step that produces what the human
 decides about.
+
+The Cog and Op names in this guide's examples (`cog-example-*`, the
+transcription Op, the detectors) are illustrative; they are not packages in
+the suite.
 
 Read [Building and Improving Cogs](BUILDING_COGS.md) first. This guide is the
 layer above it.
@@ -106,7 +111,7 @@ A two-step linear Op: transcribe a recording, then attribute its speakers.
 
 ```yaml
 schema: openteams/op-manifest [0.1]
-id: openteams/op-video-transcription
+id: openteams/op-example-transcription
 version: "0.1.0"
 name: Video transcription with speaker attribution
 description: Produces a timestamped, speaker-labelled transcript from a recording.
@@ -241,8 +246,8 @@ what came back.
 
 ```yaml
   - id: detect-overlaps
-    cog: {id: openteams/cog-overlap-detector, version: "0.1.0",
-          source: ../cog-overlap-detector, task: detect}
+    cog: {id: openteams/cog-example-overlap-detector, version: "0.1.0",
+          source: ../cog-example-overlap-detector, task: detect}
     foreach:
       items: {$from: inputs.github_items}
       as: batch
@@ -277,7 +282,7 @@ what came back.
   step reads, not about what the Cog said.
 * Inside a `foreach`, each ELEMENT is repeated, so `steps.<id>.payload` is a
   list of lists — one list of repeat payloads per element. A Cog that merges
-  them (`cog-merge-findings`) reads exactly that shape.
+  them reads exactly that shape.
 * The Track records what each repeat did: `repeats: [{index, phase, attempt,
   envelope, request_sha256, cog_sha256, gate, binding, elapsed_s, attempts}]`
   — `envelope` is the attempt that DECIDED the slot, and `attempts` lists
@@ -320,14 +325,14 @@ that one key.
 ```yaml
   # the DEPENDENCY detector: recall varies run to run, so union the runs
   - id: detect-dependencies
-    cog: {id: openteams/cog-dependency-detector, version: "0.1.0",
-          source: ../cog-dependency-detector, task: detect}
+    cog: {id: openteams/cog-example-dependency-detector, version: "0.1.0",
+          source: ../cog-example-dependency-detector, task: detect}
     input: {items: {$from: inputs.github_items}}
     repeat: {count: 3, require: 1}                   # mode: all, the default
   # the OVERLAP detector: one clean answer is the whole result
   - id: detect-overlaps
-    cog: {id: openteams/cog-overlap-detector, version: "0.1.0",
-          source: ../cog-overlap-detector, task: detect}
+    cog: {id: openteams/cog-example-overlap-detector, version: "0.1.0",
+          source: ../cog-example-overlap-detector, task: detect}
     input: {items: {$from: inputs.github_items}}
     repeat: {count: 4, require: 1, mode: until-required}
 ```
@@ -346,8 +351,8 @@ that one key.
   a row — at which point something really is wrong.
 * The payload is then the list of the repeats that ACTUALLY RAN, so its
   length is between `require` and `count`; a repeat that never ran is
-  ABSENT, not null. A merging Cog must accept a short list —
-  `cog-merge-findings` does, by construction. The Gate is computed over what
+  ABSENT, not null. A merging Cog must accept a short list, by
+  construction. The Gate is computed over what
   ran, exactly as in `all` mode: `fail` when fewer than `require` passed
   after `count` attempts, else `pass-with-problems` when any repeat that ran
   failed or carried problems, else `pass`. The step's `problems` still carry
@@ -555,7 +560,7 @@ A step declares what it requires; it never grants itself anything:
 
 ```yaml
 - id: read-github
-  cog: {id: openteams/cog-read-github, source: ../cog-read-github, task: run}
+  cog: {id: openteams/cog-example-reader, source: ../cog-example-reader, task: run}
   authority:
     requires:
       - {resource: github, action: read,
@@ -563,13 +568,13 @@ A step declares what it requires; it never grants itself anything:
 
 - id: compose-proposals
   depends_on: [read-github]
-  cog: {id: openteams/cog-compose-proposals,
-        source: ../cog-compose-proposals, task: run}
+  cog: {id: openteams/cog-example-composer,
+        source: ../cog-example-composer, task: run}
   gate: {policy: human}
 
 - id: write-github
   depends_on: [compose-proposals]
-  cog: {id: openteams/cog-write-github, source: ../cog-write-github, task: run}
+  cog: {id: openteams/cog-example-writer, source: ../cog-example-writer, task: run}
   authority:
     requires:
       - {resource: github, action: write,
@@ -752,7 +757,7 @@ simply stops the run again.
 **The runner does not reconcile; the Cog does.** A resume re-invokes a
 failed effectful step WITHOUT any runner-side check that the step's outside
 effects are where it left them — and that is the design, not an omission
-(contract §9f). The runner cannot know what "already applied" means for an
+The runner cannot know what "already applied" means for an
 arbitrary resource; only the Cog knows, and the Cog's own append-only
 journal is the record it reconciles against. So the honesty rule holds here
 as everywhere: a Cog that reaches outside the run is TRUSTED code, and a Cog
@@ -761,7 +766,7 @@ journal plus a read of the target, before it writes anything. The contract
 the runner keeps is narrower and worth stating: it supplies the journal
 path, it re-runs the failed step and nothing that passed, and it issues a
 fresh grant for that step. Everything about exactly-once lives in the Cog —
-which is why `cog-write-github` journals its intent between authorization
+which is why a well-built writer Cog journals its intent between authorization
 and request, reconciles by reading the target, never re-sends a request
 whose answer it never got, and holds an item while any change on it is
 unsettled. Build a writer the same way, or do not build one.

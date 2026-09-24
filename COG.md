@@ -34,8 +34,8 @@ compiler").
 ## Where the machinery comes from
 
 `templates/context-cog/src/` holds the masters: `cog_binding.py`,
-`cog_resolve.py`, `cog_use.py` verbatim from cog-forge @7fe8aca
-(engineering-gates PASS); `cog_eval.py` with marked envelope-v1 deltas;
+`cog_resolve.py`, `cog_use.py` verbatim from the forge lineage (an earlier
+internal package, not distributed); `cog_eval.py` with marked envelope-v1 deltas;
 `cog_core.py` / `cog_api.py` / `cog_cli.py` genericized so that ALL
 task-specific logic lives in the author-owned `task_logic.py`. See
 MACHINERY.md for the delta record and ENVELOPE.md for the result contract.

@@ -22,7 +22,7 @@ pixi run migrate -- ../cog-older-worker          # cog.yaml -> [tool.cog] in pix
                                                 # re-sync machinery (--dry-run to preview)
 pixi run new -- --from-request request.json --envelope  # create from a drafting
                                                 # cog's request (see examples/)
-pixi run new -- cog-read-github --kind code --yes  # a CODE Cog: the Cog shape
+pixi run new -- cog-example-reader --kind code --yes  # a CODE Cog: the Cog shape
                                                 # with no model in the loop
 cd ../cog-my-worker
 pixi install && pixi run resolve && pixi run check -- --deep
@@ -53,7 +53,7 @@ a model-free test suite that passes at creation time. Edit `context/` and
 **Manifest format.** By default the profile manifest (`openteams/cog-manifest
 [0.1]`) is written into `pixi.toml` under `[tool.cog]` — one file that Nebi
 already publishes, with `version` and the summary stated once in
-`[workspace]` (cog-execution ADR D9). `--manifest yaml` writes the standalone
+`[workspace]`. `--manifest yaml` writes the standalone
 `cog.yaml` instead. A package carries exactly one; COG.md's `manifest:`
 pointer names it, and `check`, `card`, and the created Cog's own machinery
 read either. `migrate` converts an existing package in either direction
@@ -78,20 +78,19 @@ pixi run generate-descriptors -- --config /tmp/catalog.yaml --out-dir ../models
 The generator is pack-neutral (stdlib + pyyaml, no smith imports) so it can
 move into a hub-side pack unchanged.
 
-One deployment-descriptor model cog per catalog entry (pattern:
-cog-collab-qwen35b) — never a parameterized gateway cog, because identity
+One deployment-descriptor model cog per catalog entry — never a
+parameterized gateway cog, because identity
 and pinning are per served model. Descriptors carry pinnable identity and
 credential *references*; fixed endpoints must be https or loopback;
 `address: install-time` defers the address to resolution. This is the
-generator form of the hub model-selection work (see
-output/model-cogs-hub-offering.md): consumers bind with
+generator form of the hub model-selection work: consumers bind with
 `pixi run resolve -- --satisfier <descriptor> [--endpoint URL]`, and the
 binding record is where metering and audit attribution attach.
 
 Docs: `BUILDING_COGS.md` (start-to-finish builder guide), `BUILDING_OPS.md`
 (the Op half: spec, runner, Track), `ENVELOPE.md`
 (the result contract — the Collab profile, decided by template),
-`MACHINERY.md` (provenance + deltas from cog-forge @7fe8aca), `COG.md`
+`MACHINERY.md` (provenance + deltas from the machinery's forge lineage), `COG.md`
 (cog-smith as a Cog), `AGENTS.md` (contributor invariants).
 
 ## License

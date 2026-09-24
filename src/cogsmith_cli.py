@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """cog-smith — create, validate, and describe Cogs.
 
-    pixi run new -- --dir ../cog-meeting-highlights [--id ...] [--yes]
-    pixi run check -- ../cog-meeting-highlights [--tests]
-    pixi run card -- ../cog-meeting-highlights [--json]
+    pixi run new -- --dir ../cog-my-worker [--id ...] [--yes]
+    pixi run check -- ../cog-my-worker [--tests]
+    pixi run card -- ../cog-my-worker [--json]
     pixi run smith -- op new --from-spec spec.yaml --dir ../op-my-workflow
     pixi run smith -- op check ../op-my-workflow [--tests]
-    pixi run migrate -- ../cog-meeting-highlights [--to pixi|yaml] [--dry-run]
+    pixi run migrate -- ../cog-my-worker [--to pixi|yaml] [--dry-run]
 
 `new` walks the builder questions interactively (Travis's list: what are
 you, what model class, what do you prohibit…), or takes everything as flags
@@ -14,7 +14,7 @@ with --yes for scripted creating. The created Cog is immediately runnable:
 resolve -> check --deep -> ask.
 
 `--envelope` on new/check/card emits an envelope-v1 result instead of
-human-readable text, so the Builder Op (see output/builder-op-note.md)
+human-readable text, so the Builder Op (op-cog-builder)
 can consume smith at the Op seam like any other Cog. cog-smith is a
 deterministic tooling Cog with no model dependency, so its envelopes
 carry `binding: null`; checker findings travel in `problems`

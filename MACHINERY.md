@@ -4,13 +4,14 @@
 hash on every created CONTEXT Cog (everything except the author-owned
 `task_logic.py`). A created **code** Cog carries the `templates/code-cog/src/`
 masters instead — `smith check` picks the lineage by the manifest's kind (see
-"Code-cog machinery" below). Lineage:
+"Code-cog machinery" below). "Forge" below is the earlier internal package
+(not distributed) the context-cog machinery was derived from. Lineage:
 
 | File | Provenance |
 |---|---|
 | `cog_binding.py` | forge @7fe8aca + manifest-format delta (0.3.0): `load_manifest` / `manifest_path` read `[tool.cog]` in pixi.toml or cog.yaml |
 | `cog_resolve.py` | forge @7fe8aca + 0.3.0 delta: `load_cog` goes through `cog_binding.load_manifest` |
-| `cog_use.py` | VERBATIM from cog-forge @7fe8aca |
+| `cog_use.py` | VERBATIM from forge |
 | `cog_eval.py` | forge @7fe8aca + envelope-v1 deltas (marked in file): payload key, structured problems, timing field; 0.3.0: declared fixtures read via `cog_binding.load_manifest` |
 | `cog_core.py` | genericized from forge cog_core: task logic extracted to task_logic.py; input validation against the manifest-declared input schema; envelope v1 emission; reusable verbatim_quote_check |
 | `cog_api.py` | genericized from forge cog_api: endpoint/port derived from the manifest; envelope passthrough; same 4xx/5xx status mapping |
@@ -19,7 +20,7 @@ masters instead — `smith check` picks the lineage by the manifest's kind (see
 
 Rules: never edit machinery inside a created Cog (check will fail it).
 Machinery fixes happen HERE, version-bumped, and roll out to created Cogs by
-re-copying — the same copy-sync discipline cog-forge used, with cog-smith
+re-copying — the same copy-sync discipline forge used, with cog-smith
 as the single source.
 
 ## 0.2.0 (2026-08-23): vocabulary sweep
@@ -29,10 +30,10 @@ behavior change: in-cog validation is called a **contract check**, never a
 guard (cog_core's grounding check; cog_use's locality/transport checks;
 cog_binding's docstring), matching the contract-check / Guard / Gate
 vocabulary; "minted" became "created" (the mint term is retired).
-Rolled out by re-copying the masters into cog-meeting-highlights and
-testcog; both re-verified by `smith check --tests`.
+Rolled out by re-copying the masters into the created Cogs of the time;
+each re-verified by `smith check --tests`.
 
-## 0.3.0 (2026-09-16): manifest in pixi.toml `[tool.cog]` (ADR D9)
+## 0.3.0 (2026-09-16): manifest in pixi.toml `[tool.cog]`
 
 Behavior change in the masters. `cog_binding.load_manifest` reads the
 profile manifest from EITHER `pixi.toml` `[tool.cog]` (default; `version`
@@ -47,13 +48,13 @@ requires tomllib, so the created-Cog Python floor is 3.11 (the master
 raises a clear RuntimeError on older interpreters rather than half-reading
 a manifest). These rules are mirrored by hand in cog-smith's
 `smith_manifest.py`; keep the two in step.
-Rolled out by `smith migrate` into cog-meeting-highlights (cog.yaml
+Rolled out by `smith migrate` into the created Cogs of the time (cog.yaml
 removed, `[tool.cog]` written); re-verified by `smith check --tests`.
 
 ## 0.4.0 (2026-09-19): the caller deadline is a binding fact
 
-Behavior change in the masters. Contract: `planning/current/phase3-contract.md`
-§11 items 3 and 4. The phase 3 live sweep sent a 161,000-character dependency
+Behavior change in the masters, decided in an internal contract note (not
+distributed). A live sweep sent a 161,000-character dependency
 request to a cloud model and lost it to a deadline hard-coded at 180 seconds
 inside `cog_core.invoke` — a number with nowhere to be said otherwise. A
 deadline is a property of the BINDING (a 3B model on loopback and a cloud model
@@ -81,10 +82,9 @@ reading a whole backlog do not share one), so it moved into the record:
   parser (exit 2) when out of bounds.
 
 No environment override was added: `COG_MODEL_*` exists for the fields that
-change the model's IDENTITY, and a deadline does not (see the contract's Open
-items).
+change the model's IDENTITY, and a deadline does not.
 
-Starter tests (§11 item 4): `templates/context-cog/tests/test_cog.py.tmpl`
+Starter tests: `templates/context-cog/tests/test_cog.py.tmpl`
 gains a `canned_model` helper — the in-process twin of `tests/mock_model.py`,
 patching `cog_core.health` and `urllib.request.urlopen` — and asserts that a
 FULL invocation of the sample bundle carries no `schema` problem, that invoke
@@ -92,7 +92,7 @@ uses the binding's deadline and honors an override, and that an impossible
 override is refused by name. The equivalent code-cog assertion is in
 `templates/code-cog/tests/test_cog.py.tmpl`
 (`test_a_full_run_carries_no_schema_problem`). Asserting `ok` alone is what let
-`cog-read-github` emit a field its own output schema did not declare.
+a real code Cog emit a field its own output schema did not declare.
 
 cog-smith coverage: `tests/test_context_cog_timeout.py` (17 tests, including
 `use`/`resolve` through real processes and a pre-0.4.0 record still binding).
@@ -101,7 +101,7 @@ other sibling carrying this lineage; each re-verified by `smith check`.
 
 ## 0.4.1 (2026-09-19): `--check --deep --timeout N` is honored
 
-Contract §11b, from Codex review 9. 0.4.0 taught `cog_cli` a `--timeout`, and
+From an internal review. 0.4.0 taught `cog_cli` a `--timeout`, and
 `--check` ignored it: `health(deep=True)` was called with no deadline and
 `cog_core` used its own `max(timeout, 30)`, so a deep completion probe that
 needed 40 s reported DOWN despite an explicit 600. The value was parsed and
@@ -123,24 +123,22 @@ test_the_deep_probe_honors_an_explicit_deadline`. cog-smith coverage:
 the core, and the CLI wiring where the value was actually dropped), plus
 `test_a_written_record_reaches_the_invocations_http_deadline`, which replaces
 the 0.4.0 test that imported the module and printed `REQUEST_TIMEOUT_S`
-(review 9, nit 2: that would have passed had `invoke` ignored the constant).
+(that would have passed had `invoke` ignored the constant).
 It now runs a full invocation in the created Cog's own process with the model
 replaced and asserts the deadline `urlopen` was handed.
 
 The code-starter's `test_a_full_run_carries_no_schema_problem` asserts `ok`
-and a payload in the SAME test (review 9, nit 1): a `task-failed` envelope
+and a payload in the SAME test: a `task-failed` envelope
 carries no schema problem either, so the schema claim alone passed vacuously
 on an early failure.
 
-Rolled out by re-copying the masters into the nine carriers: the three
-judgment Cogs (cog-issue-classifier, cog-dependency-detector,
-cog-overlap-duplicate-detector), cog-author, cog-build-evaluator,
-cog-explicit-action-extractor, cog-meeting-highlights, cog-op-designer and
-testcog; each re-verified by `smith check`.
+Rolled out by re-copying the masters into the nine Cogs then carrying them
+(among them cog-author, cog-build-evaluator and cog-op-designer); each
+re-verified by `smith check`.
 
 ## 0.4.2 (2026-09-19): an eval fixture can assert the RESULT
 
-Contract §11b, from Codex review 9. A fixture's vocabulary could say what the
+From an internal review. A fixture's vocabulary could say what the
 Cog must not SAY (`forbid_tokens`) but not what it must DECIDE. The
 review-priority fixture was therefore satisfied by a response that assigned
 `P2` while citing some other grounded passage, and FAILED by a correct
@@ -176,31 +174,31 @@ envelope's `binding`.
 | `cog_cli.py` | genericized from the context-cog CLI: `--bundle [--grant --run-id --journal] \| --check`; no `--raw`, no `--deep` |
 | `task_logic.py` | AUTHOR-OWNED — `run(bundle, grant, journal) -> (payload, problems)` plus optional `check_input` / `check_output`; ships with a working toy task that reaches nothing |
 
-Contract: `planning/current/phase3-contract.md` §1. The honesty rule is part
+The honesty rule is part
 of the machinery's doc comments and stays there: the grant is checked by the
 Cog's OWN code; the local host is not an enforced restricted environment.
 
-### Code-cog 0.1.4 (2026-09-18) — the package checker joins the boundary (review 4)
+### Code-cog 0.1.4 (2026-09-18) — the package checker joins the boundary
 
-Contract §9d, from `planning/current/phase3-codex-review-4-code-cogs-and-op.md`.
+From an internal review.
 Regression test: `tests/test_code_cog.py::test_a_crashing_output_checker_is_a_named_envelope`.
 
 - **S6 — the package's output checker runs inside the same exception
   boundary as `run`.** `validate_output` (the declared output schema, then
   the package's `check_output`) used to run AFTER the `try` that wraps
   `task_logic.run`, so a checker that tripped over a payload it did not
-  expect — review 4 found `cog-record-run` constructing a set from a list
+  expect — the review found a real package checker constructing a set from
+  a list
   `change_id` — raised a traceback out of the CLI, after the task had
   already had its external effects. It is now an `ok: false` envelope with
   its own code, `output-check-failed`: "the task is broken" and "the task's
   self-check is broken" are different repairs, so they are different names.
   A `JournalCorrupt` raised from a checker keeps its own name.
 
-### Code-cog 0.1.3 (2026-09-17) — the Codex confirmation fixes (review 3)
+### Code-cog 0.1.3 (2026-09-17) — the confirmation-review fixes
 
-One bullet per finding of
-`planning/current/phase3-codex-review-3-cog-smith-confirmation.md` that lives
-in this lineage, resolved as contract §9c decides. Each fix has a regression
+One bullet per finding of an internal confirmation review that lives
+in this lineage. Each fix has a regression
 test that failed before it (`tests/test_code_cog.py`).
 
 - **New 5 — journal I/O failure is a structured envelope.** An `OSError`
@@ -212,11 +210,10 @@ test that failed before it (`tests/test_code_cog.py`).
   `Journal` is built. `journal-corrupt` keeps its meaning: content that
   cannot be trusted, as against a journal that cannot be reached at all.
 
-### Code-cog 0.1.2 (2026-09-17) — the Codex verification fixes (review 2)
+### Code-cog 0.1.2 (2026-09-17) — the verification-review fixes
 
-One bullet per finding of
-`planning/current/phase3-codex-review-2-cog-smith-verification.md` that lives
-in this lineage, resolved as contract §9b decides. Each behavioural fix has a
+One bullet per finding of an internal verification review that lives
+in this lineage. Each behavioural fix has a
 regression test that failed before it (`tests/test_code_cog.py`).
 
 - **B4 / New 2 — the Cog hashes the change it is about to apply.** New
@@ -238,10 +235,10 @@ regression test that failed before it (`tests/test_code_cog.py`).
   `TypeError`, and a bare string denies instead of authorizing every
   substring of it. A `changes` that is not a list authorizes nothing.
 
-### Code-cog 0.1.1 (2026-09-17) — the Codex review-1 fixes
+### Code-cog 0.1.1 (2026-09-17) — the first-review fixes
 
-One bullet per finding of `planning/current/phase3-codex-review-1-cog-smith.md`
-that lives in this lineage, resolved as contract §9 decides. Each behavioural
+One bullet per finding of an internal review that lives in this lineage.
+Each behavioural
 fix has a regression test that failed before it (`tests/test_code_cog.py`).
 
 - **B4 — the grant checks are per call and never fail open.** `check_grant`
@@ -286,19 +283,18 @@ Op needs code, the answer is a Cog step, never a script in the Op.
 
 | File | Provenance |
 |---|---|
-| `op_runner.py` | `gate_envelope`, `parse_envelope`, and `invoke_cog` lifted from `op-video-transcription/src/run_op.py` (the 2026-08-25 sample Op, at its current working-tree state — that package is not itself a git repo); the rest is new: topological step order, foreach, `on_fail`, retry-once, dry run |
+| `op_runner.py` | `gate_envelope`, `parse_envelope`, and `invoke_cog` lifted from an earlier internal sample Op (2026-08-25, not distributed); the rest is new: topological step order, foreach, `on_fail`, retry-once, dry run |
 | `op_spec.py` | NEW — `openteams/op-manifest [0.1]` load + validate + refuse-by-name, and the closed mapping-expression vocabulary (`$from`, `$default`, `$path`, `$run_dir`, `$stem`, `$literal`) |
-| `op_track.py` | Track shape extended from `op-video-transcription`'s `track.json`: step `status`, `attempts`, foreach `elements`, `spec_sha256` |
+| `op_track.py` | Track shape extended from that sample Op's `track.json`: step `status`, `attempts`, foreach `elements`, `spec_sha256` |
 
-Semantics implemented from `planning/current/phase2-op-runner-contract.md`
-(§1–§4, §6). Gate wording is unchanged from the sample Op: three states
+Semantics implemented from an internal Op-runner contract (a design note,
+not distributed). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
 
 ### 0.7.0 — a human decides about an ARTIFACT (2026-09-23)
 
-For the Cog Builder's acceptance Gates (cogcloud-ai/op-cog-builder#1,
-plan gap 3 in `planning/current/cog-builder-op-plan-2026-09-21.md`). The
+For the Cog Builder's acceptance Gates (cogcloud-ai/op-cog-builder#1). The
 human Gate of 0.5.0 decides about a LIST of proposed changes and feeds a
 write grant; a contract acceptance or a candidate acceptance is a decision
 about ONE versioned thing, bound to the bytes it is about. A MINOR bump:
@@ -353,12 +349,12 @@ Verified by `tests/test_op_artifact_gate.py` (30 tests: the pause and its
 digests, accept/reject/refusals, changed-artifact invalidation, resume across
 a pending decision, a rejected run refused, load-time refusals, `$sha256`);
 the 584 earlier tests unchanged. Rolled out to op-cog-builder,
-op-builder-smoke, op-project-triage and op-triage-survey by re-copying; each
+op-builder-smoke and the internal Ops then carrying it by re-copying; each
 suite re-run.
 
 ### 0.6.6 — every attempt owns an immutable file (2026-09-21)
 
-From Codex review 6 (narrowing contract §16, "Runner"). 0.6.5 made an attempt
+From an internal review. 0.6.5 made an attempt
 durable before it was paid for, but the attempt's FILE was still named by the
 slot alone, so two operations had to agree about one path. Two findings fell
 out of that, and both are fixed by making the path name the attempt. A PATCH
@@ -374,7 +370,8 @@ number of invocations it ran before.
   nothing a run wrote is ever deleted or overwritten. A reservation records the
   exact path it will write beside its `request_sha256` and `cog_sha256`, so
   recovery reads ONLY the file that reservation named — an older attempt's
-  answer can never be taken for a newer one. Codex's scenario (an unfinished
+  answer can never be taken for a newer one. The reviewer's scenario (an
+  unfinished
   `require: 2` step with an old passing envelope, a changed Cog, a renewal, the
   new reservation checkpointed and then a crash) now spends the slot instead of
   recovering the old pass under the new digest. The record's `envelope` is the
@@ -411,8 +408,8 @@ number of invocations it ran before.
 - **Docs:** mode `all`'s ceiling is per EXECUTION PASS, not a lifetime bound
   across resumes (BUILDING_OPS).
 
-Tests: `test_op_runner.py::AttemptOwnershipTests` — Codex's renewed-reservation
-scenario; a crash during a mode-`all` retry leaving a spent attempt with the
+Tests: `test_op_runner.py::AttemptOwnershipTests` — the reviewer's
+renewed-reservation scenario; a crash during a mode-`all` retry leaving a spent attempt with the
 first answer intact; a re-bound retry's answer recovered under the retry's own
 digest; no envelope removed or overwritten across a run with failures, a retry,
 a renewal and two resumes; a pre-0.6.6 Track refused by name. The 0.6.5
@@ -420,8 +417,8 @@ recovery suites still hold, under the new paths.
 
 ### 0.6.5 — the repeat budget is an account (2026-09-21)
 
-From Codex review 5, after the first four-repository survey (narrowing
-contract §15, "Repeat budget"). 0.6.4 called `count` a budget that holds
+From an internal review, after the first four-repository survey. 0.6.4
+called `count` a budget that holds
 across a resume; three findings showed it did not hold against a crash, a
 retry, or an edit. A PATCH bump: no new key, no spec change, and `mode: all`
 runs as it ran.
@@ -483,10 +480,10 @@ and the durability suites updated to read the reservation records
 
 ### 0.6.4 — `repeat.mode`: one bad answer should not end a 150-batch run (2026-09-21)
 
-From the first four-repository survey (narrowing contract §14): batch 5 of 150
+From the first four-repository survey: batch 5 of 150
 of `detect-overlaps` came back with item ids written `ISSUE-469` instead of
 `owner/repo#469`, the Cog's `citation-coverage` check correctly rejected every
-finding, and §10's stop-at-first-failed-element rule then ended the run 17
+finding, and the 0.6.2 stop-at-first-failed-element rule then ended the run 17
 minutes in. `retry-once` does not apply — the envelope was `ok` and the failure
 was a contract error, not a transport one. A MINOR bump: one new optional key,
 no change to any existing spec's behaviour.
@@ -546,10 +543,9 @@ bad mode as an invalid spec).
 
 ### 0.6.3 — the digest is taken per invocation (2026-09-20)
 
-The fix round on 0.6.2, from the Codex go/no-go review
-(`planning/current/narrowing-codex-review-4-go-no-go.md`, residual 5
-(Partial) and section (c), "Digest coverage, cost, and timing"; decided in
-narrowing contract §11). A PATCH bump: no new field, one shape change inside
+The fix round on 0.6.2, from an internal go/no-go review (its section on
+digest coverage, cost, and timing). A PATCH bump: no new field, one shape
+change inside
 `attempts`, and a digest taken at a different MOMENT.
 
 - **Residual 5 — a step is many invocations.** 0.6.2 hashed the Cog once per
@@ -595,9 +591,8 @@ whole; a large file still being part of the digest).
 
 ### 0.6.2 — bounded failure, kept records, and the Cog behind a result (2026-09-20)
 
-The fix round on 0.6.1, from the Codex review-3 confirmation
-(`planning/current/narrowing-codex-review-3-confirmation.md`, ranked
-residuals 3, 4 and 5; decided in narrowing contract §10, "Runner"). A PATCH
+The fix round on 0.6.1, from an internal confirmation review (its three
+ranked residuals). A PATCH
 bump: one new field on a step record, one new element-level `status`, and
 three behaviours that only ever remove waste or preserve evidence.
 
@@ -656,9 +651,8 @@ re-run).
 
 ### 0.6.1 — a repeat answers a REQUEST (2026-09-20)
 
-The fix round on 0.6.0, from Codex review 1
-(`planning/current/narrowing-codex-review-1.md`, findings 2, 5, 6 and 11;
-decided in narrowing contract §8, "Runner"). A PATCH bump: no vocabulary
+The fix round on 0.6.0, from an internal review (four of its findings).
+A PATCH bump: no vocabulary
 changes, no shape changes a reader has to learn — the repeat record gains
 one field and three behaviours become what they were always described as.
 
@@ -706,8 +700,8 @@ element); `test_op_spec.py::RepeatTests` (`require: null`).
 
 ### 0.6.0 — `repeat` in the runner (2026-09-20)
 
-Narrowing contract §2 (`planning/current/narrowing-contract.md`), sitting on
-phase 2 §2–§4 and phase 3 §9e. A MINOR bump, not a patch: the spec
+From an internal design note (not distributed), sitting on the earlier
+runner and authority contracts. A MINOR bump, not a patch: the spec
 vocabulary gains a key, the Track gains two fields, and a step can now cost
 more than one invocation.
 
@@ -732,7 +726,7 @@ Absent, a step runs once and every record reads exactly as it did in 0.5.9
 - `require` DEFAULTS to `count`. Silence never loosens a Gate: a step that
   states no tolerance requires every repeat to pass.
 - inside a `foreach`, each ELEMENT is repeated, so `steps.<id>.payload` is a
-  list of lists. `cog-merge-findings` (narrowing §3) reads exactly that.
+  list of lists. A merging Cog reads exactly that.
 
 Refused at LOAD, by name: an unknown key under `repeat:`; a non-integer or
 out-of-bounds `count`/`require`; `repeat` on a step that carries
@@ -750,7 +744,7 @@ own `envelope` is null — the repeats name one file each. A `--dry-run` plan
 carries `repeat`, so the invocation cost of a run is readable before it
 starts.
 
-Resume (phase 3 §9e, extended): the step that stopped a failed run is still
+Resume (extended): the step that stopped a failed run is still
 the resume point, and now only its FAILED repeats are invoked again. A repeat
 that passed is read back from the envelope on disk, its record kept
 byte-for-byte, and no Cog is launched for it — `_reusable_repeat` requires a
@@ -767,7 +761,7 @@ accepts the key, refuses the bounds, refuses a reaching Cog).
 
 ### 0.5.9 — the sheet claims only what it does (2026-09-19)
 
-Contract §11d, from Codex review 11 (finding 4). WORDING ONLY: `cell()` is
+From an internal review. WORDING ONLY: `cell()` is
 byte-for-byte unchanged and every 0.5.8 rendering is identical, so a decision
 file made against 0.5.8 still applies and no digest moves.
 
@@ -800,7 +794,7 @@ the header now says).
 
 ### 0.5.8 — the literal-text invariant, checkable without a renderer (2026-09-19)
 
-Contract §11c, from Codex review 10 (finding 1). 0.5.7 escaped a CHOSEN LIST
+From an internal review. 0.5.7 escaped a CHOSEN LIST
 of metacharacters, which is the wrong shape of rule: the list was incomplete
 by construction. `:smile:` still became a picture on GitHub, `@mention` still
 mentioned, a bare `https://…` and a `www.…` still autolinked — and, far
@@ -842,7 +836,7 @@ applies. Tests: `tests/test_op_authority.py::PendingSheetLiteralTextTests`
 
 ### 0.5.7 — every pending-sheet cell is literal text (2026-09-19)
 
-Contract §11b, from Codex review 9 (blocker 3). `render_pending` interpolated
+From an internal review. `render_pending` interpolated
 proposal fields into a Markdown table unescaped, and only the summary had its
 whitespace collapsed. A valid `content_sha256` says nothing about how a
 proposal READS: a target of `[owner/repo#1](https://example.invalid)` hid the
@@ -865,7 +859,7 @@ pipes the way a table parser does.
 
 ### 0.5.6 — the pending sheet names what it shows (2026-09-19)
 
-Contract §11 item 5. The live nexus sweep handed a human a decision sheet
+The live hub sweep handed a human a decision sheet
 whose `kind` and `target` columns were blank on all 33 rows: `render_pending`
 read `kind`/`target`, and the change shape the proposing Cogs emit says
 `change_type` and `target_item_ids`. Two readers, `change_kind(change)` and
@@ -877,7 +871,7 @@ pending JSON, the hashes, the decision vocabulary and the change shape itself
 are untouched, so a decision file made against 0.5.5 still applies.
 Tests: `tests/test_op_authority.py::PendingSheetTests` (4).
 
-### 0.5.5 — a failed run resumes at the step that stopped it (review 5)
+### 0.5.5 — a failed run resumes at the step that stopped it
 
 The starter's write sketch (`templates/code-cog/src/task_logic.py`, which is
 AUTHOR-owned and so not hash-enforced — this changes what a NEW Cog starts
@@ -886,9 +880,8 @@ reads reports no write in `authority_use`, and unfinished work is an
 error-severity `write-back-unresolved` problem so the Gate fails and a
 resume finishes it.
 
-Contract §9e, from
-`planning/current/phase3-codex-review-5-code-cogs-verification.md` (new
-finding 1). Regression test: `tests/test_op_process.py::UnresolvedResumeTests
+From an internal verification review. Regression test:
+`tests/test_op_process.py::UnresolvedResumeTests
 ::test_an_unresolved_write_stops_the_run_and_resume_re_runs_that_step` — a
 real Op, as processes, whose write Cog leaves its change uncertain once.
 
@@ -911,9 +904,9 @@ real Op, as processes, whose write Cog leaves its change uncertain once.
   `failed` or `denied` one), so a run started under 0.5.4 resumes under
   0.5.5 without special handling.
 
-### 0.5.4 — the decision says who, when, and what was edited (review 4)
+### 0.5.4 — the decision says who, when, and what was edited
 
-Contract §9d, from `planning/current/phase3-codex-review-4-code-cogs-and-op.md`.
+From an internal review.
 Regression tests: `tests/test_op_authority.py::
 test_the_exposed_decision_carries_decided_by_and_decided_at` and
 `::test_the_exposed_approved_list_carries_the_edited_change_object`.
@@ -927,14 +920,13 @@ test_the_exposed_decision_carries_decided_by_and_decided_at` and
   already refused when they name nobody (0.5.2).
 - **S3 — `approved` carries the edited objects, confirmed.** An `edit`
   verdict already appended the normalized EDITED change (never the original
-  proposal) to `approved`; review 4 read the record-run join, not the
+  proposal) to `approved`; the review read a downstream consumer, not the
   runner. The test above pins it so the guarantee cannot quietly regress.
 
-### 0.5.3 — the Codex confirmation fixes (review 3)
+### 0.5.3 — the confirmation-review fixes
 
-One bullet per finding of
-`planning/current/phase3-codex-review-3-cog-smith-confirmation.md` that lives
-in this lineage, resolved as contract §9c decides. Each fix has a regression
+One bullet per finding of an internal confirmation review that lives
+in this lineage. Each fix has a regression
 test that failed before it (`tests/test_op_authority.py`,
 `tests/test_op_process.py`).
 
@@ -973,12 +965,11 @@ test that failed before it (`tests/test_op_authority.py`,
   message when pixi is absent). Measured 2026-09-17 with pixi 0.69.0: it
   arrived.
 
-### 0.5.2 — the Codex verification fixes (review 2)
+### 0.5.2 — the verification-review fixes
 
-One bullet per finding of
-`planning/current/phase3-codex-review-2-cog-smith-verification.md` that lives
-in this lineage — the Partial verdicts and the seven New findings — resolved
-as contract §9b decides. Each behavioural fix has a regression test that
+One bullet per finding of an internal verification review that lives
+in this lineage — the Partial verdicts and the seven New findings. Each
+behavioural fix has a regression test that
 failed before it (`tests/test_op_authority.py`, `tests/test_op_process.py`).
 
 - **B3 / New 1 — the run lock is an OS advisory lock, not a pid file.**
@@ -989,7 +980,7 @@ failed before it (`tests/test_op_authority.py`, `tests/test_op_process.py`).
   or resume by name (exit 2). No pid parsing, no takeover, no unlink on
   release — the file's JSON is informational only, so an EMPTY lock file, a
   lock file that is not JSON, and one naming a pid `os.kill` could never
-  take are all just locked-or-not. This replaces §9's `O_EXCL` + dead-pid
+  take are all just locked-or-not. This replaces the earlier `O_EXCL` + dead-pid
   rule, and with it the `took_over_lock` entry in `resumes`.
 - **B4 / New 2 — issuance validates the hashes it carries.** At issuance the
   runner RECOMPUTES each approved change's `content_sha256` from the change
@@ -1026,10 +1017,10 @@ failed before it (`tests/test_op_authority.py`, `tests/test_op_process.py`).
   what the step's status becomes when the decision is applied: approving the
   proposals does not erase the problems the Cog reported making them.
 
-### 0.5.1 — the Codex review-1 fixes
+### 0.5.1 — the first-review fixes
 
-One bullet per finding of `planning/current/phase3-codex-review-1-cog-smith.md`
-that lives in this lineage, resolved as contract §9 decides. Each behavioural
+One bullet per finding of an internal review that lives in this lineage.
+Each behavioural
 fix has a regression test that failed before it (`tests/test_op_authority.py`,
 `tests/test_op_process.py`, `tests/test_op_runner.py`).
 
@@ -1042,7 +1033,7 @@ fix has a regression test that failed before it (`tests/test_op_authority.py`,
 - **B2 — `retry-once` is refused at load on an effectful step.** On a step
   that carries `authority:`, and on a step whose Cog's manifest declares a
   non-empty `reaches`. An effectful step recovers by resume plus journal
-  reconciliation, never by re-invocation (phase 2 §0); the message says so.
+  reconciliation, never by re-invocation; the message says so.
 - **B3 — one run, one process.** `runs/<run_id>/run.lock` is created
   `O_CREAT|O_EXCL` at the start of a run and of every resume, BEFORE the
   Track is read, and removed on exit. A live pid refuses the resume by name
@@ -1102,10 +1093,11 @@ fix has a regression test that failed before it (`tests/test_op_authority.py`,
 
 ### 0.5.0 — authority, grants, the human Gate, resume
 
-Phase 3 (`planning/current/phase3-contract.md` §2, §3, §5). The runner
+The authority phase of the runner, from an internal contract note (not
+distributed). The runner
 ISSUES and RECORDS; the code Cog checks its own grant before it reaches
 outside the run. Nothing added here is an enforced restricted environment
-(phase 2 contract §0), and the docs say so in every place they could be
+and the docs say so in every place they could be
 misread.
 
 - **Spec vocabulary.** `authority.requires` on a step, `authority.ttl_minutes`
@@ -1146,24 +1138,22 @@ misread.
   and `decision`, and the statuses `denied`, `running`,
   `awaiting-decision`.
 
-Rolled out to `op-video-transcription` by re-copying.
+Rolled out to the internal sample Op by re-copying.
 
 ### 0.4.6 — `tool:` is refused permanently, pointing at `kind: code`
 
 A vocabulary change, not a behavior change. The runner subset refused `tool:`
 steps with "phase 3 adds it"; phase 3 will not add it. Deterministic work in
 an Op is a model-free Cog of `kind: code` invoked as an ordinary `cog:` step
-(decided 2026-09-17, recorded in the main triage plan's "Code Cogs" section),
+(decided 2026-09-17),
 so the op-manifest keeps one step kind. `REFUSED_STEP["tool"]` is now `None`
 and the load-time message says there is no `tool:` step kind and names
-`kind: code`. Rolled out to `op-video-transcription` and `op-project-triage`
-by re-copying.
+`kind: code`. Rolled out to the internal Ops then carrying it by re-copying.
 
 ### 0.4.5 — the final-review fixes
 
-One bullet per "New findings" item of
-`planning/current/phase2-codex-review-4-cog-smith-final.md`, which reviewed
-0.4.4. Each behavioral fix has a regression test that failed before it.
+One bullet per "New findings" item of an internal final review of 0.4.4.
+Each behavioral fix has a regression test that failed before it.
 
 - **1 — a loop variable can no longer overwrite the run context.**
   `foreach.as` is refused at LOAD when it collides with a path root
@@ -1187,9 +1177,8 @@ One bullet per "New findings" item of
 
 ### 0.4.4 — the verification-round fixes
 
-One bullet per "New and residual findings" item of
-`planning/current/phase2-codex-review-3-cog-smith-verification.md`, which
-verified 0.4.3 and completed the rows left PARTIAL (1, 9, 10, 13, 14). Each
+One bullet per "New and residual findings" item of an internal verification
+review of 0.4.3, which completed the rows it had left PARTIAL. Each
 has a regression test that failed before the fix.
 
 - **1 — the request flag is negotiated once, safely.** `_rejected_flag` now
@@ -1197,7 +1186,7 @@ has a regression test that failed before the fix.
   `unrecognized arguments: <flag>` on **stderr**, and NO envelope anywhere on
   stdout. A result — including an `ok: false` envelope whose detail quotes
   that diagnostic — is never re-invoked, so an effectful Cog cannot run twice
-  (contract §0). When the fallback also fails, both attempts are kept as
+  When the fallback also fails, both attempts are kept as
   evidence. (The Cog's declared interface would be the better source, but a
   manifest does not say which request flag its CLI takes.)
 - **2 — absence is not null.** An omitted OPTIONAL input with no `default`
@@ -1235,7 +1224,7 @@ has a regression test that failed before the fix.
 
 ### 0.4.3 — the phase-2 review fixes
 
-One bullet per finding of `planning/current/phase2-codex-review-1-cog-smith.md`
+One bullet per finding of an internal review
 (findings 1 and 2 landed as 0.4.1 and 0.4.2); each has a regression test that
 failed before the fix.
 
@@ -1251,7 +1240,7 @@ failed before the fix.
   `smith op check` now shares that code (`op_spec.cog_step_findings`), which
   reads a Cog's manifest straight from `pixi.toml [tool.cog]` or `cog.yaml`
   so the vendored machinery never imports cog-smith. (A declaration check —
-  not authority enforcement; see the contract's §0 amendment.)
+  not authority enforcement.)
 - **5 — `smith op run` resolves its paths first.** Package, runner, request,
   and `--runs-dir` are resolved against the CALLER's directory before the
   child is launched into the package directory.

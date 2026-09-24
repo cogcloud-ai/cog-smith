@@ -35,35 +35,35 @@ REPO = fx.REPO
 
 
 def spec_doc():
-    """compose (human Gate, canned) -> write-github (a real code Cog)."""
+    """compose (human Gate, canned) -> example-writer (a real code Cog)."""
     compose = fx.cog_step("compose", gate={"policy": "human", "guards": []})
     compose["input"] = {"note": {"$from": "inputs.note"}}
-    write = fx.cog_step("write-github", task="run", depends_on=["compose"],
+    write = fx.cog_step("example-writer", task="run", depends_on=["compose"],
                         authority={"requires": [
                             {"resource": "github", "action": "write",
                              "changes": {"$from":
                                          "steps.compose.decision.approved"}}]})
-    write["cog"]["id"] = "openteams/cog-write-github"
+    write["cog"]["id"] = "openteams/cog-example-writer"
     write["input"] = {"changes": {"$from": "steps.compose.decision.approved"}}
     return fx.spec_doc([compose, write])
 
 
 def unresolved_spec_doc():
-    """compose (human Gate, canned) -> write-github (unresolved once) ->
-    record-run: the three steps contract §9e's runner-level test needs."""
+    """compose (human Gate, canned) -> example-writer (unresolved once) ->
+    example-recorder: the three steps the internal contract's runner-level test needs."""
     compose = fx.cog_step("compose", gate={"policy": "human", "guards": []})
     compose["input"] = {"note": {"$from": "inputs.note"}}
-    write = fx.cog_step("write-github", task="run", depends_on=["compose"],
+    write = fx.cog_step("example-writer", task="run", depends_on=["compose"],
                         authority={"requires": [
                             {"resource": "github", "action": "write",
                              "changes": {"$from":
                                          "steps.compose.decision.approved"}}]})
-    write["cog"]["id"] = "openteams/cog-write-github"
+    write["cog"]["id"] = "openteams/cog-example-writer"
     write["input"] = {"changes": {"$from": "steps.compose.decision.approved"}}
-    record = fx.cog_step("record-run", task="run", depends_on=["write-github"])
-    record["cog"]["id"] = "openteams/cog-record-run"
+    record = fx.cog_step("example-recorder", task="run", depends_on=["example-writer"])
+    record["cog"]["id"] = "openteams/cog-example-recorder"
     record["input"] = {"outcomes": {"$from":
-                                    "steps.write-github.payload.changes"}}
+                                    "steps.example-writer.payload.changes"}}
     return fx.spec_doc([compose, write, record])
 
 
@@ -75,7 +75,7 @@ class ProcessCrashTests(unittest.TestCase):
         self.package = self.root / "op-test"
         fx.write_cog(self.root, "compose")
         self.cog = cc.write_back_cog(self.root)          # a real code Cog
-        self.assertEqual(self.cog.name, "cog-write-github")
+        self.assertEqual(self.cog.name, "cog-example-writer")
         fx.write_package(self.package, spec_doc())
         self.request = fx.write_request(self.root / "request.json",
                                         {"note": "hello"})
@@ -144,7 +144,7 @@ class ProcessCrashTests(unittest.TestCase):
         return next(s for s in track["steps"] if s["id"] == sid)
 
     def journal(self, run_dir):
-        path = Path(run_dir) / "journal" / "write-github.jsonl"
+        path = Path(run_dir) / "journal" / "example-writer.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()
                 if line.strip()]
 
@@ -164,7 +164,7 @@ class ProcessCrashTests(unittest.TestCase):
         self.assertEqual(self.step(track, "compose")["status"], "passed")
         self.assertTrue(track["resumes"])
         self.assertEqual([g["step"] for g in track["grants"]],
-                         ["write-github"])
+                         ["example-writer"])
         self.assertEqual([e["phase"] for e in self.journal(run_dir)],
                          ["applying"])
 
@@ -172,7 +172,7 @@ class ProcessCrashTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(output["status"], "completed")
         track = self.track(run_dir)
-        record = self.step(track, "write-github")
+        record = self.step(track, "example-writer")
         self.assertEqual(record["status"], "passed")
         envelope = json.loads(Path(record["envelope"]).read_text())
         self.assertEqual(envelope["payload"]["changes"][0]["outcome"],
@@ -188,7 +188,7 @@ class ProcessCrashTests(unittest.TestCase):
         run_dir = self._crash_and_resume("CRASH_BEFORE")
         self.assertFalse(self.journal(run_dir)[-1].get("reconciled"))
         # two issuances, two files, two ids — neither overwritten (review S6)
-        grants = sorted((Path(run_dir) / "grants" / "write-github").iterdir())
+        grants = sorted((Path(run_dir) / "grants" / "example-writer").iterdir())
         self.assertEqual([p.name for p in grants], ["0.json", "1.json"])
 
     def test_a_second_process_cannot_resume_a_run_whose_lock_is_held(self):
@@ -309,13 +309,13 @@ class UnresolvedResumeTests(unittest.TestCase):
                                   str(decision))
         self.assertEqual(code, 1, output)
         self.assertEqual(output["status"], "failed")
-        self.assertEqual(output["failed_step"], "write-github")
+        self.assertEqual(output["failed_step"], "example-writer")
         track = self.track(run_dir)
         self.assertEqual(track["status"], "failed")
-        self.assertEqual(track["failed_step"], "write-github")
+        self.assertEqual(track["failed_step"], "example-writer")
         self.assertEqual(self.status(track, "compose"), "passed")
-        self.assertEqual(self.status(track, "write-github"), "failed")
-        self.assertEqual(self.status(track, "record-run"), "not-reached")
+        self.assertEqual(self.status(track, "example-writer"), "failed")
+        self.assertEqual(self.status(track, "example-recorder"), "not-reached")
         self.assertIsNone(self.read("records.json"))     # nothing recorded
         self.assertEqual(self.read("write-attempts.json"), [["c-1"]])
 
@@ -326,8 +326,8 @@ class UnresolvedResumeTests(unittest.TestCase):
         track = self.track(run_dir)
         self.assertIsNone(track["failed_step"])
         self.assertEqual(self.status(track, "compose"), "passed")
-        self.assertEqual(self.status(track, "write-github"), "passed")
-        self.assertEqual(self.status(track, "record-run"), "passed")
+        self.assertEqual(self.status(track, "example-writer"), "passed")
+        self.assertEqual(self.status(track, "example-recorder"), "passed")
         # the write step ran twice (it had unfinished work), the recording
         # step once — AFTER the write finished — and the human-gated step
         # not again: a second pause would have ended this run at exit 3.
@@ -336,7 +336,7 @@ class UnresolvedResumeTests(unittest.TestCase):
                          [[{"change_id": "c-1", "outcome": "applied"}]])
         self.assertEqual(self.read("calls.json"), ["c-1"])   # exactly once
         journal = [json.loads(line) for line in
-                   (Path(run_dir) / "journal" / "write-github.jsonl")
+                   (Path(run_dir) / "journal" / "example-writer.jsonl")
                    .read_text().splitlines() if line.strip()]
         self.assertEqual([e["phase"] for e in journal],
                          ["uncertain", "applied"])
@@ -347,7 +347,7 @@ class UnresolvedResumeTests(unittest.TestCase):
 #: package directory with the trailing arguments — and nothing else. The
 #: production `invoke_cog` is untouched, so the command it builds, the
 #: `--grant/--run-id/--journal` flags and the request-flag fallback are all
-#: exercised for real (contract §9b, verification finding 7).
+#: exercised for real (the internal contract, verification finding 7).
 FAKE_PIXI = '''#!{python}
 import json
 import os
@@ -382,7 +382,7 @@ if command[0] == "python":
 # `close_fds=False`: a real launcher hands the task the descriptors it was
 # started with, and the run lock is one of them. Closing them here would
 # make the fake a weaker launcher than pixi and hide the lifetime the tests
-# are about (contract §9c, review 3 finding 4).
+# are about (an internal review, finding 4).
 sys.exit(subprocess.run(command + arguments, close_fds=False,
                         cwd=os.path.dirname(manifest)).returncode)
 '''
@@ -406,19 +406,19 @@ def run(bundle, grant, journal):
 
 
 def production_spec_doc():
-    """propose (a real code Cog, human Gate) -> write-github (a real code
+    """propose (a real code Cog, human Gate) -> example-writer (a real code
     Cog). Every step goes through `pixi run <task>`."""
     compose = fx.cog_step("compose", task="run",
                           gate={"policy": "human", "guards": []})
     compose["cog"] = {"id": "openteams/cog-propose", "version": "0.1.0",
                       "source": "../cog-propose", "task": "run"}
     compose["input"] = {"note": {"$from": "inputs.note"}}
-    write = fx.cog_step("write-github", task="run", depends_on=["compose"],
+    write = fx.cog_step("example-writer", task="run", depends_on=["compose"],
                         authority={"requires": [
                             {"resource": "github", "action": "write",
                              "changes": {"$from":
                                          "steps.compose.decision.approved"}}]})
-    write["cog"]["id"] = "openteams/cog-write-github"
+    write["cog"]["id"] = "openteams/cog-example-writer"
     write["input"] = {"changes": {"$from": "steps.compose.decision.approved"}}
     return fx.spec_doc([compose, write])
 
@@ -499,7 +499,7 @@ class ProductionSeamTests(unittest.TestCase):
                 if line.strip()]
 
     def test_the_lock_outlives_the_runner_while_its_cog_is_still_running(self):
-        """Review 3, finding 4: the lifetime guarantee, demonstrated.
+        """An internal review, finding 4: the lifetime guarantee, demonstrated.
 
         The runner passes the lock descriptor to the launcher; the launcher
         (here a fake `pixi` that inherits descriptors the way a real one

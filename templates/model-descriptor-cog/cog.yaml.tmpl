@@ -1,5 +1,5 @@
 # A DEPLOYMENT DESCRIPTOR model Cog, created by cog-smith (generate-descriptors).
-# Pattern: cog-forge/cog-collab-qwen35b (engineering-gates PASS).
+# Pattern: one descriptor Cog per served model, never a parameterized gateway.
 #
 # It carries the PINNABLE IDENTITY of a model deployment (name, quantization,
 # runtime, revision, locality) as package content. The reachable ADDRESS is
@@ -26,7 +26,7 @@ owner: {{OWNER}}
 locality: {{LOCALITY}}
 
 model:
-  # Relationship to core CogSpec (review 2026-08-22, F5): core defines a
+  # Relationship to core CogSpec (F5): core defines a
   # model Cog as carrying a model and its serving software. Under the
   # Collab/OpenTeams PROFILE, a deployment DESCRIPTOR is a model Cog whose
   # carried content is the PINNABLE IDENTITY of a deployment rather than
