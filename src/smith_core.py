@@ -212,8 +212,8 @@ def default_tokens(cog_name, **overrides):
         "PUBLISHER": "OpenTeams",
         "PORT": "8093",
         "PRODUCES": "highlights",
-        "MODEL_COG_ID": "openteams/cog-qwen3b",
-        "MODEL_COG_SOURCE": "../cog-demo/cog-qwen3b",
+        "MODEL_COG_ID": "openteams/cog-qwen",
+        "MODEL_COG_SOURCE": "../cog-qwen",
         "PROHIBITS_YAML": "  - send_external_message\n  - modify_source_data",
     }
     tokens.update({k: v for k, v in overrides.items() if v is not None})

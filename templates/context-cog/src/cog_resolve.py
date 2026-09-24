@@ -7,7 +7,7 @@
 
     # bind an ALTERNATE declared satisfier — e.g. the Collab deployment
     # descriptor, whose address is an installation fact:
-    pixi run resolve -- --satisfier ../cog-collab-qwen35b \
+    pixi run resolve -- --satisfier ../cog-qwen \
         --endpoint http://YOUR-COLLAB-HOST/v1 [--insecure-http]
 
 The Cog declares a capability it needs; `satisfied_by` names the default

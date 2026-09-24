@@ -8,6 +8,7 @@ record (`request_timeout_s`, default 180, bounds 10–1800), written by
 one call by `cog_cli --timeout`.
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -37,7 +38,8 @@ def record_of(cog):
 
 def run_use(cog, *args):
     return subprocess.run([sys.executable, "src/cog_use.py", *args],
-                          cwd=str(cog), capture_output=True, text=True)
+                          cwd=str(cog), capture_output=True, text=True,
+                          env=dict(os.environ, COG_QWEN_BACKEND_TOKEN="synthetic-local-test-token"))
 
 
 class TestTheBoundsRule(unittest.TestCase):
@@ -126,7 +128,8 @@ class TestResolveWritesTheDeadline(unittest.TestCase):
         r = subprocess.run(
             [sys.executable, "src/cog_resolve.py", "--satisfier",
              str(Path(tmp) / "cog-mock-model"), "--allow-undeclared", *extra],
-            cwd=str(cog), capture_output=True, text=True)
+            cwd=str(cog), capture_output=True, text=True,
+                          env=dict(os.environ, COG_QWEN_BACKEND_TOKEN="synthetic-local-test-token"))
         return cog, r
 
     def test_resolve_writes_the_default(self):
@@ -219,7 +222,8 @@ class TestInvokeReadsTheBinding(unittest.TestCase):
 
     def _invocation(self, cog):
         r = subprocess.run([sys.executable, "-c", self.INVOKE_PROBE],
-                           cwd=str(cog), capture_output=True, text=True)
+                           cwd=str(cog), capture_output=True, text=True,
+                          env=dict(os.environ, COG_QWEN_BACKEND_TOKEN="synthetic-local-test-token"))
         self.assertEqual(r.returncode, 0, r.stderr)
         return json.loads(r.stdout.strip().splitlines()[-1])
 
@@ -243,7 +247,8 @@ class TestInvokeReadsTheBinding(unittest.TestCase):
             r = subprocess.run(
                 [sys.executable, "src/cog_cli.py", "--bundle",
                  "examples/sample-bundle.json", "--timeout", "2"],
-                cwd=str(cog), capture_output=True, text=True)
+                cwd=str(cog), capture_output=True, text=True,
+                          env=dict(os.environ, COG_QWEN_BACKEND_TOKEN="synthetic-local-test-token"))
             self.assertEqual(r.returncode, 2)
             self.assertIn("request_timeout_s", r.stderr)
 

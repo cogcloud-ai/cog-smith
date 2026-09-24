@@ -323,7 +323,7 @@ def check(root, run_tests=False):
 
 def _check_model_descriptor(m, err, warn):
     """Deployment-descriptor model cog: no machinery, no context files —
-    the whole contract is the manifest (pattern: cog-collab-qwen35b)."""
+    the whole contract is the manifest."""
     provides = m.get("provides") or []
     if "model-endpoint/openai-compatible" not in provides:
         err("profile", "descriptor",

@@ -1375,3 +1375,12 @@ OpenTeams has authorized Apache-2.0 for Smith and its supplied machinery.
 Generated packages now carry LICENSE.smith, NOTICE.smith, and LICENSING.md.
 Runtime source bytes and machinery versions are unchanged by this licensing
 update. Previously published BSD versions remain available under BSD.
+
+## 0.4.4 (2026-09-24): public local model provider
+
+Context machinery now documents the public cog-qwen provider. The local preset
+uses its Qwen3-4B alias and dedicated backend-token environment variable. Private
+model presets are removed; other deployments use explicit endpoint/model options.
+The default generated model source is the manifest-listed cog-qwen sibling.
+The descriptor template explains its semantics without private review citations.
+Masters are re-copied byte-identically into all three suite context Cogs.

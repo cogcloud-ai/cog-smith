@@ -64,10 +64,11 @@ the single source of the machinery every created Cog carries.
    named by COG.md's `manifest:` pointer) is a PROFILE convention, not a
    core rule. Known gap, queued: compose the CogSpec reference validator
    into the core layer.
-7. **Lockfile policy:** pixi.lock files are generated ONLY on
-   Trent's Mac (conda-forge is 403-blocked in the sandbox and device VM)
-   and committed once generated; created Cogs follow the same policy.
-8. Fast-follow queue (do not start without Trent): derive-schema; draft
+7. **Lockfile policy:** generate pixi.lock with Pixi on a supported platform
+   with access to the declared channels. Preserve all declared target platforms,
+   commit the generated lockfile, and verify installation with `pixi install --locked`.
+   Created Cogs follow the same policy.
+8. Fast-follow queue (agree on scope with the maintainers before starting): derive-schema; draft
    (model-backed; adds a model-endpoint requirement when it lands);
    promote-draft (COG.md draft -> package, per CogSpec's own builder
    description); machinery diff/upgrade (hash checking needs a repair
