@@ -187,7 +187,7 @@ class ProcessCrashTests(unittest.TestCase):
     def test_a_crash_before_github_accepted_applies_it_exactly_once(self):
         run_dir = self._crash_and_resume("CRASH_BEFORE")
         self.assertFalse(self.journal(run_dir)[-1].get("reconciled"))
-        # two issuances, two files, two ids — neither overwritten (review S6)
+        # two issuances, two files, two ids — neither overwritten
         grants = sorted((Path(run_dir) / "grants" / "example-writer").iterdir())
         self.assertEqual([p.name for p in grants], ["0.json", "1.json"])
 

@@ -414,7 +414,7 @@ class TestGrantChecks(unittest.TestCase):
 
     def test_a_bundle_the_schema_refuses_never_reaches_the_packages_checker(self):
         # `{"items": [1]}` used to crash `check_input` on `item.get`; it is a
-        # named invalid-input envelope (review S7).
+        # named invalid-input envelope.
         bundle = Path(self.tmp.name) / "bad-bundle.json"
         bundle.write_text(json.dumps({"items": [1]}))
         code, env, out = run_cog(self.dest, "--bundle", str(bundle),

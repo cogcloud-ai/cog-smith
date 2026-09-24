@@ -231,7 +231,7 @@ class AuthorityTests(AuthorityCase):
     def test_two_write_requirements_from_different_gates_are_refused(self):
         # Phase 3 issues ONE grant per step, with one provenance: a grant
         # whose writes came from two human gates could only record one of
-        # them, so the spec is refused at load instead (review S6).
+        # them, so the spec is refused at load instead.
         doc = spec_doc()
         second = fx.cog_step("compose-more", depends_on=["example-reader"],
                              gate={"policy": "human", "guards": []})
@@ -1170,7 +1170,7 @@ class PendingAndDecisionTests(AuthorityCase):
             self.assertIn(field, "\n".join(caught.exception.problems))
 
     def test_a_decision_whose_who_and_when_say_nothing_is_refused(self):
-        # Review S2's remainder: `decided_at: "not-a-time"` and a
+        # The remaining case: `decided_at: "not-a-time"` and a
         # whitespace-only `decided_by` were accepted as metadata.
         for field, value in (("decided_at", "not-a-time"),
                              ("decided_by", "   ")):
@@ -1248,7 +1248,7 @@ class PendingAndDecisionTests(AuthorityCase):
 
 
 class ResumeValidationTests(AuthorityCase):
-    """A resume is a run: the same load-time refusals apply (review S3, S4)."""
+    """A resume is a run: the same load-time refusals apply."""
 
     def test_resuming_a_dry_run_is_refused_by_name(self):
         fx.write_package(self.package, spec_doc())
