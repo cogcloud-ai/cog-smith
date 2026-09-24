@@ -857,7 +857,7 @@ default satisfier: a host admits a `system-one/decisions` binding (see
 cog-typesafe and cog-system-one-adapter) and composes it with the Cog:
 
     # from cog-workbench (the host)
-    pixi run suite -- bind --provider cog-typesafe --request ../cog-typesafe/examples/bind-request.json
+    pixi run suite -- bind --provider cog-typesafe --request bind-request.json   # see cog-typesafe's examples/
     pixi run suite -- activate-composition --context cog-example-router --binding-id binding-jev --revision 1
     # from the decision Cog
     pixi run ask-composed -- --request bundle.json
