@@ -697,13 +697,14 @@ the step's Cog answered, so it may read the step's own payload:
     decides: artifact
     artifact:
       kind: cog-contract
-      id: {$from: inputs.identity.id}
+      id: openteams/cog-example-counter
       summary: {$from: steps.design.payload.contract.purpose}
       digests:
         contract: {$sha256: {$from: steps.design.payload.contract}}
 
 - id: author
   depends_on: [design]
+  cog: {id: openteams/cog-author, source: ../cog-author, task: ask-composed}
   input:
     contract: {$from: steps.design.payload.contract}
     contract_sha256: {$from: steps.design.decision.artifact.digests.contract}

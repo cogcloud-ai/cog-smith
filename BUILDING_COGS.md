@@ -27,7 +27,7 @@ different layers:
 
 | Layer | What it defines | Where to look |
 |---|---|---|
-| **CogSpec core** | The portable artifact: COG.md, its frontmatter, and the manifest it identifies | [CogSpec](https://github.com/cogcloud-ai/cog-spec/blob/main/SPEC.md) |
+| **CogSpec core** | The portable artifact: COG.md, its frontmatter, and the manifest it identifies | the CogSpec core specification (internal, not distributed) |
 | **OpenTeams/Collab profile** | The current manifest fields, entry-point conventions, result envelope, binding, and hosting expectations used by this workspace | [Envelope](ENVELOPE.md) and the generated manifest (`[tool.cog]` in pixi.toml, or cog.yaml) |
 | **A particular Cog** | One worker's purpose, inputs, outputs, instructions, contract checks, tests, and declared dependencies | Its COG.md, manifest, context/, and task_logic.py |
 
@@ -809,13 +809,8 @@ Checker findings are labeled by layer:
 
 Fix every error. Review warnings rather than automatically suppressing them.
 The current core layer catches the common CogSpec rules but does not yet compose
-the complete reference validator. Before publication, also run the reference
-validator explicitly:
-
-    pixi run python ../cog-spec/tools/validate_cog.py \
-      ../cog-release-brief
-
-Then inspect the catalog card:
+the complete reference validator (which lives in the internal CogSpec
+repository, not distributed). Then inspect the catalog card:
 
     pixi run card -- ../cog-release-brief
     pixi run card -- ../cog-release-brief --json
@@ -1092,8 +1087,9 @@ Remember that a runtime override does not rewrite the portable manifest.
 
 Read these in order:
 
-1. [CogSpec README](https://github.com/cogcloud-ai/cog-spec/blob/main/README.md) — short public-core overview.
-2. [CogSpec v0.1](https://github.com/cogcloud-ai/cog-spec/blob/main/SPEC.md) — normative core rules.
+1. The CogSpec core specification (v0.1) — normative core rules for COG.md,
+   its frontmatter and the manifest it identifies. Internal, not distributed;
+   the rules this guide relies on are stated in this guide.
 3. [Cog Smith README](README.md) — command summary.
 4. [Envelope v1](ENVELOPE.md) — current Collab result contract.
 5. [Machinery provenance](MACHINERY.md) — ownership and shared-code lineage.
