@@ -30,7 +30,7 @@ import task_logic                       # noqa: E402  (the ONLY per-cog module)
 from jsonschema import Draft202012Validator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-MACHINERY = "decision-cog 0.1.0"
+MACHINERY = "decision-cog 0.1.1"
 EXTENSION = "system_one"
 EXTENSION_CONTRACT = "openteams/system-one-decision [0.1-draft]"
 

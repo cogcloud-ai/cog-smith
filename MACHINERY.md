@@ -300,7 +300,14 @@ fix has a regression test that failed before it (`tests/test_code_cog.py`).
   reconcile an `applying` one by ASKING THE TARGET, check the grant against a
   freshly fetched target hash, then journal-and-apply.
 
-## Decision-cog machinery (0.1.0, 2026-09-24): `templates/decision-cog/src/`
+## Decision-cog machinery (0.1.1, 2026-09-29): `templates/decision-cog/src/`
+
+Version 0.1.1 rejects scores inconsistent with their probability-weighted
+rubric level, allowing two-decimal provider rounding. Result diagnostics do
+not echo provider values or provider-controlled field names. Arbitrarily
+large JSON integers are rejected by their bounds without float overflow.
+The contract and core are re-copied into the example decision Cog; providers
+receive the same contract bytes.
 
 A fourth lineage, on the same terms. A **decision Cog** is a context Cog in
 the `decision` class: its context is a typed System One question set, and

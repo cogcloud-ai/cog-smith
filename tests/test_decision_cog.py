@@ -295,6 +295,52 @@ class ContractTests(unittest.TestCase):
                 "questions": {"q": {"type": "noul", "instructions": "x"}}}
         self.assertTrue(self.contract.task_problems(task))
 
+    def test_score_must_agree_with_its_distribution(self):
+        questions = json.loads((TEMPLATE / "context/questions.json").read_text())
+        result = json.loads((TEMPLATE / "examples/sample-result.json").read_text())
+        answer = result["answers"]["frustration"]
+        answer.update(score=2, probabilities={"0": 1, "1": 0, "2": 0})
+        self.assertTrue(any("disagrees" in p for p in
+                            self.contract.result_problems(result, questions)))
+
+    def test_score_consistency_allows_rounded_probabilities(self):
+        questions = json.loads((TEMPLATE / "context/questions.json").read_text())
+        result = json.loads((TEMPLATE / "examples/sample-result.json").read_text())
+        answer = result["answers"]["frustration"]
+        for probabilities, score in (({"0": .33, "1": .33, "2": .33}, 1),
+                                     ({"0": .17, "1": .33, "2": .50}, 1.33),
+                                     ({"0": 0, "1": 0, "2": 1}, 2)):
+            with self.subTest(probabilities=probabilities, score=score):
+                answer.update(score=score, probabilities=probabilities)
+                self.assertEqual(self.contract.result_problems(result, questions), [])
+
+    def test_large_score_integer_is_a_problem_not_an_overflow(self):
+        questions = json.loads((TEMPLATE / "context/questions.json").read_text())
+        result = json.loads((TEMPLATE / "examples/sample-result.json").read_text())
+        result["answers"]["frustration"]["score"] = 10 ** 400
+        self.assertTrue(self.contract.result_problems(result, questions))
+
+    def test_result_diagnostics_redact_values_and_unknown_keys(self):
+        questions = {"c": {"type": "choice", "instructions": "x",
+                           "criteria": {"a": None, "b": None}}}
+        secret = "PRIVATE_PROVIDER_TEXT"
+        base = {"model": "m", "answer_source": "llm-adapter",
+                "usage": {"input_tokens": None, "output_tokens": None},
+                "answers": {"c": {"type": "choice", "choice": "a", "confidence": .5,
+                                  "probabilities": {"a": .5, "b": .5}}}}
+        for case in ("choice", "probability-key", "question-key"):
+            result = json.loads(json.dumps(base))
+            if case == "choice":
+                result["answers"]["c"]["choice"] = secret
+            elif case == "probability-key":
+                result["answers"]["c"]["probabilities"][secret] = "invalid"
+            else:
+                result["answers"][secret] = {"type": "noul", "noul": float("nan")}
+            with self.subTest(case=case):
+                problems = self.contract.result_problems(result, questions)
+                self.assertTrue(problems)
+                self.assertNotIn(secret, " ".join(problems))
+
 
 if __name__ == "__main__":
     unittest.main()
