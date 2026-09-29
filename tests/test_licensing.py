@@ -12,7 +12,7 @@ import smith_op
 
 class LicensingTests(unittest.TestCase):
     def test_cog_license_override_preserves_smith_license(self):
-        for kind in ('context-cog', 'code-cog'):
+        for kind in ('context-cog', 'code-cog', 'decision-cog'):
             if not (ROOT / 'templates' / kind / 'src').is_dir():
                 continue  # Older published Smith versions only support context Cogs.
             for license_id in ('Apache-2.0', 'MIT'):

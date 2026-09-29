@@ -1,0 +1,82 @@
+
+# ---------------------------------------------------------------------------
+# Profile manifest: openteams/cog-manifest [0.1], hosted in pixi.toml under
+# [tool.cog] (cog-execution ADR D9). `version` and `summary` are stated once,
+# in [workspace] above (version / description); readers fall back to them.
+# ---------------------------------------------------------------------------
+[tool.cog]
+schema = "openteams/cog-manifest [0.1]"
+id = {{COG_ID_TOML}}
+# A decision Cog is a context Cog whose context is a typed question set: a
+# System One model answers, and task_logic.decide turns answers into a decision.
+kind = "context"
+owner = {{OWNER_TOML}}
+license = {{LICENSE_TOML}}
+frames = []
+memory = "none"
+# Evidence-tier boundary: prohibitions are structural today (no tool grants
+# exist that could perform them); they become Guard-enforced when a hosting
+# environment supplies tools.
+prohibits = {{PROHIBITS_TOML}}
+
+[tool.cog.context]
+input_schema = "context/input-schema.json"
+output_schema = "context/output-schema.json"
+output_example = "context/output-example.json"
+
+# The requirement is a CAPABILITY. No default satisfier is named: a host
+# admits a System One binding (TypeSafe Jev, or an LLM through the System One
+# adapter) and composes it with this Cog. The input never selects it.
+[[tool.cog.requires]]
+capability = "system-one/decisions"
+locality = "any"
+
+[[tool.cog.interfaces]]
+name = "decide"
+kind = "command"
+task = "ask-composed"
+audience = "usage"
+default = true
+
+[[tool.cog.interfaces]]
+name = "composition"
+kind = "command"
+task = "composition"
+audience = "lifecycle"
+
+[[tool.cog.interfaces]]
+name = "prepare"
+kind = "command"
+task = "prepare"
+audience = "lifecycle"
+
+[[tool.cog.interfaces]]
+name = "replay"
+kind = "command"
+task = "replay"
+audience = "lifecycle"
+
+[[tool.cog.interfaces]]
+name = "health"
+kind = "command"
+task = "check"
+audience = "lifecycle"
+
+[tool.cog.io]
+accepts = ["task_request"]
+produces = [{{PRODUCES_TOML}}]
+
+[tool.cog.extensions.system_one]
+contract = "openteams/system-one-decision [0.1-draft]"
+questions = "context/questions.json"
+
+[tool.cog.extensions.workbench_composition]
+contract = "openteams/context-composition [0.1-draft]"
+capability = "system-one/decisions"
+bridge_interface = "composition"
+accepted_compositions = ["model+harness", "harness"]
+required_features = ["choice", "noul", "score"]
+allowed_localities = ["local", "cloud"]
+tools = "none"
+checks = "packaged-before-and-after"
+evidence_scope = "composed-system"

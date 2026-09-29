@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "{{TITLE}} input",
+  "description": "Task bundle for {{COG_ID}} (a decision Cog). Declared from the manifest as context.input_schema.",
+  "type": "object",
+  "required": ["ticket_id", "body"],
+  "properties": {
+    "ticket_id": { "type": "string", "minLength": 1 },
+    "subject": { "type": "string" },
+    "body": { "type": "string", "minLength": 1, "x-cog-input": { "widget": "textarea" } }
+  },
+  "additionalProperties": false
+}

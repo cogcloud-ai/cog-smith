@@ -209,9 +209,14 @@ def check(root, run_tests=False):
 
     ctx = m.get("context") or {}
     schemas = {}
+    template = smith_core.template_for(m)
+    is_decision = template == smith_core.CLASS_TEMPLATES["decision"]
     # A code Cog's "context" is its declared SHAPES: there is no model to
-    # instruct, so instructions and the worked example are not required.
+    # instruct, so instructions and the worked example are not required. A
+    # decision Cog's instructions are its typed questions (checked below).
     declared_context = (("input_schema", "output_schema") if is_code else
+                        ("input_schema", "output_schema", "output_example")
+                        if is_decision else
                         ("instructions", "input_schema", "output_schema",
                          "output_example"))
     for key in ("instructions", "input_schema", "output_schema",
@@ -255,10 +260,10 @@ def check(root, run_tests=False):
     elif not example.exists():
         warn("runtime", "examples", "no examples/sample-bundle.json")
 
-    # Machinery is per KIND: a code Cog carries the code-cog masters
-    # (cog_core + cog_cli, no model machinery); everything else carries the
-    # context-cog masters. Same copy-sync discipline, two lineages.
-    template = smith_core.KIND_TEMPLATES.get(m.get("kind"), "context-cog")
+    # Machinery is per KIND, then CLASS: a code Cog carries the code-cog
+    # masters (cog_core + cog_cli, no model machinery); a decision Cog the
+    # decision-cog masters; every other context Cog the context-cog masters.
+    # Same copy-sync discipline, three lineages (smith_core.template_for).
     masters = smith_core.machinery_hashes(template)
     src = root / "src"
     for name, want in masters.items():
@@ -295,11 +300,18 @@ def check(root, run_tests=False):
                 warn("runtime", "interfaces",
                      f"http-json endpoint {ep!r} is not a loopback address "
                      f"with an explicit port")
-    # `resolve` binds a model dependency; a code Cog has none to bind.
-    for t in (("check", "test") if is_code else ("resolve", "check", "test")):
+    # `resolve` binds a model dependency; a code Cog has none to bind, and a
+    # decision Cog's System One binding is admitted and composed by a host.
+    lifecycle = (("check", "test") if is_code else
+                 ("check", "test", "composition", "ask-composed") if is_decision
+                 else ("resolve", "check", "test"))
+    for t in lifecycle:
         if tasks and t not in tasks:
             err("runtime", "interfaces",
                 f"lifecycle task {t!r} missing from pixi.toml")
+
+    if is_decision:
+        _check_decision(root, m, schemas, err)
 
     if not m.get("prohibits"):
         warn("profile", "declarations",
@@ -319,6 +331,66 @@ def check(root, run_tests=False):
         if r.returncode != 0:
             err("runtime", "tests", (r.stderr or r.stdout)[-800:])
     return findings
+
+
+def _decision_contract():
+    """Smith's own master of the System One contract — checks never import
+    the package under inspection."""
+    import importlib.util
+    path = smith_core.TEMPLATES / "decision-cog" / "src" / "system_one_contract.py"
+    spec = importlib.util.spec_from_file_location("smith_system_one_contract", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _check_decision(root, m, schemas, err):
+    """Decision class (declared by the `system_one` extension): the question
+    set is valid, the output schema's $defs.answers is derived from it, and
+    the composition declaration asks for the System One capability."""
+    contract = _decision_contract()
+    ext = (m.get("extensions") or {}).get(smith_core.DECISION_EXTENSION) or {}
+    if ext.get("contract") != "openteams/system-one-decision [0.1-draft]":
+        err("profile", "decision", "extensions.system_one.contract must be "
+                                   "'openteams/system-one-decision [0.1-draft]'")
+    required = [r for r in m.get("requires") or []
+                if isinstance(r, dict) and r.get("capability") == contract.CAPABILITY]
+    if len(required) != 1:
+        err("profile", "decision", f"requires must name the {contract.CAPABILITY} "
+                                   f"capability exactly once")
+    composition = (m.get("extensions") or {}).get("workbench_composition") or {}
+    if composition.get("capability") != contract.CAPABILITY:
+        err("profile", "decision", f"extensions.workbench_composition.capability "
+                                   f"must be {contract.CAPABILITY}")
+    rel = ext.get("questions") or "context/questions.json"
+    path = root / rel
+    if not path.exists():
+        err("runtime", "decision", f"declared question set missing: {rel}")
+        return
+    try:
+        questions = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        err("runtime", "decision", f"{rel} is not valid JSON: {e}")
+        return
+    problems = contract._errors(questions, "questions")
+    for detail in problems[:5]:
+        err("runtime", "decision", f"{rel}: {detail}")
+    if problems:
+        return
+    used = {q["type"] for q in questions.values()}
+    missing = sorted(used - set(composition.get("required_features") or []))
+    if missing:
+        err("profile", "decision", f"workbench_composition.required_features must "
+                                   f"include the question types used: {missing}")
+    output = schemas.get("output_schema")
+    if isinstance(output, dict):
+        derived = contract.answers_schema(questions)
+        if (output.get("$defs") or {}).get("answers") != derived:
+            err("runtime", "decision", "output schema $defs.answers is not derived "
+                                       f"from {rel}; run `pixi run derive-schema`")
+        if "decision" not in (output.get("$defs") or {}):
+            err("runtime", "decision", "output schema needs $defs.decision (the "
+                                       "author-owned decision shape)")
 
 
 def _check_model_descriptor(m, err, warn):

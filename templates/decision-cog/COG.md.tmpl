@@ -1,0 +1,77 @@
+---
+type: cog [0.1]
+name: {{COG_NAME}}
+description: {{DESCRIPTION_YAML}}
+version: "0.1.0"
+license: {{LICENSE}}
+publisher: {{PUBLISHER}}
+manifest: {{MANIFEST_FILE}}
+manifest_schema: openteams/cog-manifest [0.1]
+---
+
+# {{TITLE}}
+
+## Purpose
+
+{{SUMMARY}}
+
+*(Created by cog-smith as a **decision Cog**: a context Cog whose context is a
+typed question set. A System One model answers Noul, Choice and Score
+questions about the input with probabilities and confidence; `decide` in
+`src/task_logic.py` turns those answers into this Cog's decision. Replace this
+section with the real purpose: what is decided, for whom, and what "done"
+looks like.)*
+
+## Supported work
+
+*(Describe the one decision this Cog makes. Name each question in
+`context/questions.json`, what it measures, and the thresholds `decide`
+applies. Keep judgment in narrow questions and policy in code you can test.)*
+
+## Unsupported work
+
+*(Name the adjacent work this Cog deliberately does NOT do: open-ended
+writing, actions with external effects, or decisions that need a person.)*
+
+## Who answers
+
+The manifest requires the `system-one/decisions` capability and names no
+default satisfier. A host admits one of:
+
+- **cog-typesafe** — TypeSafe's Jev, a System One model trained for calibrated
+  decisions (`answer_source: system-one-model`); cloud locality, TypeSafe API key.
+- **cog-system-one-adapter** — TypeSafe's MIT-licensed System One adapter
+  asking an admitted OpenAI-compatible model (for example local cog-qwen) for
+  the same typed answers (`answer_source: llm-adapter`). Same shape, not the
+  same meaning: LLM-stated probabilities are not calibrated decisions.
+
+Every payload records `answered_by.model` and `answered_by.answer_source`, and
+the envelope binding carries the host's full composition provenance.
+
+## Using it
+
+```bash
+pixi install
+pixi run check                                            # self-check, model-free
+pixi run prepare -- --bundle examples/sample-bundle.json  # the turn, no call
+pixi run replay -- --bundle examples/sample-bundle.json --result examples/sample-result.json
+pixi run test                                             # model-free suite
+```
+
+Live decisions: admit a System One binding in Workbench, then from
+cog-workbench run
+`pixi run suite -- activate-composition --context {{COG_NAME}} --binding-id ID --revision N`,
+and here `pixi run ask-composed -- --request bundle.json`.
+
+After editing `context/questions.json`, run `pixi run derive-schema` so
+`$defs.answers` in the output schema matches the questions; `check` refuses
+drift. Results are **envelope v1** (see cog-smith/ENVELOPE.md); `ok: true`
+may carry problems, and a Gate decides.
+
+## Where the machinery came from
+
+`src/cog_core.py`, `src/cog_cli.py` and `src/system_one_contract.py` are
+shared cog-smith decision-cog machinery — do not edit them here; `smith check`
+verifies the copies. `scripts/composed_usage.py` is Workbench's canonical
+composed-usage adapter. This Cog's identity lives in its manifest
+(`{{MANIFEST_FILE}}`), `context/`, and `src/task_logic.py`.

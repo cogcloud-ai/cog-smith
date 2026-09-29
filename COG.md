@@ -19,7 +19,8 @@ compiler").
 ## Ops
 
 - `new` — create a Cog: interactive (Travis's builder questions) or flag-driven
-  (`--yes`). The created package is immediately runnable: resolve → check
+  (`--yes`); `--kind code` for a model-free Cog, `--class decision` for a
+  context Cog whose typed questions a System One model answers. The created package is immediately runnable: resolve → check
   --deep → ask, with the envelope-v1 contract, in-manifest input schema,
   grounding contract check, fixtures, and a model-free test suite included.
 - `check` — validate any created Cog: manifest integrity, schema/example
