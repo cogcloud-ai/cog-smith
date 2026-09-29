@@ -789,7 +789,7 @@ a traceback.
 
 ## 7c. Build a decision Cog
 
-    pixi run smith -- new cog-example-router --class decision --yes
+    pixi run new -- cog-example-router --class decision --yes
 
 A **decision Cog** is a context Cog whose context is a set of typed questions
 instead of a prompt. A System One model — TypeSafe's Jev, or an ordinary LLM
