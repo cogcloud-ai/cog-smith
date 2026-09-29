@@ -4,8 +4,8 @@
     pixi run new -- --dir ../cog-my-worker [--id ...] [--yes]
     pixi run check -- ../cog-my-worker [--tests]
     pixi run card -- ../cog-my-worker [--json]
-    pixi run smith -- op new --from-spec spec.yaml --dir ../op-my-workflow
-    pixi run smith -- op check ../op-my-workflow [--tests]
+    pixi run python src/cogsmith_cli.py op new --from-spec spec.yaml --dir ../op-my-workflow
+    pixi run python src/cogsmith_cli.py op check ../op-my-workflow [--tests]
     pixi run migrate -- ../cog-my-worker [--to pixi|yaml] [--dry-run]
 
 `new` walks the builder questions interactively (Travis's list: what are

@@ -655,7 +655,7 @@ replace them.
 
 ## 7b. Build a code Cog
 
-    pixi run smith -- new cog-example-reader --kind code --yes
+    pixi run new -- cog-example-reader --kind code --yes
 
 A code Cog implements a bounded programmatic job through the shared Cog seam.
 First check [why and when to use this type](#why-code-cogs-exist-and-when-to-use-one).
