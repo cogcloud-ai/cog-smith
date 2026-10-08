@@ -293,15 +293,21 @@ def invoke(bundle, timeout=None, task="ask"):
         return _fail(task, "binding-invalid", violations)
 
     input_problems = validate_input(bundle)
-    if input_problems:
+    refusing = [p for p in input_problems if p.get("severity") not in ("warning", "warn")]
+    if refusing:
         env = _fail(task, "invalid-input",
-                    "; ".join(p["detail"] for p in input_problems[:5]))
+                    "; ".join(p["detail"] for p in refusing[:5]))
         env["problems"] = input_problems
+        return env
+
+    def fail(*args, **kwargs):
+        env = _fail(*args, **kwargs)
+        env["problems"] = input_problems + env["problems"]
         return env
 
     ok, detail = health()
     if not ok:
-        return _fail(task, "model-unavailable", detail)
+        return fail(task, "model-unavailable", detail)
 
     rendered = task_logic.render_input(bundle)
     if RECORD.get("locality") != "local":
@@ -337,24 +343,24 @@ def invoke(bundle, timeout=None, task="ask"):
             payload = json.loads(resp.read().decode())
     except (urllib.error.HTTPError, urllib.error.URLError, OSError,
             json.JSONDecodeError) as e:
-        return _fail(task, "model-call-failed", repr(e))
+        return fail(task, "model-call-failed", repr(e))
 
     try:
         text = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        return _fail(task, "model-response-malformed",
-                     f"unexpected provider payload shape: {str(payload)[:300]}",
-                     binding=_binding_report(payload.get("model")
-                                             if isinstance(payload, dict) else None))
+        return fail(task, "model-response-malformed",
+                    f"unexpected provider payload shape: {str(payload)[:300]}",
+                    binding=_binding_report(payload.get("model")
+                                            if isinstance(payload, dict) else None))
 
     parsed = extract_json(text)
     if parsed is None:
         # Content that exists but is not parseable
         # JSON is a malformed upstream response — documented error code and
         # a 5xx at the HTTP layer, never a bare 200. Raw text retained.
-        env = _fail(task, "model-response-malformed",
-                    "model content did not parse as JSON",
-                    binding=_binding_report(payload.get("model")))
+        env = fail(task, "model-response-malformed",
+                   "model content did not parse as JSON",
+                   binding=_binding_report(payload.get("model")))
         env["raw"] = text
         env["timing"]["latency_s"] = round(time.monotonic() - started, 3)
         return env
@@ -364,7 +370,7 @@ def invoke(bundle, timeout=None, task="ask"):
     # emitted. The unwrapping fact travels in binding.unwrapped only.
     unwrapped = parsed.pop("_unwrapped_from", None)
 
-    problems = validate_output(parsed, bundle)
+    problems = input_problems + validate_output(parsed, bundle)
     echoed = payload.get("model")
     if not echoed:
         identity = "unverified"

@@ -49,7 +49,7 @@ the single source of the machinery every created Cog carries.
    rule covers `templates/op/src/` (Op machinery 0.5.0), where the
    author-owned part is op.yaml and nothing else, and
    `templates/code-cog/src/` (code-cog machinery 0.1.0) and
-   `templates/decision-cog/src/` (decision-cog machinery 0.1.1).
+   `templates/decision-cog/src/` (decision-cog machinery 0.1.2).
 2. **Envelope v1 is the emitted contract** (ENVELOPE.md): fixed `payload`
    key, structured problems, ok-may-carry-problems (gates decide), binding
    identity in every result. Changing it = versioning event, not an edit.

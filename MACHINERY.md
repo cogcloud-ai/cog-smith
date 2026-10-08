@@ -1414,3 +1414,15 @@ model presets are removed; other deployments use explicit endpoint/model options
 The default generated model source is the manifest-listed cog-qwen sibling.
 The descriptor template explains its semantics without private review citations.
 Masters are re-copied byte-identically into all three suite context Cogs.
+
+## Input severity (issue #13): context 0.4.5 / code 0.1.6 / decision 0.1.2
+
+Input checks allow work only for `warning` or `warn` problems; errors, missing
+severity and unrecognised severity refuse work. Refusal details name only the
+refusing findings, while envelopes retain all input findings. Warning-only inputs proceed. Their findings remain
+in envelope v1 `problems` together with output findings, including on later
+invocation failures. Decision `prepare` admits warning-only inputs; `finish`
+rechecks them and reports the warnings. Generated suites cover warning-only,
+error-only, mixed-severity inputs, both warning spellings, unrecognised and null
+severities, and warnings followed by a failed invocation.
+The envelope version and Op/Workbench responsibilities are unchanged.
