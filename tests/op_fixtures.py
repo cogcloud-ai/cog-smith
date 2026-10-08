@@ -160,14 +160,17 @@ def write_cog(parent, name, kind="code", reaches=(), task="ask"):
     return root
 
 
-def authority_doc(read=(REPO,), write=(REPO,)):
+def authority_doc(read=(REPO,), write=(REPO,), resource="github",
+                  key="targets"):
+    """An admission. KEY is `targets`, or `repositories` for a document
+    written before the neutral name existed."""
     operations = []
     if read is not None:
-        operations.append({"resource": "github", "action": "read",
-                           "repositories": list(read)})
+        operations.append({"resource": resource, "action": "read",
+                           key: list(read)})
     if write is not None:
-        operations.append({"resource": "github", "action": "write",
-                           "repositories": list(write)})
+        operations.append({"resource": resource, "action": "write",
+                           key: list(write)})
     return {"schema": AUTHORITY_SCHEMA, "operations": operations}
 
 

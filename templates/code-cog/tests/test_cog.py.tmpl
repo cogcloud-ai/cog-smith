@@ -32,8 +32,8 @@ def grant(**overrides):
         "recipient": {"step": "step", "cog": dict(cog_core.SELF_ID)},
         "issued_at": cog_core.utc_now(),
         "issued_by": {"kind": "admission"},
-        "operations": [{"resource": "github", "action": "read",
-                        "repositories": ["example-org/example-repo"]}],
+        "operations": [{"resource": "docs-site", "action": "read",
+                        "targets": ["docs.example.org/handbook"]}],
         "valid": {"expires_at": (datetime.now(timezone.utc)
                                  + timedelta(hours=1)).isoformat(),
                   "run_id": "run-1"},
@@ -131,11 +131,34 @@ class TestGrantChecks(unittest.TestCase):
         self.assertEqual(code, "grant-wrong-recipient")
 
     def test_reads_and_writes_are_checked_against_the_grant(self):
-        ok, _ = cog_core.read_allowed(grant(), "example-org/example-repo")
+        # Not a code host: a resource is any name the admission uses, and a
+        # target is an opaque string under it.
+        ok, _ = cog_core.read_allowed(grant(), "docs.example.org/handbook",
+                                      resource="docs-site")
         self.assertTrue(ok)
-        ok, detail = cog_core.read_allowed(grant(), "someone/else")
+        ok, detail = cog_core.read_allowed(grant(), "docs.example.org/private",
+                                           resource="docs-site")
         self.assertFalse(ok)
         self.assertIn("not in this grant", detail)
+
+    def test_the_resource_comes_from_the_single_declared_reaches_entry(self):
+        one = [{"resource": "docs-site", "actions": ["read"]}]
+        with mock.patch.object(cog_core, "REACHES", one):
+            ok, detail = cog_core.read_allowed(grant(),
+                                               "docs.example.org/handbook")
+        self.assertTrue(ok, detail)
+
+    def test_several_declared_resources_require_one_to_be_named(self):
+        two = [{"resource": "docs-site", "actions": ["read"]},
+               {"resource": "tickets", "actions": ["read"]}]
+        with mock.patch.object(cog_core, "REACHES", two):
+            ok, detail = cog_core.read_allowed(grant(),
+                                               "docs.example.org/handbook")
+            self.assertFalse(ok)
+            self.assertIn("pass resource=", detail)
+            ok, detail = cog_core.read_allowed(
+                grant(), "docs.example.org/handbook", resource="docs-site")
+        self.assertTrue(ok, detail)
 
 
 class TestJournal(unittest.TestCase):

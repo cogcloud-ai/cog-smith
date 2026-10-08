@@ -1,8 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Describes:** cog-smith Op machinery 0.7.1 / context-cog machinery 0.4.5 /
-code-cog machinery 0.1.6 / decision-cog machinery 0.1.3 (tested against the
+**Describes:** cog-smith Op machinery 0.8.0 / context-cog machinery 0.4.5 /
+code-cog machinery 0.2.0 / decision-cog machinery 0.1.3 (tested against the
 machinery constants)  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
@@ -726,9 +726,13 @@ Declared, never inferred:
 
 ```toml
 [[tool.cog.reaches]]
-resource = "github"
+resource = "docs-site"
 actions = ["read"]
 ```
+
+A resource is any name the Op's admission uses — a code host, a site, a
+document store, an API — and what a grant lets you touch under it is a list
+of `targets`, each an opaque string.
 
 A Cog whose `reaches` is non-empty refuses to run without a grant
 (`no-grant`), before `run` is ever called. The Op runner issues the grant
@@ -742,12 +746,19 @@ that this Cog is its recipient (`grant-invalid`, `grant-expired`,
 `--run-id` is `grant-invalid`) — and gives you the per-call checks:
 
 ```python
-ok, detail = cog_core.read_allowed(grant, "example-org/example-repo")
+ok, detail = cog_core.read_allowed(grant, "docs.example.org/handbook")
 ok, detail = cog_core.write_allowed(
     grant, change_id,
     fetch_target_sha256(change),                      # fetched NOW
     content_sha256=cog_core.change_content_sha256(change))   # computed
 ```
+
+The checks are made against the resource of your single declared `reaches`
+entry — `docs-site` above. There is no default resource: a Cog that declares
+several passes `resource=` on every check, and one that forgets is denied
+with `pass resource=` in the detail rather than checked against a resource
+it never meant (code-cog machinery 0.2.0). `cog_core.declared_resource()`
+returns the same name for your `cog_core.use(...)` entries.
 
 Call one before EVERY external call — they re-check expiry and run binding
 each time, so a long invocation cannot keep acting on a grant that has since
@@ -768,9 +779,11 @@ computes it — from the change you are ABOUT TO APPLY. Never forward the
 checks that the bundle agrees with itself, so content edited under an
 approved id would pass.
 
-A grant is read strictly: `repositories` is a LIST of strings (a bare string
+A grant is read strictly: `targets` is a LIST of strings (a bare string
 is refused by name, never membership-tested into authorizing a substring of
-itself), and a malformed `changes` authorizes nothing.
+itself), and a malformed `changes` authorizes nothing. `repositories` is the
+earlier name for `targets` and is still read; a grant operation that states
+both is denied.
 
 **The honesty rule.** This process runs as its owner, with the owner's
 ambient credentials. A grant is not a sandbox: it is a document your code

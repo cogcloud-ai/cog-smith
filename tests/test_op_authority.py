@@ -29,7 +29,7 @@ def spec_doc(**extra):
     """example-reader -> compose (human Gate) -> example-writer."""
     read = fx.cog_step("example-reader", authority={
         "requires": [{"resource": "github", "action": "read",
-                      "repositories": {"$from": "inputs.repositories"}}]})
+                      "targets": {"$from": "inputs.repositories"}}]})
     read["input"] = {"repositories": {"$from": "inputs.repositories"}}
     compose = fx.cog_step("compose", depends_on=["example-reader"],
                           gate={"policy": "human", "guards": []})
@@ -143,7 +143,7 @@ class AuthorityTests(AuthorityCase):
         self.assertEqual(grant["schema"], op_runner.GRANT_SCHEMA)
         self.assertEqual(grant["operations"],
                          [{"resource": "github", "action": "read",
-                           "repositories": [REPO]}])
+                           "targets": [REPO]}])
         self.assertEqual(grant["recipient"]["cog"]["id"],
                          "openteams/cog-example-reader")
         self.assertEqual(grant["issued_by"]["kind"], "admission")
@@ -250,8 +250,108 @@ class AuthorityTests(AuthorityCase):
         code, output, track = self.start(request={"repositories": [["a"]]})
         record = self.step(track, "example-reader")
         self.assertEqual(record["status"], "denied")
-        self.assertIn("not a list of repositories", record["gate"]["reasons"][0])
+        self.assertIn("not a list of targets", record["gate"]["reasons"][0])
         self.assertEqual(self.fake.calls, [])
+
+    # ---- `targets` is the name; `repositories` is its alias (0.8.0) ----
+
+    def legacy_doc(self):
+        doc = spec_doc()
+        requirement = doc["steps"][0]["authority"]["requires"][0]
+        requirement["repositories"] = requirement.pop("targets")
+        return doc
+
+    def test_an_existing_spec_and_admission_still_issue_the_grant_they_did(self):
+        code, output, track = self.start(
+            doc=self.legacy_doc(),
+            authority=fx.authority_doc(key="repositories"))
+        self.assertEqual(code, op_runner.PAUSED_EXIT)
+        record = self.step(track, "example-reader")
+        grant = json.loads(Path(record["grant"]).read_text())
+        # the key the requirement used, so an existing Cog still reads it
+        self.assertEqual(grant["operations"],
+                         [{"resource": "github", "action": "read",
+                           "repositories": [REPO]}])
+        self.assertEqual(track["grants"][0]["operations"],
+                         [{"resource": "github", "action": "read", "count": 1}])
+
+    def test_either_name_in_the_admission_covers_either_name_in_the_spec(self):
+        for doc, key in ((self.legacy_doc(), "targets"),
+                         (spec_doc(), "repositories")):
+            with self.subTest(admission=key):
+                code, output, track = self.start(
+                    doc=doc, authority=fx.authority_doc(key=key))
+                self.assertEqual(
+                    self.step(track, "example-reader")["status"], "passed")
+
+    def test_a_requirement_stating_both_names_is_refused_at_load(self):
+        doc = spec_doc()
+        doc["steps"][0]["authority"]["requires"][0]["repositories"] = [REPO]
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.validate(doc)
+        self.assertIn("declares both targets and repositories",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_write_requirement_stating_both_names_is_refused_at_load(self):
+        doc = spec_doc()
+        op_spec.validate(doc)  # the human-gated write is valid as it stands
+        requirement = doc["steps"][2]["authority"]["requires"][0]
+        requirement["targets"] = [REPO]
+        requirement["repositories"] = [OTHER_REPO]
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.validate(doc)
+        self.assertEqual(
+            [p for p in caught.exception.problems
+             if "declares both targets and repositories" in p],
+            ["Op step 'example-writer' authority.requires[0] declares both "
+             "targets and repositories; repositories is the earlier name for "
+             "targets, and a requirement states one of them."])
+
+    def test_an_admission_stating_both_names_is_refused(self):
+        doc = fx.authority_doc()
+        doc["operations"][0]["repositories"] = [OTHER_REPO]
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.start(authority=doc)
+        self.assertIn("declares both targets and repositories",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_read_requirement_naming_no_targets_is_refused(self):
+        doc = spec_doc()
+        del doc["steps"][0]["authority"]["requires"][0]["targets"]
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.validate(doc)
+        self.assertIn("declares no targets",
+                      "\n".join(caught.exception.problems))
+
+    def test_a_site_is_a_target_like_any_other(self):
+        # Nothing in the mechanism is a code host: the resource is a name the
+        # admission and the Cog's `reaches` agree on, and a target is an
+        # opaque string under it.
+        site, other = "docs.example.org/handbook", "docs.example.org/private"
+        reader = fx.cog_step("site-reader", authority={
+            "requires": [{"resource": "docs-site", "action": "read",
+                          "targets": {"$from": "inputs.pages"}}]})
+        reader["input"] = {"pages": {"$from": "inputs.pages"}}
+        doc = fx.spec_doc([reader], inputs=[
+            {"name": "pages", "description": "the pages to read",
+             "required": True}])
+        fx.write_cog(self.root, "site-reader", task="ask",
+                     reaches=[{"resource": "docs-site", "actions": ["read"]}])
+        admission = fx.authority_doc(read=(site,), write=None,
+                                     resource="docs-site")
+        code, output, track = self.start(doc=doc, authority=admission,
+                                         request={"pages": [site]})
+        self.assertEqual(code, 0)
+        record = self.step(track, "site-reader")
+        grant = json.loads(Path(record["grant"]).read_text())
+        self.assertEqual(grant["operations"],
+                         [{"resource": "docs-site", "action": "read",
+                           "targets": [site]}])
+        code, output, track = self.start(doc=doc, authority=admission,
+                                         request={"pages": [site, other]})
+        record = self.step(track, "site-reader")
+        self.assertEqual(record["status"], "denied")
+        self.assertIn(other, record["gate"]["reasons"][0])
 
     def test_retry_once_is_refused_on_a_step_that_carries_authority(self):
         doc = spec_doc()

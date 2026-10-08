@@ -155,7 +155,8 @@ class GuideTests(unittest.TestCase):
                 steps = block if isinstance(block, list) else [block]
                 doc = fx.spec_doc(steps, inputs=[{"name": "github_items"},
                                                  {"name": "priority_rubric"},
-                                                 {"name": "repo_config"}])
+                                                 {"name": "repo_config"},
+                                                 {"name": "site_config"}])
                 self.assertEqual(problems(doc), [])
 
 
