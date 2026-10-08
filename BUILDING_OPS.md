@@ -614,7 +614,7 @@ and the admission say:
 
 ```yaml
 - id: read-handbook
-  cog: {id: openteams/cog-site-reader, source: ../cog-site-reader, task: run}
+  cog: {id: openteams/cog-site-reader, source: cogs/site-reader, task: run}
   input: {pages: {$from: inputs.site_config.pages}}
   authority:
     requires:
