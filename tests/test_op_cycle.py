@@ -80,6 +80,14 @@ class CycleTests(unittest.TestCase):
         with self.assertRaisesRegex(op_spec.OpSpecError, 'child Track'):
             op_cycle.resume(self.package, output['cycle_dir'], self.decide(output))
 
+    def test_repriced_reservations_cannot_lower_declared_costs(self):
+        code, output = op_cycle.start(self.package, self.request)
+        state=json.loads(Path(output['cycle']).read_text())
+        state['reservations'][0]['units']=0;state['cost_units_reserved']=0
+        Path(output['cycle']).write_text(json.dumps(state))
+        with self.assertRaisesRegex(op_spec.OpSpecError,'declared policy'):
+            op_cycle.resume(self.package,output['cycle_dir'],self.decide(output))
+
     def test_bad_decision_keeps_paused_cycle_status(self):
         code, output = op_cycle.start(self.package, self.request)
         path = self.decide(output); doc = json.loads(path.read_text())
