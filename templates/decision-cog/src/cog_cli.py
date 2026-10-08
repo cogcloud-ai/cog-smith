@@ -41,6 +41,8 @@ def saved_result(document):
     if isinstance(document, dict) and "envelope" in document:
         if type(document["envelope"]) is not int or document["envelope"] != 1:
             raise ValueError("Expected envelope v1")
+        if document.get("ok") is not True:
+            raise ValueError("Expected a successful envelope")
         if "provider_result" not in document:
             raise ValueError("Envelope has no validated provider_result; capture a new run")
         return document["provider_result"]
@@ -66,7 +68,7 @@ def export_fixtures(run_dir, step_id, name):
         target = Path(path)
         target = (target if target.is_absolute() else run_dir / target).resolve()
         if not target.is_relative_to(run_dir):
-            raise ValueError("Recorded file is outside the run directory")
+            raise ValueError("Recorded file is outside the run directory; export from the original run location")
         return read(target)
 
     fixtures = []
@@ -87,6 +89,9 @@ def export_fixtures(run_dir, step_id, name):
             raise ValueError("Recorded provider result is invalid: " + problems[0])
         decision = env["payload"]["decision"]
         cog_core.Draft202012Validator(cog_core.OUTPUT_SCHEMA).validate(env["payload"])
+        replayed = cog_core.finish(bundle, result, replay_binding())
+        if not replayed.get("ok") or replayed["payload"]["decision"] != decision:
+            raise ValueError("Replayed decision differs from the recorded decision")
         fixtures.append({"bundle": bundle, "result": result, "decision": decision})
     if not fixtures:
         raise ValueError("Step contains no recorded elements")
@@ -113,9 +118,9 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class TestRecordedDecisions(unittest.TestCase):
     def test_replay(self):
-        for case in sorted(Path(__file__).parent.iterdir()):
-            if not case.is_dir():
-                continue
+        cases = sorted(case for case in Path(__file__).parent.iterdir() if case.is_dir())
+        self.assertTrue(cases, "No recorded elements to replay")
+        for case in cases:
             with self.subTest(element=case.name):
                 call = subprocess.run([sys.executable, str(ROOT / "src/cog_cli.py"),
                     "replay", "--bundle", str(case / "bundle.json"),
@@ -131,6 +136,7 @@ class TestRecordedDecisions(unittest.TestCase):
         shim = cog_core.ROOT / "tests" / ("test_fixture_" + name.replace("-", "_") + ".py")
         if shim.exists():
             raise ValueError("Generated test already exists")
+        staging.chmod(parent.stat().st_mode & 0o777)
         staging.rename(destination)
         shim.write_text("import runpy\nfrom pathlib import Path\n"
                         + "TestRecordedDecisions = runpy.run_path(str(Path(__file__).parent / "

@@ -1436,3 +1436,7 @@ Replay accepts bare results and envelopes. The decision CLI adds
 decision per element and generate a provider-free replay test. It refuses
 missing or invalid records, other Cog identities and existing fixture sets.
 No provider selection, Op lifecycle policy or Workbench invocation code changes.
+
+Decision 0.1.3 review hardening: export verifies replayed decisions, preserves
+normal fixture directory permissions, and generated tests refuse empty sets.
+Replay refuses failed envelopes. Recorded paths require the original run location.

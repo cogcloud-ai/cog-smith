@@ -824,7 +824,7 @@ requires the `system-one/decisions` capability, and declares the class with
     cog-example-router/
     ├── COG.md
     ├── pixi.toml             # [tool.cog]; tasks: ask-composed, composition,
-    │                         #   prepare, replay, derive-schema, check, test
+    │                         #   prepare, replay, export-fixtures, derive-schema, check, test
     ├── context/
     │   ├── questions.json        # YOURS — the typed questions
     │   ├── input-schema.json     # YOURS
@@ -883,6 +883,10 @@ Older envelopes without this field require a bare result.
 From the decision Cog, extract one recorded Op step:
 
     pixi run export-fixtures -- --run /path/to/run --step triage --name thresholds
+
+Export from the original run location: recorded absolute paths are not relocated
+when a run is moved or copied. Export refuses decisions that differ when replayed
+with the current task logic.
 
 This writes `tests/fixtures/thresholds/<element>/bundle.json`, `result.json`
 and `decision.json`, plus a replay test and a discovery file in `tests/`.
