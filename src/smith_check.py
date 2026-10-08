@@ -311,8 +311,13 @@ def check(root, run_tests=False):
                 f"lifecycle task {t!r} missing from pixi.toml")
 
     if is_decision:
-        _check_decision(root, m, schemas, err)
+        _check_decision(root, m, schemas, err, warn)
 
+    produces = (m.get("io") or {}).get("produces")
+    if produces == [smith_core.STARTER_PRODUCES]:
+        warn("profile", "declarations",
+             f"io.produces is still the starter's value {produces} — name "
+             f"what this Cog produces")
     if not m.get("prohibits"):
         warn("profile", "declarations",
              "no prohibits declared — is the evidence-tier boundary really "
@@ -344,10 +349,11 @@ def _decision_contract():
     return module
 
 
-def _check_decision(root, m, schemas, err):
+def _check_decision(root, m, schemas, err, warn):
     """Decision class (declared by the `system_one` extension): the question
     set is valid, the output schema's $defs.answers is derived from it, and
-    the composition declaration asks for the System One capability."""
+    the composition declaration asks for the System One capability and for
+    no question type the set does not use."""
     contract = _decision_contract()
     ext = (m.get("extensions") or {}).get(smith_core.DECISION_EXTENSION) or {}
     if ext.get("contract") != "openteams/system-one-decision [0.1-draft]":
@@ -382,6 +388,12 @@ def _check_decision(root, m, schemas, err):
     if missing:
         err("profile", "decision", f"workbench_composition.required_features must "
                                    f"include the question types used: {missing}")
+    unused = sorted(set(composition.get("required_features") or []) - used)
+    if unused:
+        warn("profile", "decision",
+             f"workbench_composition.required_features names question types "
+             f"{rel} does not use: {unused} — each one narrows the providers "
+             f"that can be bound")
     output = schemas.get("output_schema")
     if isinstance(output, dict):
         derived = contract.answers_schema(questions)
