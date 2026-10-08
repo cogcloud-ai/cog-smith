@@ -623,8 +623,8 @@ def main():
 
     q = op_sub.add_parser("decide", help="prepare a human decision from a paused run")
     q.add_argument("run", metavar="RUN_DIR")
-    q.add_argument("--approve", nargs="+", default=[])
-    q.add_argument("--reject", nargs="+", default=[])
+    q.add_argument("--approve", action="extend", nargs="+", default=[])
+    q.add_argument("--reject", action="extend", nargs="+", default=[])
     remainder = q.add_mutually_exclusive_group()
     remainder.add_argument("--reject-rest", action="store_true")
     remainder.add_argument("--defer-rest", action="store_true")

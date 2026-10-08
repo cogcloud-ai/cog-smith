@@ -25,7 +25,8 @@ def invoke(root, bundle, suite_type=None):
     require(checksum == digest(config), 'Installed composition integrity failure.')
     composition = config['composition']
     suite = (suite_type or Suite)(workspace=workspace, state=workspace / config['state'])
-    repair = suite.repair_command(root, composition['binding'])
+    repair = (suite.repair_command(root, composition['binding']) if hasattr(suite, 'repair_command')
+              else 'activate the composition again from the public cog-workbench directory')
     require(config['host_sha256'] == package_digest(host), 'Workbench host changed; run ' + repair)
     require(suite.root(composition['path']) == root, 'Installed composition belongs to another consumer; run ' + repair)
     result = suite.invoke(composition, bundle)

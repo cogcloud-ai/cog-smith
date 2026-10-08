@@ -26,9 +26,12 @@ If steps require authority, Smith also creates `examples/admission.json` with
 empty target lists. Fill only the targets you intend to admit, then pass
 `--authority examples/admission.json`. Empty lists authorize nothing.
 
-When a human Gate pauses, use `cogsmith op decide RUN_DIR --approve ID
---defer-rest --by NAME` (or `--accept` for an artifact Gate) to prepare a
-digest-bound decision. Add `--resume --package .` to apply it.
+When a human Gate pauses, run from the public cog-smith directory:
+`pixi run python src/cogsmith_cli.py op decide RUN_DIR --approve ID
+--defer-rest --by NAME` (or `--accept` for an artifact Gate). This prepares a
+digest-bound decision and prints its file path. Apply that file through this
+Op's declared resume task. For a bounded cycle, use its `cycle --resume`
+task so the cycle retains its transitions and budget.
 
 Each run writes `runs/<run id>/` with the input request, every step request,
 every Cog envelope unchanged, and `track.json` — rewritten after every step,
