@@ -588,9 +588,10 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
     started = time.monotonic()
 
     input_problems = validate_input(bundle)
-    if any(p.get("severity", "error") == "error" for p in input_problems):
+    refusing = [p for p in input_problems if p.get("severity") not in ("warning", "warn")]
+    if refusing:
         env = _fail(task, "invalid-input",
-                    "; ".join(p["detail"] for p in input_problems[:5]))
+                    "; ".join(p["detail"] for p in refusing[:5]))
         env["problems"] = input_problems
         return env
 
@@ -601,10 +602,10 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
 
     if REACHES and grant is None:
         return fail(task, "no-grant",
-                     f"{SELF_ID['id']} declares reaches "
-                     f"{[r.get('resource') for r in REACHES]} and was invoked "
-                     f"with no grant; a code Cog does not reach outside the "
-                     f"run without one")
+                    f"{SELF_ID['id']} declares reaches "
+                    f"{[r.get('resource') for r in REACHES]} and was invoked "
+                    f"with no grant; a code Cog does not reach outside the "
+                    f"run without one")
     if grant is not None:
         code, detail = check_grant(grant, run_id=run_id, now=now)
         if code:
@@ -626,10 +627,10 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
             return fail(task, "journal-corrupt", str(exc))
         except OSError as exc:
             return fail(task, "journal-unreadable",
-                         f"{journal.path} cannot be read "
-                         f"({type(exc).__name__}: {exc}); a Cog that cannot "
-                         f"read its journal cannot know what it already did "
-                         f"outside the run, and does nothing")
+                        f"{journal.path} cannot be read "
+                        f"({type(exc).__name__}: {exc}); a Cog that cannot "
+                        f"read its journal cannot know what it already did "
+                        f"outside the run, and does nothing")
 
     try:
         result = task_logic.run(bundle, grant, journal)
@@ -639,7 +640,7 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
         return fail(task, "task-failed", f"{type(exc).__name__}: {exc}")
     if (not isinstance(result, tuple) or len(result) != 2):
         return fail(task, "task-failed",
-                     "task_logic.run must return (payload, problems)")
+                    "task_logic.run must return (payload, problems)")
     payload, task_problems = result
     # The package's output checker runs inside the SAME exception boundary as
     # `run`: a checker that trips over a payload it did not
@@ -652,6 +653,6 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
         return fail(task, "journal-corrupt", str(exc))
     except Exception as exc:                    # the package's own checker
         return fail(task, "output-check-failed",
-                     f"{type(exc).__name__}: {exc}")
+                    f"{type(exc).__name__}: {exc}")
     return _envelope(task, True, payload=payload, problems=problems,
                      latency=round(time.monotonic() - started, 3))

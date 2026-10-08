@@ -227,7 +227,6 @@ class TestSalvageAndIdentity(unittest.TestCase):
         self.assertFalse(cog_core.models_match("", "m-1"))
 
 
-
 class TestInputSeverity(unittest.TestCase):
     def invoke_sample(self):
         example = (ROOT / "context" / "output-example.json").read_text()
@@ -247,7 +246,7 @@ class TestInputSeverity(unittest.TestCase):
     def test_input_errors_refuse_even_alongside_warnings(self):
         error = cog_core.problem("input-bad", "required evidence is missing")
         warning = cog_core.problem("input-thin", "optional evidence is thin", "warning")
-        for problems in ([error], [warning, error]):
+        for problems in ([error], [warning, error], [warning] * 5 + [error]):
             with self.subTest(problems=problems), \
                  mock.patch.object(task_logic, "check_input", return_value=problems):
                 with mock.patch.object(cog_core, "health") as work:
@@ -255,6 +254,29 @@ class TestInputSeverity(unittest.TestCase):
                 work.assert_not_called()
                 self.assertFalse(env["ok"])
                 self.assertEqual(env["error"]["code"], "invalid-input")
+                self.assertEqual(env["error"]["detail"], error["detail"])
+                self.assertEqual(env["problems"], problems)
+
+    def test_warn_input_proceeds(self):
+        warning = cog_core.problem("input-thin", "optional evidence is thin", "warn")
+        with mock.patch.object(task_logic, "check_input", return_value=[warning]):
+            env = self.invoke_sample()
+        self.assertTrue(env["ok"], env)
+        self.assertIn(warning, env["problems"])
+
+    def test_unrecognised_input_severity_refuses(self):
+        for severity in ("Error", "ERROR", "fatal", None, "missing"):
+            rejected = cog_core.problem("input-bad", "unusable input", severity)
+            if severity == "missing":
+                del rejected["severity"]
+            with self.subTest(severity=severity), \
+                 mock.patch.object(task_logic, "check_input", return_value=[rejected]):
+                with mock.patch.object(cog_core, "health") as work:
+                    env = cog_core.invoke(sample_bundle())
+                work.assert_not_called()
+                self.assertFalse(env["ok"])
+                self.assertEqual(env["error"]["code"], "invalid-input")
+                self.assertEqual(env["problems"], [rejected])
 
     def test_input_warning_is_preserved_when_later_work_fails(self):
         warning = cog_core.problem("input-thin", "optional evidence is thin", "warning")

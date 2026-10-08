@@ -90,7 +90,6 @@ class TestTurn(unittest.TestCase):
             task_logic.questions = original
 
 
-
 class TestInputSeverity(unittest.TestCase):
     def invoke_sample(self):
         cog_core.prepare(sample_bundle())
@@ -109,13 +108,36 @@ class TestInputSeverity(unittest.TestCase):
     def test_input_errors_refuse_even_alongside_warnings(self):
         error = cog_core.problem("input-bad", "required evidence is missing")
         warning = cog_core.problem("input-thin", "optional evidence is thin", "warning")
-        for problems in ([error], [warning, error]):
+        for problems in ([error], [warning, error], [warning] * 5 + [error]):
             with self.subTest(problems=problems), \
                  mock.patch.object(task_logic, "check_input", return_value=problems):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, "required evidence is missing"):
                     cog_core.prepare(sample_bundle())
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, "required evidence is missing"):
                     cog_core.finish(sample_bundle(), sample_result())
+
+    def test_warn_input_proceeds(self):
+        warning = cog_core.problem("input-thin", "optional evidence is thin", "warn")
+        with mock.patch.object(task_logic, "check_input", return_value=[warning]):
+            env = self.invoke_sample()
+        self.assertTrue(env["ok"], env)
+        self.assertIn(warning, env["problems"])
+
+    def test_unrecognised_input_severity_refuses(self):
+        for severity in ("Error", "ERROR", "fatal", None, "missing"):
+            rejected = cog_core.problem("input-bad", "unusable input", severity)
+            if severity == "missing":
+                del rejected["severity"]
+            with self.subTest(severity=severity), \
+                 mock.patch.object(task_logic, "check_input", return_value=[rejected]):
+                with mock.patch.object(task_logic, "state") as work:
+                    with self.assertRaisesRegex(ValueError, "unusable input"):
+                        cog_core.prepare(sample_bundle())
+                work.assert_not_called()
+                with mock.patch.object(task_logic, "decide") as work:
+                    with self.assertRaisesRegex(ValueError, "unusable input"):
+                        cog_core.finish(sample_bundle(), sample_result())
+                work.assert_not_called()
 
     def test_input_warning_is_preserved_when_later_work_fails(self):
         warning = cog_core.problem("input-thin", "optional evidence is thin", "warning")

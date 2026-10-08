@@ -49,11 +49,12 @@ Field rules:
 - **`problems`** — the Cog's self-reported contract-check findings,
   structured for Guards and Gates to consume: `check` (machine-readable
   category: `schema`, `grounding`, `citation`, `identity`, `input`, …),
-  `detail` (human sentence), `severity` (`error` | `warning`; legacy `warn` is also non-blocking). These are
+  `detail` (human sentence), `severity` (`error` | `warning` | `warn`; the warning spellings are equivalent). These are
   produced by the Cog checking its OWN declared contract; an independent
   Guard verifies against the system's requirements and never treats this
   self-report as its verdict. `check_input` errors refuse the invocation;
-  input warnings allow work and remain in `problems`. `check_output`
+  only input `warning` or `warn` findings allow work and remain in `problems`.
+  Missing or unrecognised input severity refuses the invocation. `check_output`
   findings of either severity remain in `problems` for the Op's Gate to
   assess. A warning alone does not make `ok` false.
 - **`binding`** — the Track fields: the complete binding identity copied

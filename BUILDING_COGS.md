@@ -603,9 +603,10 @@ This is the only author-owned Python module under src/. It has three jobs:
 Return structured problems through the shared cog_core.problem helper. Do not
 raise ordinary validation failures as exceptions. This rule applies to context,
 code, and decision Cogs: `check_input` problems with severity `error` (the
-helper's default) refuse the invocation before work begins. Severity `warning`
+helper's default) refuse the invocation before work begins. Severity `warning` or `warn`
 allows work to proceed and is carried into the result envelope's `problems`,
-alongside `check_output` findings. Output findings of either severity remain
+alongside `check_output` findings. Missing or unrecognised input severity
+refuses the invocation. Output findings of either severity remain
 in `problems`; the coordinating Op's Gate decides whether to accept the result.
 Packaged checks report the Cog's bounded work contract. They do not make
 lifecycle decisions or replace independent Guards; Workbench supplies the

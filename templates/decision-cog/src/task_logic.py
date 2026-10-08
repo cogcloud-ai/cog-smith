@@ -28,7 +28,8 @@ ESCALATE_FRUSTRATION = 1.5
 
 def check_input(bundle):
     """Input checks beyond the declared input schema. Return a list of
-    cog_core.problem(...) dicts (import inside to avoid a load-time cycle)."""
+    cog_core.problem(...) dicts (import inside to avoid a load-time cycle).
+    error (the default) refuses the invocation; warning proceeds and is carried into problems."""
     import cog_core
     problems = []
     if not str(bundle.get("body", "")).strip():

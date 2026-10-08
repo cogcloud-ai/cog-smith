@@ -176,8 +176,9 @@ def prepare(bundle):
     """Input bundle -> the System One turn a host sends to its admitted
     provider. No provider is named here; the host's binding decides."""
     problems = validate_input(bundle)
-    if any(p.get("severity", "error") == "error" for p in problems):
-        raise ValueError("Input failed packaged checks: " + json.dumps(problems[:5]))
+    refusing = [p for p in problems if p.get("severity") not in ("warning", "warn")]
+    if refusing:
+        raise ValueError("Input failed packaged checks: " + json.dumps(refusing[:5]))
     task = {"state": task_logic.state(bundle), "questions": questions_for(bundle)}
     contract.check_task(task)
     return {"consumer": dict(SELF_ID), "context": [], "task": task}
@@ -187,8 +188,9 @@ def finish(bundle, result, provenance=None):
     """Turn result -> envelope v1. Malformed answers fail the call; decision
     and output checks are reported as problems for a Gate to weigh."""
     problems = validate_input(bundle)
-    if any(p.get("severity", "error") == "error" for p in problems):
-        raise ValueError("Input failed packaged checks: " + json.dumps(problems[:5]))
+    refusing = [p for p in problems if p.get("severity") not in ("warning", "warn")]
+    if refusing:
+        raise ValueError("Input failed packaged checks: " + json.dumps(refusing[:5]))
     asked = questions_for(bundle)
     contract_problems = contract.result_problems(result, asked) if isinstance(result, dict) else ["result is not an object"]
     if contract_problems:

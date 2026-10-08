@@ -15,7 +15,8 @@ in, cited highlights come out, every quote verified verbatim. Replace it.
 def check_input(bundle):
     """Task-specific input checks beyond the input schema.
     Return a list of cog_core.problem(...) dicts (import inside to avoid a
-    cycle at module load)."""
+    cycle at module load).
+    error (the default) refuses the invocation; warning proceeds and is carried into problems."""
     import cog_core
     problems = []
     seen = set()

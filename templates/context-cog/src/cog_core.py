@@ -293,9 +293,10 @@ def invoke(bundle, timeout=None, task="ask"):
         return _fail(task, "binding-invalid", violations)
 
     input_problems = validate_input(bundle)
-    if any(p.get("severity", "error") == "error" for p in input_problems):
+    refusing = [p for p in input_problems if p.get("severity") not in ("warning", "warn")]
+    if refusing:
         env = _fail(task, "invalid-input",
-                    "; ".join(p["detail"] for p in input_problems[:5]))
+                    "; ".join(p["detail"] for p in refusing[:5]))
         env["problems"] = input_problems
         return env
 
@@ -348,9 +349,9 @@ def invoke(bundle, timeout=None, task="ask"):
         text = payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return fail(task, "model-response-malformed",
-                     f"unexpected provider payload shape: {str(payload)[:300]}",
-                     binding=_binding_report(payload.get("model")
-                                             if isinstance(payload, dict) else None))
+                    f"unexpected provider payload shape: {str(payload)[:300]}",
+                    binding=_binding_report(payload.get("model")
+                                            if isinstance(payload, dict) else None))
 
     parsed = extract_json(text)
     if parsed is None:
@@ -358,8 +359,8 @@ def invoke(bundle, timeout=None, task="ask"):
         # JSON is a malformed upstream response — documented error code and
         # a 5xx at the HTTP layer, never a bare 200. Raw text retained.
         env = fail(task, "model-response-malformed",
-                    "model content did not parse as JSON",
-                    binding=_binding_report(payload.get("model")))
+                   "model content did not parse as JSON",
+                   binding=_binding_report(payload.get("model")))
         env["raw"] = text
         env["timing"]["latency_s"] = round(time.monotonic() - started, 3)
         return env
