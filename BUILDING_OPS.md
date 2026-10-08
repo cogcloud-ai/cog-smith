@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Describes:** cog-smith Op machinery 0.8.0 (tested against the machinery constant)
+**Describes:** cog-smith Op machinery 0.8.1 (tested against the machinery constant)
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from an internal Op-runner contract (a design note,
 not distributed).
@@ -631,7 +631,7 @@ and the admission say:
 A request for `docs.example.org/private` is denied at issuance, exactly as an
 unadmitted repository is. `repositories` is the earlier name for `targets`
 and is still read, in the admission and in `authority.requires`, so an
-existing document loads unchanged (Op machinery 0.8.0). One operation states
+existing document loads unchanged (Op machinery 0.8.1). One operation states
 one of the two names; stating both is refused. A read grant names its
 targets under the key its requirement used, so an existing spec keeps
 issuing the grant an existing Cog reads.
@@ -893,3 +893,28 @@ license remains supported. Generated Cogs and Ops include LICENSE.smith,
 NOTICE.smith, and LICENSING.md covering Smith-supplied material. Authors must
 include license terms for their own code, context, or Op specifications;
 selecting a package license does not relicense the copied machinery.
+
+## Prepare a human decision without copying hashes
+
+From a paused run, use Smith's client:
+
+```sh
+pixi run python src/cogsmith_cli.py op decide PATH_TO_RUN --approve change-a --defer-rest --by learner
+pixi run python src/cogsmith_cli.py op decide PATH_TO_RUN --approve change-a --reject-rest --by learner --resume --package PATH_TO_OP
+```
+
+All unmentioned proposals need an explicit `--reject-rest` or `--defer-rest`.
+Deferred ids appear in `steps.<id>.decision.deferred`: neither approved nor
+rejected, and never authorized for writing. Defer is a recorded disposition for
+this run, not a scheduler or automatic reminder. Artifact Gates instead use
+`--accept` or `--reject-artifact --reason ...`. The helper fills both artifact
+and payload digests, the timestamp and the supplied identity label. It writes a
+new decision input file, prints the document, and optionally invokes the existing
+package runtime. Identity is caller-supplied, not authenticated.
+
+New Ops with authority requirements also receive `examples/admission.json`.
+Its operations name the required resources/actions with **empty** target lists.
+Fill in the intended targets before admitting a real run; the generated file
+cannot authorize any target. For an Op that reaches nothing, no admission is
+needed or generated. Upgrade an older Op's machinery through the normal Smith
+process before using deferred verdicts; older runtimes refuse them.

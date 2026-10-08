@@ -22,6 +22,14 @@ pixi run op -- --request examples/request.json --dry-run   # plan only
 pixi run op -- --request examples/request.json             # the real run
 ```
 
+If steps require authority, Smith also creates `examples/admission.json` with
+empty target lists. Fill only the targets you intend to admit, then pass
+`--authority examples/admission.json`. Empty lists authorize nothing.
+
+When a human Gate pauses, use `cogsmith op decide RUN_DIR --approve ID
+--defer-rest --by NAME` (or `--accept` for an artifact Gate) to prepare a
+digest-bound decision. Add `--resume --package .` to apply it.
+
 Each run writes `runs/<run id>/` with the input request, every step request,
 every Cog envelope unchanged, and `track.json` — rewritten after every step,
 so an interrupted run still leaves a readable Track.

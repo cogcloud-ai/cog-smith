@@ -38,7 +38,7 @@ import op_spec         # noqa: E402
 # The Op machinery lineage (MACHINERY.md). Bumped here when a master
 # changes; `op check` reports it so a package's drift has a version to
 # name.
-MACHINERY_VERSION = "0.8.0"
+MACHINERY_VERSION = "0.8.1"
 MACHINERY = ("op_runner.py", "op_spec.py", "op_track.py")
 OP_TASKS = ("op", "test")
 PLACEHOLDERS = {"object": {}, "array": [], "integer": 0, "number": 0,
@@ -110,6 +110,15 @@ def example_request(spec):
     return out
 
 
+def example_admission(spec):
+    """Empty-scope placeholders never grant authority to real targets."""
+    pairs = sorted({(requirement['resource'], requirement['action'])
+                    for step in spec.ordered for requirement in op_spec.requirements(step)})
+    return {'schema': 'openteams/op-authority [0.1]',
+            'operations': [{'resource': resource, 'action': action, 'targets': []}
+                           for resource, action in pairs]}
+
+
 def plan(spec_path, dest):
     """{relative path: text or None} for every file `op new` would write.
     None means 'copy the template file verbatim'."""
@@ -132,6 +141,8 @@ def plan(spec_path, dest):
                                       default_flow_style=False, width=88)
     files["examples/request.json"] = json.dumps(
         example_request(spec), indent=2) + "\n"
+    if any(op_spec.requirements(step) for step in spec.ordered):
+        files["examples/admission.json"] = json.dumps(example_admission(spec), indent=2) + "\n"
     for rel, text in files.items():
         if rel.endswith((".yaml", ".toml", ".md", ".json")) and \
                 smith_core.TOKEN_RE.search(text):
