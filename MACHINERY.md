@@ -1501,7 +1501,7 @@ created Ops carry the new master byte-identically. The Smith client adds
 The per-invocation Cog fingerprint now also covers `scripts/`, `binding/` and
 `contracts/`, matching Workbench composition invalidation coverage. Changes to a
 declared usage adapter or contract can no longer reuse an old result during
-resume. Tests, examples, evals, lockfiles and prose remain outside this digest.
+resume. Tests, examples, evals, lockfiles and top-level prose remain outside this digest.
 Existing tracks created with older fingerprint coverage require their original
 runtime; upgrading the runtime changes the Op package and requires a new run.
 
@@ -1545,3 +1545,11 @@ this separately admitted identity. A changed provider cannot reuse an old answer
 
 Smith itself declares `op-decide` as a usage task so Workbench can prepare Gate
 decisions through the public operation instead of importing an internal helper.
+
+## Op machinery 0.9.1 — cycle review hardening
+
+Child Tracks record cycle ownership and refuse single-run continuation without
+the owning policy. Reservations precede asking checkpoints; resume cross-checks
+the ledger against non-imported child attempts. Consistent edits to every local
+receipt are not authenticated tamper protection. Refused decisions restore the
+cycle's prior status and discovered child paths remain recorded on exhaustion.

@@ -130,7 +130,7 @@ def drive(package, directory, state, phases, decision=None):
         state['cost_units_reserved'] += units
         state['reservations'].append({'phase': len(state['phases']), 'step': sid, 'units': units, 'at': op_track.utc_now()})
         save(state, directory)
-    policy = {**state['configuration'], 'reserve': reserve}
+    policy = {**state['configuration'], 'reserve': reserve, 'owner': str(Path(directory).resolve())}
     try:
         if not state['phases']:
             new_phase(package, directory, state, phases)
@@ -156,12 +156,22 @@ def drive(package, directory, state, phases, decision=None):
                 state['status'] = 'completed' if track['status'] == 'completed' else track['status']
                 save(state, directory)
                 return (0 if state['status'] == 'completed' else 1), summary(state, directory, {'outputs': track.get('outputs')})
+            prior_status = state['status']
             state['status'] = 'running'; save(state, directory)
-            if phase['run_dir']:
-                op_track.contained(Path(phase['run_dir']), directory)
-                code, child = op_runner.resume(phase_package, phase['run_dir'], decision_path=decision, cycle_policy=policy)
-            else:
-                code, child = op_runner.run(phase_package, phase['request'], cycle_policy=policy, seed=read(phase['seed']), request_dir=state['request_dir'])
+            try:
+                if phase['run_dir']:
+                    op_track.contained(Path(phase['run_dir']), directory)
+                    code, child = op_runner.resume(phase_package, phase['run_dir'], decision_path=decision, cycle_policy=policy)
+                else:
+                    code, child = op_runner.run(phase_package, phase['request'], cycle_policy=policy, seed=read(phase['seed']), request_dir=state['request_dir'])
+            except Exception:
+                state['status'] = prior_status
+                discovered = list((phase_package / 'runs').glob('*/track.json'))
+                if len(discovered) == 1:
+                    phase['run_dir'] = str(discovered[0].parent)
+                    phase['status'] = read(discovered[0])['status']
+                save(state, directory)
+                raise
             decision = None
             phase['run_dir'], phase['status'] = child['run_dir'], child['status']
             save(state, directory)
@@ -208,6 +218,20 @@ def resume(package, directory, decision=None):
         expected = {key: op_spec.evaluate(spec.doc['cycle'][key], {'inputs': spec.build_inputs(state['request']), 'steps': {}}) for key in ('max_attempts', 'max_cost_units')}
         if any(state[key] != value for key, value in expected.items()) or state['configuration'] != spec.doc['cycle'] or state['cost_units_reserved'] != sum(row['units'] for row in state['reservations']):
             raise op_spec.OpSpecError('Cycle limits or reservation ledger changed; inspect the saved cycle.')
+        from collections import Counter
+        recorded = Counter((row['phase'], row['step']) for row in state['reservations'])
+        for phase in state['phases']:
+            tracks = list((Path(phase['package']) / 'runs').glob('*/track.json'))
+            if len(tracks) > 1:
+                raise op_spec.OpSpecError('Ambiguous cycle child Tracks.')
+            if tracks:
+                child = read(tracks[0])
+                for step in child['steps']:
+                    if step.get('imported_from'):
+                        continue
+                    count = len(step.get('attempts') or [])
+                    if recorded[(phase['number'], step['id'])] < count:
+                        raise op_spec.OpSpecError('Cycle reservation ledger is smaller than the child Track invocation ledger.')
         if state['status'] in ('completed', 'completed-with-problems', 'rejected', 'budget-exhausted'):
             return (0 if state['status'] == 'completed' else 1), summary(state, directory)
         phases = op_spec.cycle_phases(spec.doc); preflight(package, phases)

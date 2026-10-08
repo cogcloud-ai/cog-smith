@@ -65,6 +65,29 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(output['step'], 'design')
         return op_cycle.resume(self.package, output['cycle_dir'], self.decide(output))
 
+    def test_plain_child_resume_cannot_bypass_cycle(self):
+        code, output = op_cycle.start(self.package, self.request)
+        phase = json.loads(Path(output['cycle']).read_text())['phases'][-1]
+        with self.assertRaisesRegex(op_spec.OpSpecError, 'bounded cycle'):
+            op_runner.resume(phase['package'], output['run_dir'], decision_path=self.decide(output))
+        self.assertEqual(len(self.calls), 1)
+
+    def test_erased_reservations_are_refused_against_child_attempts(self):
+        code, output = op_cycle.start(self.package, self.request)
+        state = json.loads(Path(output['cycle']).read_text())
+        state.update(reservations=[], cost_units_reserved=0)
+        Path(output['cycle']).write_text(json.dumps(state))
+        with self.assertRaisesRegex(op_spec.OpSpecError, 'child Track'):
+            op_cycle.resume(self.package, output['cycle_dir'], self.decide(output))
+
+    def test_bad_decision_keeps_paused_cycle_status(self):
+        code, output = op_cycle.start(self.package, self.request)
+        path = self.decide(output); doc = json.loads(path.read_text())
+        doc['payload_sha256'] = '0'*64; path.write_text(json.dumps(doc))
+        with self.assertRaises(op_spec.OpSpecError):
+            op_cycle.resume(self.package, output['cycle_dir'], path)
+        self.assertEqual(json.loads(Path(output['cycle']).read_text())['status'], 'paused')
+
     def test_revision_preserves_contract_retains_rounds_and_needs_final_acceptance(self):
         code, output = self.start_and_accept_contract()
         self.assertEqual(code, 3); self.assertEqual(output['step'], 'review')
