@@ -463,7 +463,7 @@ words."`, fails under `pixi run new` with `Expected closing single quote`: the
 pixi task shell re-parses the arguments. Call the CLI directly instead, from
 `pixi shell` or any Python 3.11+ environment with pyyaml and jsonschema:
 
-    python src/cogsmith_cli.py new --dir ../cog-word-count --yes \
+    python src/cogsmith_cli.py new --dir ../word-count --yes \
       --summary "Counts a reader's words." --produces word_count
 
 A request file (below) carries such a value too.
