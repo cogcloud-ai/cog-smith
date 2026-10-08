@@ -126,6 +126,9 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(code, 1); self.assertEqual(output['status'], 'budget-exhausted')
         self.assertEqual([r['operation'] for r in self.calls], ['design'])
         self.assertEqual(output['cost_units_reserved'], 1)
+        track=json.loads((Path(output['run_dir'])/'track.json').read_text())
+        self.assertEqual(track['status'],'budget-exhausted')
+        self.assertFalse(any(a.get('status')=='asking' for row in track['steps'] if row['id']=='author' for a in row.get('attempts',[])))
 
     def test_interrupted_answer_is_recovered_without_another_paid_call(self):
         code, output = op_cycle.start(self.package, self.request)

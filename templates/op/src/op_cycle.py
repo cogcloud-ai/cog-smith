@@ -180,6 +180,18 @@ def drive(package, directory, state, phases, decision=None):
             state['status'] = child['status']; save(state, directory)
             return code, summary(state, directory, child)
     except BudgetExhausted as exc:
+        if state['phases']:
+            phase = state['phases'][-1]
+            if phase.get('run_dir'):
+                track_path = Path(phase['run_dir']) / 'track.json'
+                track = read(track_path)
+                track['status'] = 'budget-exhausted'
+                for step in track['steps']:
+                    if step['status'] == 'running':
+                        step['status'] = 'budget-exhausted'
+                        step['gate'] = {'status': 'fail', 'reasons': [str(exc)]}
+                op_track.save(track, Path(phase['run_dir']))
+            phase['status'] = 'budget-exhausted'
         state['status'], state['reason'] = 'budget-exhausted', str(exc)
         save(state, directory)
         return 1, summary(state, directory)
