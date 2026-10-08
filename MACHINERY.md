@@ -1501,7 +1501,7 @@ created Ops carry the new master byte-identically. The Smith client adds
 The per-invocation Cog fingerprint now also covers `scripts/`, `binding/` and
 `contracts/`, matching Workbench composition invalidation coverage. Changes to a
 declared usage adapter or contract can no longer reuse an old result during
-resume. Tests, examples, evals, lockfiles and prose remain outside this digest.
+resume. Tests, examples, evals, lockfiles and top-level prose remain outside this digest.
 Existing tracks created with older fingerprint coverage require their original
 runtime; upgrading the runtime changes the Op package and requires a new run.
 
