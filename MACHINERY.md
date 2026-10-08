@@ -1512,3 +1512,36 @@ public host canonical source. It resolves workspace-relative installations and
 prints an exact reactivation command after a stale host/consumer change. Nested
 consumer packages can locate the fixed public Workbench sibling in their ancestor
 workspace. Other decision machinery behavior is unchanged.
+
+## Op machinery 0.9.0 — bounded declarative cycles and single-call recovery
+
+`op.yaml` may declare a cycle outcome step/field, explicit outcome-to-restart
+transitions, optional declared preparation Cog steps/input replacements, attempt
+limits and integer cost reservation units per invocation. The shared `op_cycle.py`
+master and generated `cycle` task retain each phase's manifest, request, Track,
+candidate and review. Pure Cog phases are preflighted before starting; authority
+workflows are refused. Accepted prefix results are reused, never repurchased.
+
+Cost units are reserved durably before invocation, including retries. A refused
+or interrupted invocation is conservatively spent, never silently refunded.
+Reservation units are caller-defined caps, not measured vendor billing. Cycles
+stop before exceeding either budget, never expand limits on resume, and require
+a final artifact acceptance as declared by the Op. Phase mappings retain the
+original request directory. Original specs and machinery are fingerprinted.
+
+Ordinary single calls now checkpoint an asking ledger before invoking, so a
+successful envelope durably written before a crash can be recovered under the
+same request/Cog fingerprint. Failed Gates remain retryable; a manually marked
+running record with an already answered ledger remains subject to the existing
+resume behavior. Files and earlier attempts are retained. This fixes the remaining
+single-call window that would otherwise repeat paid work inside a cycle.
+
+Composed provider identity is now included in Op invocation fingerprints: exact
+consumer/context, provider/model binding revisions and host behavior digest.
+Workspace/state paths and derived installation checksums are excluded so a move
+alone does not invalidate results. Workbench composition behavior fingerprints
+exclude their own installation to avoid circular hashing; Op fingerprints add
+this separately admitted identity. A changed provider cannot reuse an old answer.
+
+Smith itself declares `op-decide` as a usage task so Workbench can prepare Gate
+decisions through the public operation instead of importing an internal helper.

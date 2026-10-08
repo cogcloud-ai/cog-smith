@@ -1,7 +1,7 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Describes:** cog-smith Op machinery 0.8.2 / context-cog machinery 0.4.5 /
+**Describes:** cog-smith Op machinery 0.9.0 / context-cog machinery 0.4.5 /
 code-cog machinery 0.2.0 / decision-cog machinery 0.1.4 (tested against the
 machinery constants)  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The

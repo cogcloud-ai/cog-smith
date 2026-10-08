@@ -1,0 +1,141 @@
+"""Bounded declarative cycles retain evidence and reuse accepted/paid work."""
+import copy
+import json
+from pathlib import Path
+import shutil
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import op_fixtures as fx
+from op_fixtures import op_runner, op_spec, op_track
+import op_cycle
+
+
+def cycle_spec():
+    design = fx.cog_step('design', gate={'policy': 'human', 'decides': 'artifact', 'artifact': {'kind': 'cog-contract', 'digests': {'contract': {'$sha256': {'$from': 'steps.design.payload.contract'}}}}})
+    design['input'] = {'operation': 'design'}
+    author = fx.cog_step('author', depends_on=['design'])
+    author['input'] = {'operation': 'author', 'contract': {'$from': 'steps.design.payload.contract'}}
+    verify = fx.cog_step('verify', depends_on=['author'])
+    verify['input'] = {'operation': 'verify', 'source': {'$from': 'steps.author.payload'}}
+    review = fx.cog_step('review', depends_on=['design', 'author', 'verify'], gate={'policy': 'human', 'decides': 'artifact', 'artifact': {'kind': 'cog-candidate', 'digests': {'contract': {'$from': 'steps.design.decision.artifact.digests.contract'}, 'source': {'$sha256': {'$from': 'steps.author.payload'}}, 'evidence': {'$sha256': {'$from': 'steps.verify.payload'}}, 'assessment': {'$sha256': {'$from': 'steps.review.payload'}}}}})
+    review['input'] = {'operation': 'review', 'evidence': {'$from': 'steps.verify.payload'}}
+    prepare = fx.cog_step('prepare')
+    prepare['input'] = {'operation': 'prepare', 'previous': {'$from': 'inputs.cycle_previous.steps.author.request'}}
+    return fx.spec_doc([design, author, verify, review], inputs=[{'name': 'max_attempts', 'required': True}, {'name': 'max_cost_units', 'required': True}], outputs={'source': {'$from': 'steps.author.payload'}, 'accepted': {'$from': 'steps.review.decision.verdict'}}, cycle={'outcome_step': 'review', 'outcome_field': 'classification', 'max_attempts': {'$from': 'inputs.max_attempts'}, 'max_cost_units': {'$from': 'inputs.max_cost_units'}, 'costs': {'design': 1, 'author': 1, 'verify': 0, 'review': 1, 'prepare': 0}, 'transitions': {'revise': {'restart': 'author', 'prepare': [prepare], 'replace': {'author': {'input': {'$from': 'steps.prepare.payload.request'}, 'depends_on': ['design', 'prepare']}}}, 'insufficient_evidence': {'restart': 'verify'}}})
+
+
+class CycleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve(); self.package = self.root / 'op'
+        fx.write_package(self.package, cycle_spec())
+        (self.package / 'src').mkdir()
+        for name in op_cycle.MASTERS:
+            shutil.copyfile(fx.OP_SRC / name, self.package / 'src' / name)
+        for name in ['design', 'author', 'verify', 'review', 'prepare']:
+            fx.write_cog(self.root, name)
+        self.request = self.root / 'request.json'; self.request.write_text(json.dumps({'max_attempts': 3, 'max_cost_units': 20}))
+        self.outcomes = ['revise', 'pass']; self.reviews = 0
+        self.calls = []
+        self.contract = {'purpose': 'Keep this contract', 'acceptance_criteria': ['also preserve unrelated requirements']}
+        def invoke(cog_dir, task, request_path, **seam):
+            request = json.loads(Path(request_path).read_text()); self.calls.append(request)
+            operation = request['operation']
+            if operation == 'design': payload = {'contract': self.contract}
+            elif operation in ('author', 'revise'): payload = {'source': operation, 'contract': request['contract']}
+            elif operation == 'prepare': payload = {'request': {**request['previous'], 'operation': 'revise'}}
+            elif operation == 'verify': payload = request
+            else:
+                payload = {'classification': self.outcomes[min(self.reviews, len(self.outcomes)-1)], 'reason': 'Synthetic test review'}
+                self.reviews += 1
+            return fx.envelope(payload=payload)
+        self.patch = patch.object(op_runner, 'invoke_cog', side_effect=invoke); self.patch.start(); self.addCleanup(self.patch.stop)
+
+    def decide(self, output, verdict='accept'):
+        pending = json.loads(Path(output['pending']).read_text())
+        doc = {'schema': op_runner.DECISION_SCHEMA, 'run_id': pending['run_id'], 'step': pending['step'], 'payload_sha256': pending['payload_sha256'], 'artifact_sha256': pending['artifact_sha256'], 'verdict': verdict, 'decided_by': 'test-reviewer', 'decided_at': op_track.utc_now()}
+        if verdict == 'reject': doc['reason'] = 'Rejected test candidate'
+        path = self.root / ('decision-' + pending['run_id'] + '-' + pending['step'] + '.json'); path.write_text(json.dumps(doc)); return path
+
+    def start_and_accept_contract(self):
+        code, output = op_cycle.start(self.package, self.request)
+        self.assertEqual(code, 3)
+        self.assertEqual(output['step'], 'design')
+        return op_cycle.resume(self.package, output['cycle_dir'], self.decide(output))
+
+    def test_revision_preserves_contract_retains_rounds_and_needs_final_acceptance(self):
+        code, output = self.start_and_accept_contract()
+        self.assertEqual(code, 3); self.assertEqual(output['step'], 'review')
+        self.assertEqual(output['attempts'], 2)
+        self.assertEqual([r['operation'] for r in self.calls].count('design'), 1)
+        self.assertEqual([r['operation'] for r in self.calls].count('author'), 1)
+        self.assertEqual([r['operation'] for r in self.calls].count('revise'), 1)
+        self.assertTrue(all(r['contract'] == self.contract for r in self.calls if r['operation'] in ('author', 'revise')))
+        state = json.loads(Path(output['cycle']).read_text())
+        self.assertEqual(state['cost_units_reserved'], 5)
+        self.assertEqual(json.loads((Path(state['phases'][0]['run_dir'])/'track.json').read_text())['status'], 'cycle-transition')
+        code, final = op_cycle.resume(self.package, output['cycle_dir'], self.decide(output))
+        self.assertEqual(code, 0); self.assertEqual(final['outputs']['accepted'], 'accept')
+
+    def test_missing_evidence_reuses_same_candidate_and_contract(self):
+        self.outcomes = ['insufficient_evidence', 'pass']
+        code, output = self.start_and_accept_contract(); self.assertEqual(code, 3)
+        self.assertEqual([r['operation'] for r in self.calls].count('author'), 1)
+        self.assertEqual([r['operation'] for r in self.calls].count('verify'), 2)
+        self.assertNotIn('prepare', [r['operation'] for r in self.calls])
+        self.assertEqual(output['cost_units_reserved'], 4)
+
+    def test_attempt_exhaustion_keeps_last_review_and_does_not_restart(self):
+        self.outcomes = ['revise']; self.request.write_text(json.dumps({'max_attempts': 1, 'max_cost_units': 20}))
+        code, output = self.start_and_accept_contract()
+        self.assertEqual(code, 1); self.assertEqual(output['status'], 'budget-exhausted')
+        self.assertIn('Attempt budget', output['reason'])
+        self.assertEqual(output['attempts'], 1)
+        before = len(self.calls)
+        op_cycle.resume(self.package, output['cycle_dir'])
+        self.assertEqual(len(self.calls), before)
+
+    def test_cost_exhaustion_stops_before_next_paid_invocation(self):
+        self.request.write_text(json.dumps({'max_attempts': 3, 'max_cost_units': 1}))
+        code, output = self.start_and_accept_contract()
+        self.assertEqual(code, 1); self.assertEqual(output['status'], 'budget-exhausted')
+        self.assertEqual([r['operation'] for r in self.calls], ['design'])
+        self.assertEqual(output['cost_units_reserved'], 1)
+
+    def test_interrupted_answer_is_recovered_without_another_paid_call(self):
+        code, output = op_cycle.start(self.package, self.request)
+        decision = self.decide(output)
+        original = op_track.save
+        def crash_after_answer(track, run_dir):
+            if any(r['id'] == 'author' and r['status'] == 'passed' for r in track['steps']):
+                raise RuntimeError('power loss after durable answer')
+            return original(track, run_dir)
+        with patch.object(op_track, 'save', side_effect=crash_after_answer), self.assertRaisesRegex(RuntimeError, 'power loss'):
+            op_cycle.resume(self.package, output['cycle_dir'], decision)
+        self.assertEqual([r['operation'] for r in self.calls].count('author'), 1)
+        self.outcomes = ['pass']
+        code, resumed = op_cycle.resume(self.package, output['cycle_dir'])
+        self.assertEqual(code, 3)
+        self.assertEqual([r['operation'] for r in self.calls].count('design'), 1)
+        self.assertEqual([r['operation'] for r in self.calls].count('author'), 1)
+        self.assertEqual(resumed['cost_units_reserved'], 3)
+
+    def test_rejection_finishes_cycle_and_changed_budgets_are_refused(self):
+        self.outcomes = ['pass']
+        code, output = self.start_and_accept_contract()
+        code, rejected = op_cycle.resume(self.package, output['cycle_dir'], self.decide(output, 'reject'))
+        self.assertEqual(code, 1); self.assertEqual(rejected['status'], 'rejected')
+        state = json.loads(Path(output['cycle']).read_text()); state['max_attempts'] += 1
+        Path(output['cycle']).write_text(json.dumps(state))
+        with self.assertRaises(op_spec.OpSpecError):
+            op_cycle.resume(self.package, output['cycle_dir'])
+
+
+class CycleDeclarationTests(unittest.TestCase):
+    def test_unknown_replacement_and_effectful_phase_are_refused(self):
+        doc = cycle_spec(); doc['cycle']['transitions']['revise']['replace']['author']['cog'] = {'id': 'different'}
+        with self.assertRaises(op_spec.OpSpecError): op_spec.OpSpec(doc)
+        doc = cycle_spec(); doc['steps'][0]['authority'] = {'requires': [{'resource': 'github', 'action': 'write', 'targets': []}]}
+        with self.assertRaises(op_spec.OpSpecError): op_spec.OpSpec(doc)
