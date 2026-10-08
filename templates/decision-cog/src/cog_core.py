@@ -30,7 +30,7 @@ import task_logic                       # noqa: E402  (the ONLY per-cog module)
 from jsonschema import Draft202012Validator  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-MACHINERY = "decision-cog 0.1.2"
+MACHINERY = "decision-cog 0.1.3"
 EXTENSION = "system_one"
 EXTENSION_CONTRACT = "openteams/system-one-decision [0.1-draft]"
 
@@ -196,10 +196,13 @@ def finish(bundle, result, provenance=None):
     if contract_problems:
         return envelope("decide", False, error={"code": "answers-invalid", "detail": contract_problems[0]},
                         problems=problems + [problem("answers", p) for p in contract_problems], binding=provenance)
-    answers = result["answers"]
+    saved_result = copy.deepcopy(result)
+    answers = copy.deepcopy(result["answers"])
     payload = {"decision": task_logic.decide(bundle, answers),
                "answers": answers,
                "answered_by": {"model": result["model"], "answer_source": result["answer_source"]}}
     problems += _schema_problems(payload, OUTPUT_SCHEMA, "schema")
     problems += task_logic.check_output(payload, bundle)
-    return envelope("decide", True, payload=payload, problems=problems, binding=provenance)
+    output = envelope("decide", True, payload=payload, problems=problems, binding=provenance)
+    output["provider_result"] = saved_result
+    return output

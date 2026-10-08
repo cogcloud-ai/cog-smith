@@ -168,6 +168,54 @@ class SeamTests(unittest.TestCase):
             self.assertTrue(envelope["ok"], envelope)
             self.assertEqual(envelope["binding"], {"composition": "test"})
 
+    def test_envelope_replay_and_exported_foreach_fixtures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = create_decision_cog(tmp)
+            bundle = json.loads((dest / "examples/sample-bundle.json").read_text())
+            result = json.loads((dest / "examples/sample-result.json").read_text())
+            live = Path(tmp) / "finish.json"
+            live.write_text(json.dumps({"bundle": bundle, "result": result, "provenance": {}}))
+            call = run_cli(dest, "bridge", "finish", "--request", str(live))
+            env = json.loads(call.stdout)
+            self.assertEqual(env["provider_result"], result)
+            run = Path(tmp) / "run"
+            run.mkdir()
+            elements = []
+            for index in range(2):
+                request = run / f"request-{index}.json"
+                envelope = run / f"envelope-{index}.json"
+                request.write_text(json.dumps(bundle))
+                envelope.write_text(json.dumps(env))
+                elements.append({"request": str(request), "envelope": str(envelope)})
+            (run / "track.json").write_text(json.dumps({"steps": [
+                {"id": "decide", "cog": env["cog"], "elements": elements}]}))
+            replay = run_cli(dest, "replay", "--bundle", str(request), "--result", str(envelope))
+            self.assertEqual(replay.returncode, 0, replay.stdout)
+            self.assertEqual(json.loads(replay.stdout)["payload"], env["payload"])
+            export = run_cli(dest, "export-fixtures", "--run", str(run), "--step", "decide", "--name", "live")
+            self.assertEqual(export.returncode, 0, export.stdout)
+            self.assertEqual(json.loads(export.stdout)["fixtures"], 2)
+            tests = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                                   cwd=dest, capture_output=True, text=True)
+            self.assertEqual(tests.returncode, 0, tests.stderr)
+            # Saved decisions are assertions, not regenerated expectations.
+            decision = dest / "tests/fixtures/live/0/decision.json"
+            decision.write_text('{}')
+            tests = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                                   cwd=dest, capture_output=True, text=True)
+            self.assertNotEqual(tests.returncode, 0)
+            duplicate = run_cli(dest, "export-fixtures", "--run", str(run), "--step", "decide", "--name", "live")
+            self.assertEqual(duplicate.returncode, 1)
+
+    def test_old_envelope_cannot_be_reconstructed_as_a_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = create_decision_cog(tmp)
+            result = Path(tmp) / "old.json"
+            result.write_text(json.dumps({"envelope": 1, "raw": None}))
+            call = run_cli(dest, "replay", "--bundle", "examples/sample-bundle.json", "--result", str(result))
+            self.assertEqual(call.returncode, 1)
+            self.assertIn("no validated provider_result", call.stdout)
+
     def test_a_failed_turn_is_still_an_envelope_on_the_bridge(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = create_decision_cog(tmp)

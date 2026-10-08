@@ -1426,3 +1426,13 @@ rechecks them and reports the warnings. Generated suites cover warning-only,
 error-only, mixed-severity inputs, both warning spellings, unrecognised and null
 severities, and warnings followed by a failed invocation.
 The envelope version and Op/Workbench responsibilities are unchanged.
+
+## Decision 0.1.3 — saved provider results and replay fixtures (issue #7)
+
+Validated System One results are copied into optional envelope v1
+`provider_result` before author decision logic runs. `raw` remains text or null.
+Replay accepts bare results and envelopes. The decision CLI adds
+`export-fixtures` to copy one unrepeated Op step's recorded bundle, result and
+decision per element and generate a provider-free replay test. It refuses
+missing or invalid records, other Cog identities and existing fixture sets.
+No provider selection, Op lifecycle policy or Workbench invocation code changes.
