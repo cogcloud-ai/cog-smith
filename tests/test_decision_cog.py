@@ -169,6 +169,143 @@ class SeamTests(unittest.TestCase):
             self.assertTrue(envelope["ok"], envelope)
             self.assertEqual(envelope["binding"], {"composition": "test"})
 
+    def test_envelope_replay_and_exported_foreach_fixtures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = create_decision_cog(tmp)
+            bundle = json.loads((dest / "examples/sample-bundle.json").read_text())
+            result = json.loads((dest / "examples/sample-result.json").read_text())
+            live = Path(tmp) / "finish.json"
+            live.write_text(json.dumps({"bundle": bundle, "result": result, "provenance": {}}))
+            call = run_cli(dest, "bridge", "finish", "--request", str(live))
+            env = json.loads(call.stdout)
+            self.assertEqual(env["provider_result"], result)
+            run = Path(tmp) / "run"
+            run.mkdir()
+            elements = []
+            for index in range(2):
+                request = run / f"request-{index}.json"
+                envelope = run / f"envelope-{index}.json"
+                request.write_text(json.dumps(bundle))
+                envelope.write_text(json.dumps(env))
+                elements.append({"request": str(request), "envelope": str(envelope)})
+            (run / "track.json").write_text(json.dumps({"steps": [
+                {"id": "decide", "cog": env["cog"], "elements": elements}]}))
+            replay = run_cli(dest, "replay", "--bundle", str(request), "--result", str(envelope))
+            self.assertEqual(replay.returncode, 0, replay.stdout)
+            self.assertEqual(json.loads(replay.stdout)["payload"], env["payload"])
+            export = run_cli(dest, "export-fixtures", "--run", str(run), "--step", "decide", "--name", "live")
+            self.assertEqual(export.returncode, 0, export.stdout)
+            self.assertEqual(json.loads(export.stdout)["fixtures"], 2)
+            tests = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                                   cwd=dest, capture_output=True, text=True)
+            self.assertEqual(tests.returncode, 0, tests.stderr)
+            # Saved decisions are assertions, not regenerated expectations.
+            decision = dest / "tests/fixtures/live/0/decision.json"
+            decision.write_text('{}')
+            tests = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                                   cwd=dest, capture_output=True, text=True)
+            self.assertNotEqual(tests.returncode, 0)
+            duplicate = run_cli(dest, "export-fixtures", "--run", str(run), "--step", "decide", "--name", "live")
+            self.assertEqual(duplicate.returncode, 1)
+
+    def test_export_single_and_refusals(self):
+        import copy
+        import shutil
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = create_decision_cog(tmp)
+            run = Path(tmp) / "run"
+            run.mkdir()
+            bundle = json.loads((dest / "examples/sample-bundle.json").read_text())
+            result = json.loads((dest / "examples/sample-result.json").read_text())
+            finish = run / "finish.json"
+            finish.write_text(json.dumps({"bundle": bundle, "result": result, "provenance": {}}))
+            env = json.loads(run_cli(dest, "bridge", "finish", "--request", str(finish)).stdout)
+            request, envelope = run / "request.json", run / "envelope.json"
+            request.write_text(json.dumps(bundle))
+            slot = {"request": str(request), "envelope": str(envelope)}
+            step = {"id": "decide", "cog": env["cog"], **slot}
+
+            def export(steps, document=env, name="single"):
+                envelope.write_text(json.dumps(document))
+                (run / "track.json").write_text(json.dumps({"steps": steps}))
+                return run_cli(dest, "export-fixtures", "--run", str(run),
+                               "--step", "decide", "--name", name)
+
+            call = export([step])
+            self.assertEqual(call.returncode, 0, call.stdout)
+            fixture = dest / "tests/fixtures/single"
+            self.assertEqual(json.loads((fixture / "0/bundle.json").read_text()), bundle)
+            self.assertEqual(json.loads((fixture / "0/result.json").read_text()), result)
+            self.assertEqual(json.loads((fixture / "0/decision.json").read_text()), env["payload"]["decision"])
+            self.assertEqual(fixture.stat().st_mode & 0o777,
+                             fixture.parent.stat().st_mode & 0o777)
+            # Use discovery so the generated TestCase actually executes.
+            test = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                                  cwd=dest, capture_output=True, text=True)
+            self.assertEqual(test.returncode, 0, test.stderr)
+            shutil.rmtree(fixture / "0")
+            test = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+                                  cwd=dest, capture_output=True, text=True)
+            self.assertNotEqual(test.returncode, 0)
+            self.assertIn("No recorded elements", test.stderr)
+
+            outside = Path(tmp) / "outside.json"
+            outside.write_text(json.dumps(bundle))
+            (run / "link.json").symlink_to(outside)
+            cases = [
+                ([], env, "missing step"),
+                ([step, step], env, "duplicate step"),
+                ([{**step, "cog": {**env["cog"], "id": "other"}}], env, "other id"),
+                ([{**step, "cog": {**env["cog"], "version": "99"}}], env, "other version"),
+                ([step], {**env, "ok": False}, "failed envelope"),
+                ([step], {**env, "cog": {**env["cog"], "id": "other"}}, "other envelope id"),
+                ([step], {**env, "cog": {**env["cog"], "version": "99"}}, "other envelope version"),
+                ([step], {k: v for k, v in env.items() if k != "provider_result"}, "missing result"),
+                ([{**step, "repeats": []}], env, "repeated step"),
+                ([{**step, "elements": [{**slot, "repeats": []}]}], env, "repeated element"),
+                ([{**step, "elements": [{}]}], env, "not reached"),
+                ([{**step, "elements": []}], env, "empty foreach"),
+                ([{**step, "request": str(outside)}], env, "absolute escape"),
+                ([{**step, "request": "../outside.json"}], env, "relative escape"),
+                ([{**step, "request": "link.json"}], env, "symlink escape"),
+            ]
+            mismatch = copy.deepcopy(env)
+            mismatch["payload"]["decision"]["escalate"] = not env["payload"]["decision"]["escalate"]
+            cases.append(([step], mismatch, "decision disagreement"))
+            for steps, document, label in cases:
+                with self.subTest(case=label):
+                    call = export(steps, document, "refused")
+                    self.assertEqual(call.returncode, 1, call.stdout)
+                    self.assertFalse((fixture.parent / "refused").exists())
+                    self.assertEqual(list(fixture.parent.glob(".fixture-*")), [])
+            for name in ("../escape", "/absolute", "bad.name", "", "single"):
+                with self.subTest(name=name):
+                    self.assertEqual(export([step], name=name).returncode, 1)
+            self.assertEqual(export([step], name="a-b").returncode, 0)
+            collision = export([step], name="a_b")
+            self.assertEqual(collision.returncode, 1)
+            self.assertIn("Generated test already exists", collision.stdout)
+            self.assertFalse((fixture.parent / "a_b").exists())
+            self.assertEqual(list(fixture.parent.glob(".fixture-*")), [])
+            for version in (True, 2):
+                envelope.write_text(json.dumps({**env, "envelope": version}))
+                call = run_cli(dest, "replay", "--bundle", str(request), "--result", str(envelope))
+                self.assertEqual(call.returncode, 1)
+                self.assertIn("Expected envelope v1", call.stdout)
+            envelope.write_text(json.dumps({**env, "ok": False}))
+            call = run_cli(dest, "replay", "--bundle", str(request), "--result", str(envelope))
+            self.assertEqual(call.returncode, 1)
+            self.assertIn("successful envelope", call.stdout)
+
+    def test_old_envelope_cannot_be_reconstructed_as_a_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = create_decision_cog(tmp)
+            result = Path(tmp) / "old.json"
+            result.write_text(json.dumps({"envelope": 1, "ok": True, "raw": None}))
+            call = run_cli(dest, "replay", "--bundle", "examples/sample-bundle.json", "--result", str(result))
+            self.assertEqual(call.returncode, 1)
+            self.assertIn("no validated provider_result", call.stdout)
+
     def test_a_failed_turn_is_still_an_envelope_on_the_bridge(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = create_decision_cog(tmp)

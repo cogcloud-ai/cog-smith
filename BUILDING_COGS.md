@@ -2,7 +2,7 @@
 
 **Audience:** New Cog builders, reviewers, and coding agents  
 **Describes:** cog-smith Op machinery 0.7.1 / context-cog machinery 0.4.5 /
-code-cog machinery 0.1.6 / decision-cog machinery 0.1.2 (tested against the
+code-cog machinery 0.1.6 / decision-cog machinery 0.1.3 (tested against the
 machinery constants)  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
@@ -839,7 +839,7 @@ requires the `system-one/decisions` capability, and declares the class with
     cog-example-router/
     ├── COG.md
     ├── pixi.toml             # [tool.cog]; tasks: ask-composed, composition,
-    │                         #   prepare, replay, derive-schema, check, test
+    │                         #   prepare, replay, export-fixtures, derive-schema, check, test
     ├── context/
     │   ├── questions.json        # YOURS — the typed questions
     │   ├── input-schema.json     # YOURS
@@ -895,7 +895,34 @@ Model-free work needs no binding: `pixi run prepare -- --bundle B` shows the
 turn that would be sent, and `pixi run replay -- --bundle B --result R`
 decides from a saved System One result (its binding says
 `provider_called: false`). Save real results as fixtures for the thresholds
-you care about and replay them in tests.
+you care about and replay them in tests. The envelope's optional
+`provider_result` preserves the validated provider document, including usage;
+`replay --result saved-envelope.json` accepts the saved envelope directly.
+Older envelopes without this field require a bare result.
+
+From the decision Cog, extract one recorded Op step:
+
+    pixi run export-fixtures -- --run /path/to/run --step triage --name thresholds
+
+Export from the original run location: recorded absolute paths are not relocated
+when a run is moved or copied. Export refuses decisions that differ when replayed
+with the current task logic.
+
+This writes `tests/fixtures/thresholds/<element>/bundle.json`, `result.json`
+and `decision.json`, plus a replay test and a discovery file in `tests/`.
+A single invocation becomes element 0. The generated test calls replay without
+a provider and compares the decision with the saved decision. Existing fixture
+sets are refused. Empty, uninvoked, failed, and repeated steps are refused;
+all elements must have successful envelopes with validated provider results
+from this Cog id and version. Export reads recorded artifacts; it makes no
+lifecycle or acceptance decision for the Op.
+
+Fixtures contain the complete input bundle, typed answers, model identity,
+answer source, usage and derived decision. Inputs and decisions can contain
+sensitive data. Review and sanitize these files before committing them; use
+public or synthetic inputs when possible. Bindings and provider credentials
+are not copied. After sanitizing, run the generated tests to check that the
+saved input and expected decision still agree.
 
 ## 8. Validate before running a model
 

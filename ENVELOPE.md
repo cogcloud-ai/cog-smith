@@ -63,6 +63,13 @@ Field rules:
   current installation state. Unchanged from the forge machinery.
 - **`raw`** — the verbatim model text, for audit and salvage review.
 
+Decision Cogs also emit optional **`provider_result`** after validating the
+System One result. It preserves `{model, answer_source, answers, usage}` as
+received, separately from the derived decision. Invalid answers do not populate
+it. `raw` retains its existing text-or-null meaning. Decision `replay --result`
+accepts this envelope or a bare System One result. This additive field keeps
+envelope v1 unchanged.
+
 Versioning: this file is `envelope: 1`. Additive changes (new optional
 fields) do not bump; changing the meaning or type of an existing field
 does. Consumers must ignore unknown fields.
