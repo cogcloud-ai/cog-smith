@@ -13,16 +13,21 @@ def invoke(root, bundle, suite_type=None):
     root = Path(root).resolve()
     # The host is an explicit sibling installation, never a request-supplied
     # command or Python path. This is a local Workbench host adapter.
-    host = root.parent / 'cog-workbench'
+    workspace = next((parent for parent in root.parents
+                      if (parent / 'cog-workbench/src/workbench_suite.py').is_file()), None)
+    if workspace is None:
+        raise ValueError('Install the public cog-workbench sibling in this workspace.')
+    host = workspace / 'cog-workbench'
     sys.path.insert(0, str(host / 'src'))
     from workbench_suite import Suite, digest, package_digest, require
     config = json.loads((root / '.op-composition.json').read_text())
     checksum = config.pop('sha256')
     require(checksum == digest(config), 'Installed composition integrity failure.')
-    require(config['host_sha256'] == package_digest(host), 'Workbench host changed; activate composition again.')
     composition = config['composition']
-    require(Path(composition['path']).resolve() == root, 'Installed composition belongs to another consumer.')
-    suite = (suite_type or Suite)(workspace=root.parent, state=config['state'])
+    suite = (suite_type or Suite)(workspace=workspace, state=workspace / config['state'])
+    repair = suite.repair_command(root, composition['binding'])
+    require(config['host_sha256'] == package_digest(host), 'Workbench host changed; run ' + repair)
+    require(suite.root(composition['path']) == root, 'Installed composition belongs to another consumer; run ' + repair)
     result = suite.invoke(composition, bundle)
     result['task'] = 'ask-composed'
     return result
