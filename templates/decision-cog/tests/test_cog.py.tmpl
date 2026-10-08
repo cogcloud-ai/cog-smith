@@ -8,6 +8,7 @@ import copy
 import json
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -87,6 +88,43 @@ class TestTurn(unittest.TestCase):
                 cog_core.prepare(sample_bundle())
         finally:
             task_logic.questions = original
+
+
+
+class TestInputSeverity(unittest.TestCase):
+    def invoke_sample(self):
+        cog_core.prepare(sample_bundle())
+        return cog_core.finish(sample_bundle(), sample_result())
+
+    def test_warning_only_input_proceeds_and_keeps_input_and_output_findings(self):
+        warning = cog_core.problem("input-thin", "optional evidence is thin", "warning")
+        output = cog_core.problem("output-note", "review the result", "warning")
+        with mock.patch.object(task_logic, "check_input", return_value=[warning]), \
+             mock.patch.object(task_logic, "check_output", return_value=[output]):
+            env = self.invoke_sample()
+        self.assertTrue(env["ok"], env)
+        self.assertIsNotNone(env["payload"])
+        self.assertEqual(env["problems"], [warning, output])
+
+    def test_input_errors_refuse_even_alongside_warnings(self):
+        error = cog_core.problem("input-bad", "required evidence is missing")
+        warning = cog_core.problem("input-thin", "optional evidence is thin", "warning")
+        for problems in ([error], [warning, error]):
+            with self.subTest(problems=problems), \
+                 mock.patch.object(task_logic, "check_input", return_value=problems):
+                with self.assertRaises(ValueError):
+                    cog_core.prepare(sample_bundle())
+                with self.assertRaises(ValueError):
+                    cog_core.finish(sample_bundle(), sample_result())
+
+    def test_input_warning_is_preserved_when_later_work_fails(self):
+        warning = cog_core.problem("input-thin", "optional evidence is thin", "warning")
+        with mock.patch.object(task_logic, "check_input", return_value=[warning]):
+            result = sample_result()
+            del result["answers"][next(iter(cog_core.QUESTIONS))]
+            env = cog_core.finish(sample_bundle(), result)
+        self.assertFalse(env["ok"])
+        self.assertIn(warning, env["problems"])
 
 
 if __name__ == "__main__":

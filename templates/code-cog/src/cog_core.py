@@ -39,7 +39,7 @@ except ImportError:                                    # pragma: no cover
 
 #: The code-cog machinery lineage (cog-smith MACHINERY.md). Reported in
 #: every envelope's `binding`, so a saved result names the code that made it.
-MACHINERY_VERSION = "0.1.5"
+MACHINERY_VERSION = "0.1.6"
 
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
 
@@ -587,15 +587,20 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
     import time
     started = time.monotonic()
 
-    problems = validate_input(bundle)
-    if problems:
+    input_problems = validate_input(bundle)
+    if any(p.get("severity", "error") == "error" for p in input_problems):
         env = _fail(task, "invalid-input",
-                    "; ".join(p["detail"] for p in problems[:5]))
-        env["problems"] = problems
+                    "; ".join(p["detail"] for p in input_problems[:5]))
+        env["problems"] = input_problems
+        return env
+
+    def fail(*args, **kwargs):
+        env = _fail(*args, **kwargs)
+        env["problems"] = input_problems + env["problems"]
         return env
 
     if REACHES and grant is None:
-        return _fail(task, "no-grant",
+        return fail(task, "no-grant",
                      f"{SELF_ID['id']} declares reaches "
                      f"{[r.get('resource') for r in REACHES]} and was invoked "
                      f"with no grant; a code Cog does not reach outside the "
@@ -603,7 +608,7 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
     if grant is not None:
         code, detail = check_grant(grant, run_id=run_id, now=now)
         if code:
-            return _fail(task, code, detail)
+            return fail(task, code, detail)
     _INVOCATION_RUN_ID = run_id
 
     # The journal is read BEFORE any work: a journal this Cog cannot read in
@@ -618,9 +623,9 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
         try:
             journal.read()
         except JournalCorrupt as exc:
-            return _fail(task, "journal-corrupt", str(exc))
+            return fail(task, "journal-corrupt", str(exc))
         except OSError as exc:
-            return _fail(task, "journal-unreadable",
+            return fail(task, "journal-unreadable",
                          f"{journal.path} cannot be read "
                          f"({type(exc).__name__}: {exc}); a Cog that cannot "
                          f"read its journal cannot know what it already did "
@@ -629,11 +634,11 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
     try:
         result = task_logic.run(bundle, grant, journal)
     except JournalCorrupt as exc:
-        return _fail(task, "journal-corrupt", str(exc))
+        return fail(task, "journal-corrupt", str(exc))
     except Exception as exc:                            # the task's own bug
-        return _fail(task, "task-failed", f"{type(exc).__name__}: {exc}")
+        return fail(task, "task-failed", f"{type(exc).__name__}: {exc}")
     if (not isinstance(result, tuple) or len(result) != 2):
-        return _fail(task, "task-failed",
+        return fail(task, "task-failed",
                      "task_logic.run must return (payload, problems)")
     payload, task_problems = result
     # The package's output checker runs inside the SAME exception boundary as
@@ -642,11 +647,11 @@ def invoke(bundle, grant=None, journal=None, run_id=None, task=DEFAULT_TASK,
     # It gets its own code because "the task is broken" and "the task's
     # self-check is broken" are different repairs.
     try:
-        problems = list(task_problems or []) + validate_output(payload, bundle)
+        problems = input_problems + list(task_problems or []) + validate_output(payload, bundle)
     except JournalCorrupt as exc:
-        return _fail(task, "journal-corrupt", str(exc))
+        return fail(task, "journal-corrupt", str(exc))
     except Exception as exc:                    # the package's own checker
-        return _fail(task, "output-check-failed",
+        return fail(task, "output-check-failed",
                      f"{type(exc).__name__}: {exc}")
     return _envelope(task, True, payload=payload, problems=problems,
                      latency=round(time.monotonic() - started, 3))
