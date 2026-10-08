@@ -10,6 +10,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import smith_check  # noqa: E402
@@ -106,6 +108,24 @@ class TestStarterValues(unittest.TestCase):
                 [d for d in warnings(findings, "declarations")
                  if "io.produces" in d], findings)
 
+    def test_an_io_that_is_not_a_mapping_is_a_finding_not_a_crash(self):
+        for value in ("highlights", "[highlights]"):
+            with self.subTest(value=value), \
+                    tempfile.TemporaryDirectory() as tmp:
+                dest = create(tmp, "cog-toy", "context-cog", "yaml")
+                path = dest / "cog.yaml"
+                doc = yaml.safe_load(path.read_text())
+                doc["io"] = yaml.safe_load(value)
+                path.write_text(yaml.safe_dump(doc))
+                findings = smith_check.check(dest)
+                self.assertIn(
+                    ("error", "profile", "manifest"),
+                    [(f["level"], f["layer"], f["check"]) for f in findings
+                     if "io must be a mapping" in f["detail"]], findings)
+                self.assertFalse(
+                    [d for d in warnings(findings, "declarations")
+                     if "io.produces" in d], findings)
+
 
 class TestUnusedRequiredFeatures(unittest.TestCase):
     QUESTIONS = {"is_urgent": {
@@ -150,6 +170,22 @@ class TestUnusedRequiredFeatures(unittest.TestCase):
                 "required_features: [choice, noul, score]",
                 "required_features: [noul]"))
             self.assertEqual(smith_check.check(dest), [])
+
+    def test_features_that_are_not_strings_are_a_finding_not_a_crash(self):
+        for value in ("[noul, choice, 42]", "noul", "[noul, [choice]]"):
+            with self.subTest(value=value), \
+                    tempfile.TemporaryDirectory() as tmp:
+                dest = self.one_question_cog(tmp)
+                path = dest / "cog.yaml"
+                path.write_text(path.read_text().replace(
+                    "required_features: [choice, noul, score]",
+                    f"required_features: {value}"))
+                findings = smith_check.check(dest)
+                self.assertIn(
+                    ("error", "profile", "decision"),
+                    [(f["level"], f["layer"], f["check"]) for f in findings
+                     if "must be a list of strings" in f["detail"]], findings)
+                self.assertEqual(warnings(findings, "decision"), [])
 
 
 class TestVersionStatements(unittest.TestCase):

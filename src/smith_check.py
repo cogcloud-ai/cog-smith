@@ -313,7 +313,12 @@ def check(root, run_tests=False):
     if is_decision:
         _check_decision(root, m, schemas, err, warn)
 
-    produces = (m.get("io") or {}).get("produces")
+    io = m.get("io")
+    if io is not None and not isinstance(io, dict):
+        err("profile", "manifest",
+            f"io must be a mapping, got {type(io).__name__}")
+        io = None
+    produces = (io or {}).get("produces")
     if produces == [smith_core.STARTER_PRODUCES]:
         warn("profile", "declarations",
              f"io.produces is still the starter's value {produces} — name "
@@ -384,16 +389,22 @@ def _check_decision(root, m, schemas, err, warn):
     if problems:
         return
     used = {q["type"] for q in questions.values()}
-    missing = sorted(used - set(composition.get("required_features") or []))
-    if missing:
-        err("profile", "decision", f"workbench_composition.required_features must "
-                                   f"include the question types used: {missing}")
-    unused = sorted(set(composition.get("required_features") or []) - used)
-    if unused:
-        warn("profile", "decision",
-             f"workbench_composition.required_features names question types "
-             f"{rel} does not use: {unused} — each one narrows the providers "
-             f"that can be bound")
+    features = composition.get("required_features") or []
+    if not (isinstance(features, list)
+            and all(isinstance(f, str) for f in features)):
+        err("profile", "decision", "workbench_composition.required_features "
+                                   "must be a list of strings")
+    else:
+        missing = sorted(used - set(features))
+        if missing:
+            err("profile", "decision", f"workbench_composition.required_features must "
+                                       f"include the question types used: {missing}")
+        unused = sorted(set(features) - used)
+        if unused:
+            warn("profile", "decision",
+                 f"workbench_composition.required_features names question types "
+                 f"{rel} does not use: {unused} — each one narrows the providers "
+                 f"that can be bound")
     output = schemas.get("output_schema")
     if isinstance(output, dict):
         derived = contract.answers_schema(questions)
