@@ -375,7 +375,7 @@ class TestGrantChecks(unittest.TestCase):
             'cog_core.read_allowed(grant, "example-org/example-repo", '
             'run_id="run-1")', doc)
         self.assertFalse(ok)
-        self.assertIn("LIST of repository strings", detail)
+        self.assertIn("LIST of target strings", detail)
 
     def test_a_read_grant_stating_one_repository_as_a_string_denies(self):
         # `"owner/repo"` used to authorize the SUBSTRING "owner": a grant is
@@ -386,11 +386,100 @@ class TestGrantChecks(unittest.TestCase):
                            'cog_core.read_allowed(grant, "owner", '
                            'run_id="run-1")', doc)
         self.assertFalse(ok)
-        self.assertIn("LIST of repository strings", detail)
+        self.assertIn("LIST of target strings", detail)
         ok, _ = probe(self.dest,
                       'cog_core.read_allowed(grant, "owner/repo", '
                       'run_id="run-1")', doc)
         self.assertFalse(ok)
+
+    # ---- `targets`, and no default resource (code-cog 0.2.0) ----
+
+    SITE = "docs.example.org/handbook"
+
+    def site_doc(self, key="targets"):
+        return self.doc(operations=[{"resource": "docs-site", "action": "read",
+                                     key: [self.SITE]}])
+
+    def site_cog(self, entries='{ resource = "docs-site", actions = ["read"] }'):
+        dest = create_code_cog(Path(self.tmp.name) / "site")
+        path = dest / "pixi.toml"
+        path.write_text(path.read_text().replace(
+            "reaches = []", f"reaches = [{entries}]"))
+        return dest
+
+    def test_a_grant_names_targets_and_repositories_is_read_as_its_alias(self):
+        dest = self.site_cog()
+        call = f'cog_core.read_allowed(grant, "{self.SITE}", run_id="run-1")'
+        for key in ("targets", "repositories"):
+            with self.subTest(key=key):
+                self.assertEqual(probe(dest, call, self.site_doc(key)),
+                                 [True, None])
+        ok, detail = probe(
+            dest, 'cog_core.read_allowed(grant, "docs.example.org/private", '
+                  'run_id="run-1")', self.site_doc())
+        self.assertFalse(ok)
+        self.assertIn("docs-site read of", detail)
+
+    def test_a_grant_stating_both_names_denies(self):
+        doc = self.doc(operations=[{"resource": "docs-site", "action": "read",
+                                    "targets": [self.SITE],
+                                    "repositories": [self.SITE]}])
+        ok, detail = probe(
+            self.site_cog(),
+            f'cog_core.read_allowed(grant, "{self.SITE}", run_id="run-1")', doc)
+        self.assertFalse(ok)
+        self.assertIn("both targets and repositories", detail)
+
+    def test_the_resource_is_the_single_declared_reaches_entry(self):
+        # A github grant, checked by a Cog that declares only docs-site:
+        # nothing falls back to github.
+        ok, detail = probe(
+            self.site_cog(),
+            'cog_core.read_allowed(grant, "example-org/example-repo", '
+            'run_id="run-1")', self.doc())
+        self.assertFalse(ok)
+        self.assertIn("docs-site read of", detail)
+
+    def test_several_declared_resources_require_one_to_be_named(self):
+        dest = self.site_cog('{ resource = "docs-site", actions = ["read"] }, '
+                             '{ resource = "tickets", actions = ["write"] }')
+        ok, detail = probe(
+            dest, f'cog_core.read_allowed(grant, "{self.SITE}", '
+                  f'run_id="run-1")', self.site_doc())
+        self.assertFalse(ok)
+        self.assertIn("pass resource=", detail)
+        self.assertIn("docs-site", detail)
+        ok, detail = probe(
+            dest, 'cog_core.write_allowed(grant, "c-1", "1" * 64, '
+                  'run_id="run-1")', self.site_doc())
+        self.assertFalse(ok)
+        self.assertIn("pass resource=", detail)
+        self.assertEqual(probe(
+            dest, f'cog_core.read_allowed(grant, "{self.SITE}", '
+                  f'resource="docs-site", run_id="run-1")', self.site_doc()),
+            [True, None])
+
+    def test_a_cog_that_declares_no_reaches_has_no_resource_to_default_to(self):
+        dest = create_code_cog(Path(self.tmp.name) / "plain")
+        ok, detail = probe(
+            dest, 'cog_core.read_allowed(grant, "example-org/example-repo", '
+                  'run_id="run-1")', self.doc())
+        self.assertFalse(ok)
+        self.assertIn("declares no reaches", detail)
+
+    def test_approved_change_raises_rather_than_reading_as_never_approved(self):
+        dest = create_code_cog(Path(self.tmp.name) / "plain")
+        completed = subprocess.run(
+            [sys.executable, "-c",
+             PROBE % 'cog_core.approved_change(grant, "c-1")',
+             json.dumps(self.doc())],
+            cwd=str(dest), capture_output=True, text=True)
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("ValueError", completed.stderr)
+        self.assertIn("pass resource=", completed.stderr)
+        self.assertIsNone(probe(
+            dest, 'cog_core.approved_change(grant, "c-1", resource="github")',
+            self.doc()))
 
     def test_a_write_grant_whose_changes_are_not_a_list_denies(self):
         doc = self.doc(operations=[{"resource": "github", "action": "write",

@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Describes:** cog-smith Op machinery 0.7.1 (tested against the machinery constant)
+**Describes:** cog-smith Op machinery 0.8.0 (tested against the machinery constant)
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from an internal Op-runner contract (a design note,
 not distributed).
@@ -543,13 +543,13 @@ this subset, and the Track records `guards: []` rather than pretending.
 
 ## 5. Authority: what a step may reach outside the run
 
-A Cog that reaches outside the run (a repository read, a label written)
-declares that in its manifest as `reaches`, and it runs only under a
+A Cog that reaches outside the run (a repository read, a page fetched, a
+label written) declares that in its manifest as `reaches`, and it runs only under a
 **grant**. Two sources of authority, and nothing else:
 
 - **Admission** — the owner's authority for the whole run, passed as
   `op run --authority FILE` and validated against
-  `openteams/op-authority [0.1]`. It names repositories, never change ids.
+  `openteams/op-authority [0.1]`. It names `targets`, never change ids.
   With no `--authority`, a step that requires authority is refused before
   anything is created: *"step write-github requires github write; the run
   was admitted with none."*
@@ -564,7 +564,7 @@ A step declares what it requires; it never grants itself anything:
   authority:
     requires:
       - {resource: github, action: read,
-         repositories: {$from: inputs.repo_config.repositories}}
+         targets: {$from: inputs.repo_config.repositories}}
 
 - id: compose-proposals
   depends_on: [read-github]
@@ -586,7 +586,7 @@ to `runs/<run_id>/grants/<step>/<n>.json` — every issuance gets its own
 number, id and file, so a grant a Track entry points at is never overwritten
 by a reissue after an interruption — then invokes the Cog with `--grant`,
 `--run-id` and `--journal` **beside** the request. A read is issued only if
-its repositories are a subset of the admitted ones; a write only if every
+its targets are a subset of the admitted ones; a write only if every
 requested change was approved by the named human decision, whose record must
 still hash to what the Track recorded. The grant carries EXACTLY the approved
 list — asking for more than was approved is a **denial, not a trim**. A
@@ -604,6 +604,37 @@ either hash, carrying a null one, or carrying something that is not a
 sha256, is denied there too. A write Cog computes the content hash from the
 change it is about to apply — never forwards the digest its bundle states —
 so content cannot be swapped under an approved id.
+
+**Resources and targets are names, not GitHub.** A `resource` is any name
+the admission, the step and the Cog's `reaches` agree on, and a target is an
+opaque string under it: a repository, a site, a document store, an API. A
+Cog that reads a documentation site declares
+`reaches = [{ resource = "docs-site", actions = ["read"] }]`, and the step
+and the admission say:
+
+```yaml
+- id: read-handbook
+  cog: {id: openteams/cog-site-reader, source: ../cog-site-reader, task: run}
+  input: {pages: {$from: inputs.site_config.pages}}
+  authority:
+    requires:
+      - {resource: docs-site, action: read,
+         targets: {$from: inputs.site_config.pages}}
+```
+
+```json
+{"schema": "openteams/op-authority [0.1]",
+ "operations": [{"resource": "docs-site", "action": "read",
+                 "targets": ["docs.example.org/handbook"]}]}
+```
+
+A request for `docs.example.org/private` is denied at issuance, exactly as an
+unadmitted repository is. `repositories` is the earlier name for `targets`
+and is still read, in the admission and in `authority.requires`, so an
+existing document loads unchanged (Op machinery 0.8.0). One operation states
+one of the two names; stating both is refused. A read grant names its
+targets under the key its requirement used, so an existing spec keeps
+issuing the grant an existing Cog reads.
 
 `authority.ttl_minutes` at the top level of `op.yaml` (default 60) is how
 long an issued grant stays valid. A grant carries no credentials, cannot be

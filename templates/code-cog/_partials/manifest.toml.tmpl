@@ -17,9 +17,10 @@ memory = "none"
 requires = []
 # What this Cog touches OUTSIDE the run — declared, never inferred, and the
 # thing a grant is checked against. Empty means it reaches nothing, and the
-# Op runner issues it no grant. A reaching entry looks like:
+# Op runner issues it no grant. A resource is any name the admission uses: a
+# code host, a site, a store. A reaching entry looks like:
 #   [[tool.cog.reaches]]
-#   resource = "github"
+#   resource = "docs-site"
 #   actions = ["read"]
 reaches = []
 # Evidence-tier boundary: prohibitions are structural today; they become

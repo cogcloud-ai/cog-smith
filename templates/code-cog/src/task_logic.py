@@ -18,7 +18,9 @@ The three arguments:
 
 `grant` is the invocation's authority document (None when the Cog reaches
 nothing) — read it with the cog_core helpers before every external call, and
-report what you attempted in the payload's `authority_use` list. `journal`
+report what you attempted in the payload's `authority_use` list. The helpers
+check against the resource of your single declared `reaches` entry; a Cog
+that declares several passes `resource=` on every check. `journal`
 is a cog_core.Journal (or None): read it FIRST so an effect already applied
 is never applied twice, and record `applying` before an external effect and
 `applied`/`failed` after it.
@@ -30,6 +32,7 @@ decided change or reconciling by reads reports no write.
 
     def run(bundle, grant, journal):
         import cog_core
+        resource, _ = cog_core.declared_resource()   # the one you declared
         problems, used, unresolved = [], [], []
         done = journal.phases() if journal else {}
         for change in bundle["changes"]:
@@ -57,14 +60,14 @@ decided change or reconciling by reads reports no write.
                 grant, cid, fetch_target_sha256(change),
                 content_sha256=cog_core.change_content_sha256(change))
             if not ok:
-                used.append(cog_core.use("write", "github", cid, "denied", detail))
+                used.append(cog_core.use("write", resource, cid, "denied", detail))
                 problems.append(cog_core.problem("authority", detail, "warn"))
                 continue
             journal.append({"change_id": cid, "phase": "applying"})
             ...                              # 4. the one external call
             journal.append({"change_id": cid, "phase": "applied",
                             "evidence": {...}})
-            used.append(cog_core.use("write", "github", cid, "authorized"))
+            used.append(cog_core.use("write", resource, cid, "authorized"))
         # Anything still unsettled — a call that got no definitive answer —
         # is an ERROR-severity problem with a name of its own, so the step's
         # Gate fails, the run stops there and `op run --resume` invokes this

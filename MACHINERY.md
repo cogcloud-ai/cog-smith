@@ -194,6 +194,30 @@ The honesty rule is part
 of the machinery's doc comments and stays there: the grant is checked by the
 Cog's OWN code; the local host is not an enforced restricted environment.
 
+### Code-cog 0.2.0 (2026-10-08) — `targets`, and no default resource (issue #11)
+
+The grant helpers were generic in mechanism and GitHub-shaped in vocabulary.
+
+- **`targets`.** `read_allowed` reads a granted read's `targets`.
+  `repositories` is read as the earlier name for the same list; an operation
+  that states both is denied by name. Refusal messages say "targets".
+- **No `github` default.** `read_allowed`, `approved_change` and
+  `write_allowed` take `resource=None` and resolve it through the new
+  `declared_resource()`: the resource of the Cog's single declared `reaches`
+  entry. With several declared resources, or none, and no `resource=`, the
+  two `(ok, detail)` helpers deny with `pass resource=` in the detail and
+  `approved_change` raises `ValueError` — None there would read as "never
+  approved". A forgotten `resource=` used to check against `github`
+  silently.
+- **Starter.** The `task_logic.py` sketch, the manifest comments and the
+  generated `tests/test_cog.py` use a `docs-site` resource; the generated
+  suite covers the single-entry default and the several-entries refusal.
+
+A MINOR bump: a Cog that reaches something other than `github`, or declares
+several resources, and relied on the default must name its resource. A Cog
+whose only `reaches` entry is `github` behaves as before. Created code Cogs
+take it by re-copying `cog_core.py`.
+
 ### Code-cog 0.1.5 (2026-09-23) — comments made self-contained for the public suite
 
 Comment/docstring-only; no behaviour change. `cog_core.py` and `cog_cli.py`
@@ -346,6 +370,27 @@ Semantics implemented from an internal Op-runner contract (a design note,
 not distributed). Gate wording is unchanged from the sample Op: three states
 (`pass`, `pass-with-problems`, `fail`) with the reasons listed, `guards: []`
 recorded honestly, and the Gate — never the Cog — deciding acceptance.
+
+### 0.8.0 — an operation names `targets` (2026-10-08, issue #11)
+
+What an operation may touch was called `repositories` in the admission, the
+grant and `authority.requires`, though the runner has always treated each
+entry as an opaque string. The name is now `targets`.
+
+- **Alias.** `repositories` is still read in an admission and in
+  `authority.requires` (`op_spec.TARGET_KEYS`, `op_spec.target_key`), so an
+  existing `op.yaml` and admission load unchanged. An operation or
+  requirement that states both names is refused at load.
+- **The grant.** A read grant names its targets under the key its
+  requirement used: a spec that says `targets` issues `targets`, and an
+  existing spec keeps issuing `repositories`, which a code Cog on machinery
+  0.1.x reads. Code-cog 0.2.0 reads both.
+- **Messages.** Refusals say "targets" ("declares no targets", "not a list
+  of targets"). `admitted_repositories` is `admitted_targets`.
+
+Unchanged: the Track's grant record, and a change's own `repository` field,
+which a write is still checked against the admitted write targets by. A spec
+that moves to `targets` needs its reading Cog on code-cog 0.2.0.
 
 ### 0.7.1 — comments made self-contained for the public suite (2026-09-23)
 

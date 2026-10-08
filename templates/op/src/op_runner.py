@@ -794,15 +794,16 @@ def _document(path, schema, what):
 def load_authority(path):
     """The run's ADMISSION: the owner's authority for the whole run, in the
     same operation shape as a grant. `write` operations carry the
-    repositories writes may EVER touch — never change ids, which only a
-    human decision can name."""
+    targets writes may EVER touch — never change ids, which only a
+    human decision can name. `repositories` is read as the earlier name for
+    `targets`; an operation that states both is refused."""
     doc = _document(path, AUTHORITY_SCHEMA, "run admission")
     operations = doc.get("operations")
     problems = []
     if not isinstance(operations, list) or not operations:
         raise op_spec.OpSpecError(
             f"{Path(path).name} admits no operations; a run admission is a "
-            f"list of {{resource, action, repositories}} operations.")
+            f"list of {{resource, action, targets}} operations.")
     for index, operation in enumerate(operations):
         where = f"the admission's operations[{index}]"
         if not isinstance(operation, dict):
@@ -812,28 +813,33 @@ def load_authority(path):
             if not isinstance(operation.get(field), str) or not operation[field]:
                 problems.append(f"{where} declares {field} "
                                 f"{operation.get(field)!r}; it is a string.")
-        repositories = operation.get("repositories")
-        if not isinstance(repositories, list) or any(
-                not isinstance(r, str) for r in repositories):
-            problems.append(f"{where} declares repositories "
-                            f"{repositories!r}; an admitted operation names "
-                            f"the repositories it may touch.")
+        if all(key in operation for key in op_spec.TARGET_KEYS):
+            problems.append(f"{where} declares both targets and "
+                            f"repositories; repositories is the earlier "
+                            f"name for targets, and an operation states one "
+                            f"of them.")
+        targets = operation.get(op_spec.target_key(operation))
+        if not isinstance(targets, list) or any(
+                not isinstance(t, str) for t in targets):
+            problems.append(f"{where} declares targets "
+                            f"{targets!r}; an admitted operation names "
+                            f"the targets it may touch.")
         if "changes" in operation:
             problems.append(f"{where} names changes; an admission admits "
-                            f"repositories, and only a human decision names "
+                            f"targets, and only a human decision names "
                             f"change ids.")
     if problems:
         raise op_spec.OpSpecError(problems)
     return doc
 
 
-def admitted_repositories(authority, resource, action):
-    """The repositories the run was admitted to touch for one operation."""
+def admitted_targets(authority, resource, action):
+    """The targets the run was admitted to touch for one operation."""
     out = set()
     for operation in (authority or {}).get("operations") or []:
         if (operation.get("resource") == resource
                 and operation.get("action") == action):
-            out |= {r for r in operation.get("repositories") or []}
+            out |= set(operation.get(op_spec.target_key(operation)) or [])
     return out
 
 
@@ -975,7 +981,7 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions,
                         != approved[cid].get("content_sha256"):
                     raise Denied(f"change {cid!r} was approved against other "
                                  f"content than the one requested")
-            admitted = admitted_repositories(authority, resource, "write")
+            admitted = admitted_targets(authority, resource, "write")
             for cid, change in approved.items():
                 repository = change.get("repository")
                 if not isinstance(repository, str) or repository not in admitted:
@@ -1006,21 +1012,24 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions,
                           "decision": str(Path(path).resolve()),
                           "decision_sha256": record.get("decision_sha256")}
         else:
-            requested = op_spec.evaluate(requirement.get("repositories"),
-                                         context) or []
+            # The grant names its targets under the key the requirement
+            # used, so an existing spec keeps issuing the grant an existing
+            # Cog reads (0.8.0).
+            key = op_spec.target_key(requirement)
+            requested = op_spec.evaluate(requirement.get(key), context) or []
             if not isinstance(requested, list) or any(
                     not isinstance(r, str) for r in requested):
                 raise Denied(f"step {sid!r} requires {resource} {action} of "
                              f"{requested!r}, which is not a list of "
-                             f"repositories")
-            admitted = admitted_repositories(authority, resource, action)
+                             f"targets")
+            admitted = admitted_targets(authority, resource, action)
             outside = [r for r in requested if r not in admitted]
             if outside:
                 raise Denied(f"step {sid!r} requires {resource} {action} of "
                              f"{outside}, which this run's admission does not "
                              f"cover")
             operations.append({"resource": resource, "action": action,
-                               "repositories": list(requested)})
+                               key: list(requested)})
     index = _next_grant_index(run_dir, sid)
     grant = grant_document(step, run_id, operations, provenance,
                            spec.ttl_minutes,
@@ -1040,7 +1049,7 @@ def grant_record(grant, path):
         "path": str(Path(path).resolve()),
         "operations": [{"resource": o.get("resource"),
                         "action": o.get("action"),
-                        "count": len(o.get("repositories")
+                        "count": len(o.get(op_spec.target_key(o))
                                      or o.get("changes") or [])}
                        for o in grant["operations"]],
         "issued_by": grant["issued_by"],

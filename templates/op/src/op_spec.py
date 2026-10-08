@@ -84,7 +84,12 @@ TRACK_KEYS = {"records"}
 #: never grants itself anything.
 AUTHORITY_TOP_KEYS = {"ttl_minutes"}
 STEP_AUTHORITY_KEYS = {"requires"}
-REQUIREMENT_KEYS = {"resource", "action", "repositories", "changes"}
+#: What an operation may touch is named `targets`: a repository, a site, a
+#: document store, an API — the runner treats each as an opaque string.
+#: `repositories` is the name existing documents use for the same list and is
+#: read as an alias; a document that states both is refused (0.8.0).
+TARGET_KEYS = ("targets", "repositories")
+REQUIREMENT_KEYS = {"resource", "action", "changes", *TARGET_KEYS}
 DEFAULT_TTL_MINUTES = 60
 
 # Refused by name, with the phase that adds the construct. A value of None
@@ -680,6 +685,16 @@ def ttl_minutes(doc):
 APPROVED_PATH = "steps.{step}.decision.approved"
 
 
+def target_key(operation):
+    """The key OPERATION names its targets under — `targets`, or
+    `repositories` in an existing document — or None when it names neither.
+    Stating both is refused wherever a document is validated."""
+    for key in TARGET_KEYS:
+        if key in (operation or {}):
+            return key
+    return None
+
+
 def decision_step(requirement):
     """The step whose human decision a write requirement's `changes` reads,
     or None when the expression is not `{$from: steps.<id>.decision.approved}`.
@@ -785,8 +800,13 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
             problems.append(f"{where} declares changes on a "
                             f"{requirement.get('action')!r} requirement; "
                             f"changes belong to a write.")
-        elif requirement.get("repositories") is None:
-            problems.append(f"{where} declares no repositories; a read "
+        elif all(key in requirement for key in TARGET_KEYS):
+            problems.append(f"{where} declares both targets and "
+                            f"repositories; repositories is the earlier "
+                            f"name for targets, and a requirement states "
+                            f"one of them.")
+        elif requirement.get(target_key(requirement)) is None:
+            problems.append(f"{where} declares no targets; a read "
                             f"requirement names what it reads.")
 
 
@@ -1093,7 +1113,7 @@ def validate(doc):
         for index, requirement in enumerate(requirements(step)):
             if not isinstance(requirement, dict):
                 continue
-            for field in ("repositories", "changes"):
+            for field in (*TARGET_KEYS, "changes"):
                 if field in requirement:
                     _expr_problems(
                         requirement[field],
