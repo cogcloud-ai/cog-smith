@@ -62,6 +62,14 @@ DECISION_EXTENSION = "system_one"
 #: serve a web-api endpoint (MODEL_COG_* and PORT are asked about).
 SATISFIER_TEMPLATES = {"context-cog"}
 
+#: The starter's `io.produces` value. `smith check` warns while a package
+#: still declares it: it names the toy task, not the Cog's own output.
+STARTER_PRODUCES = "highlights"
+
+#: The context-cog machinery lineage (MACHINERY.md). Its masters carry no
+#: version constant of their own, so it is stated here; bump it with them.
+CONTEXT_MACHINERY_VERSION = "0.4.5"
+
 
 def template_for(manifest):
     """The template master whose machinery a package must carry. Declared,
@@ -154,7 +162,7 @@ def validate_request(tokens, template="context-cog"):
     produces = str(tokens.get("PRODUCES", ""))
     if not TOKEN_WORD_RE.match(produces):
         problems.append(f"PRODUCES must be a lowercase token "
-                        f"(e.g. highlights), got {produces!r}")
+                        f"(e.g. release_brief), got {produces!r}")
 
     for line in str(tokens.get("PROHIBITS_YAML", "")).splitlines():
         item = line.strip().lstrip("- ").strip()
@@ -239,7 +247,7 @@ def default_tokens(cog_name, **overrides):
         "LICENSE": "Apache-2.0",
         "PUBLISHER": "OpenTeams",
         "PORT": "8093",
-        "PRODUCES": "highlights",
+        "PRODUCES": STARTER_PRODUCES,
         "MODEL_COG_ID": "openteams/cog-qwen",
         "MODEL_COG_SOURCE": "../cog-qwen",
         "PROHIBITS_YAML": "  - send_external_message\n  - modify_source_data",

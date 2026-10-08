@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Last verified:** 2026-09-19 against cog-smith Op machinery 0.5.6
+**Describes:** cog-smith Op machinery 0.7.1 (tested against the machinery constant)
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from an internal Op-runner contract (a design note,
 not distributed).

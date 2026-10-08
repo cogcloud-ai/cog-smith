@@ -271,8 +271,9 @@ def cmd_new(args):
                 "loopback port the HTTP entry point listens on (pixi run serve)")
         tokens["PRODUCES"] = _prompt(
             "io.produces value", tokens["PRODUCES"],
-            "lowercase token naming what this Cog produces, e.g. highlights "
-            "— shown in the card's io line")
+            "lowercase token naming what this Cog produces, e.g. "
+            "release_brief — shown in the card's io line; check warns while "
+            "it is still the starter's value")
         if serves:
             # A code Cog has no model dependency to satisfy, and a decision
             # Cog's System One satisfier is admitted by a host.

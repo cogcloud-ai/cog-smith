@@ -1,8 +1,9 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Last verified:** 2026-09-19 against cog-smith Op machinery 0.5.6 /
-context-cog machinery 0.4.0 / code-cog machinery 0.1.4  
+**Describes:** cog-smith Op machinery 0.7.1 / context-cog machinery 0.4.5 /
+code-cog machinery 0.1.6 / decision-cog machinery 0.1.2 (tested against the
+machinery constants)  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
 not universal CogSpec requirements.
@@ -457,6 +458,19 @@ For a scripted create, pass the yes flag and explicit values:
       --prohibit send_external_message \
       --prohibit modify_source_data
 
+A value containing an apostrophe, such as `--summary "Counts a reader's
+words."`, fails under `pixi run new` with `Expected closing single quote`: the
+pixi task shell re-parses the arguments. Call the CLI directly instead, from
+`pixi shell` or any Python 3.11+ environment with pyyaml and jsonschema:
+
+    python src/cogsmith_cli.py new --dir ../word-count --yes \
+      --summary "Counts a reader's words." --produces word_count
+
+A request file (below) carries such a value too.
+
+Name what the Cog produces. The starter's value is `highlights`, and the
+checker warns while `io.produces` is still exactly that.
+
 The Cog's name defaults to the destination directory's basename; pass the name
 option (and the id option) when the directory name cannot serve. The name uses
 lowercase ASCII letters, digits, and single hyphens; no leading, trailing, or
@@ -671,6 +685,7 @@ First check [why and when to use this type](#why-code-cogs-exist-and-when-to-use
 What you get:
 
     cog-example-reader/
+    ├── .gitignore
     ├── COG.md
     ├── pixi.toml             # [tool.cog] manifest; tasks: run, check, test
     ├── context/
@@ -860,6 +875,11 @@ changing the questions, run `pixi run derive-schema`; `smith check` and
 `pixi run check` refuse drift. `questions(bundle, declared)` may reword
 instructions or rubrics per input (to point at fields in the state, say) but
 may not change ids, types, options or levels.
+
+The starter declares `required_features = ["choice", "noul", "score"]` because
+its question set uses all three. Keep that list to the question types your
+`questions.json` uses: each extra one narrows the providers that can be bound,
+and `smith check` warns about it.
 
 A decision Cog never selects its provider. There is no `resolve` task and no
 default satisfier: a host admits a `system-one/decisions` binding (see

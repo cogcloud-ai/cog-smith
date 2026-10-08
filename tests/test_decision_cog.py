@@ -25,9 +25,9 @@ TEMPLATE = ROOT / "templates" / "decision-cog"
 
 
 def create_decision_cog(tmp, name="cog-ticket-router", manifest_format="pixi",
-                        overlays=None):
+                        overlays=None, **overrides):
     dest = Path(tmp) / name
-    tokens = smith_core.default_tokens(name)
+    tokens = smith_core.default_tokens(name, **overrides)
     smith_core.create(dest, tokens, template="decision-cog",
                       manifest_format=manifest_format, overlays=overlays)
     return dest
@@ -47,7 +47,8 @@ class CreateTests(unittest.TestCase):
     def test_created_decision_cog_passes_check_clean_in_both_formats(self):
         for fmt in ("pixi", "yaml"):
             with self.subTest(fmt=fmt), tempfile.TemporaryDirectory() as tmp:
-                dest = create_decision_cog(tmp, manifest_format=fmt)
+                dest = create_decision_cog(tmp, manifest_format=fmt,
+                                           PRODUCES="routing_decision")
                 findings = smith_check.check(dest)
                 self.assertEqual(findings, [], findings)
 

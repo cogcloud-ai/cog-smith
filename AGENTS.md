@@ -22,6 +22,9 @@ the single source of the machinery every created Cog carries.
   answers + drafted context overlays, created atomically then checked;
   flags override request values; overlays never touch src/. Format:
   examples/cog-request.json.
+  A value with an apostrophe (`--summary "Counts a reader's words."`) fails
+  under `pixi run new`: the pixi task shell re-parses the arguments. Use
+  `python src/cogsmith_cli.py new …` inside `pixi shell`, or a request file.
 - Validate: `pixi run check -- <path> [--tests] [--envelope]`
 - Ops: `python src/cogsmith_cli.py op new --from-spec <spec> --dir <dir>` and
   `op check <dir> [--tests] [--envelope]` — the Op half of the builder
@@ -46,10 +49,12 @@ the single source of the machinery every created Cog carries.
 1. **Machinery is sacred:** template `src/` masters change only here, with
    MACHINERY.md updated; created Cogs never edit them (task_logic.py is the
    sole author-owned src module). `smith check` enforces by hash. The same
-   rule covers `templates/op/src/` (Op machinery 0.5.0), where the
+   rule covers `templates/op/src/` (Op machinery 0.7.1), where the
    author-owned part is op.yaml and nothing else, and
-   `templates/code-cog/src/` (code-cog machinery 0.1.0) and
-   `templates/decision-cog/src/` (decision-cog machinery 0.1.3).
+   `templates/code-cog/src/` (code-cog machinery 0.1.6) and
+   `templates/decision-cog/src/` (decision-cog machinery 0.1.3). These
+   statements and the guides' headers are tested against the machinery
+   constants (`tests/test_starter_cleanups.py`); bump them together.
 2. **Envelope v1 is the emitted contract** (ENVELOPE.md): fixed `payload`
    key, structured problems, ok-may-carry-problems (gates decide), binding
    identity in every result. Changing it = versioning event, not an edit.
