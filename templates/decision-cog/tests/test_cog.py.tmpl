@@ -60,6 +60,7 @@ class TestTurn(unittest.TestCase):
         env = cog_core.finish(sample_bundle(), sample_result(), {"kind": "test"})
         self.assertTrue(env["ok"], env)
         self.assertEqual(env["problems"], [])
+        self.assertEqual(env["provider_result"], sample_result())
         self.assertEqual(env["payload"]["answered_by"]["answer_source"], "system-one-model")
         self.assertIsInstance(env["payload"]["decision"], dict)
 
@@ -70,6 +71,7 @@ class TestTurn(unittest.TestCase):
         env = cog_core.finish(sample_bundle(), result, None)
         self.assertFalse(env["ok"])
         self.assertEqual(env["error"]["code"], "answers-invalid")
+        self.assertNotIn("provider_result", env)
 
     def test_question_wording_may_vary_but_not_the_answer_space(self):
         original = task_logic.questions
