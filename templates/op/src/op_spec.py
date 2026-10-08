@@ -761,6 +761,14 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
                 problems.append(f"{where} declares {field} "
                                 f"{requirement.get(field)!r}; a requirement's "
                                 f"{field} is a string.")
+        # Whatever the action: a write's lists are not what the grant is
+        # issued from, so a conflict there would otherwise pass unread.
+        both = all(key in requirement for key in TARGET_KEYS)
+        if both:
+            problems.append(f"{where} declares both targets and "
+                            f"repositories; repositories is the earlier "
+                            f"name for targets, and a requirement states "
+                            f"one of them.")
         if requirement.get("action") == "write":
             target = decision_step(requirement)
             if target is None:
@@ -800,12 +808,7 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
             problems.append(f"{where} declares changes on a "
                             f"{requirement.get('action')!r} requirement; "
                             f"changes belong to a write.")
-        elif all(key in requirement for key in TARGET_KEYS):
-            problems.append(f"{where} declares both targets and "
-                            f"repositories; repositories is the earlier "
-                            f"name for targets, and a requirement states "
-                            f"one of them.")
-        elif requirement.get(target_key(requirement)) is None:
+        elif not both and requirement.get(target_key(requirement)) is None:
             problems.append(f"{where} declares no targets; a read "
                             f"requirement names what it reads.")
 

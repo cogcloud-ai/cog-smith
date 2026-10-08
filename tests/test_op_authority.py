@@ -292,6 +292,21 @@ class AuthorityTests(AuthorityCase):
         self.assertIn("declares both targets and repositories",
                       "\n".join(caught.exception.problems))
 
+    def test_a_write_requirement_stating_both_names_is_refused_at_load(self):
+        doc = spec_doc()
+        op_spec.validate(doc)  # the human-gated write is valid as it stands
+        requirement = doc["steps"][2]["authority"]["requires"][0]
+        requirement["targets"] = [REPO]
+        requirement["repositories"] = [OTHER_REPO]
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.validate(doc)
+        self.assertEqual(
+            [p for p in caught.exception.problems
+             if "declares both targets and repositories" in p],
+            ["Op step 'example-writer' authority.requires[0] declares both "
+             "targets and repositories; repositories is the earlier name for "
+             "targets, and a requirement states one of them."])
+
     def test_an_admission_stating_both_names_is_refused(self):
         doc = fx.authority_doc()
         doc["operations"][0]["repositories"] = [OTHER_REPO]
