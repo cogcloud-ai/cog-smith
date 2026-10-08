@@ -69,6 +69,16 @@ class DecideTests(unittest.TestCase):
         with self.assertRaises(op_spec.OpSpecError):
             smith_decide.prepare(self.run, defer_rest=True, by='learner')
 
+    def test_cli_repeated_flags_preserve_all_selections(self):
+        import cogsmith_cli
+        for flag, verdict in (('--approve', 'approve'), ('--reject', 'reject')):
+            output = self.run / (verdict + '.json')
+            argv = ['smith', 'op', 'decide', str(self.run), flag, 'a', flag, 'b',
+                    '--by', 'learner', '--output', str(output)]
+            with mock.patch.object(sys, 'argv', argv), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cogsmith_cli.main(), 0)
+            self.assertEqual([r['verdict'] for r in json.loads(output.read_text())['decisions']], [verdict, verdict])
+
     def test_cli_resume_uses_the_selected_packages_own_runtime(self):
         import cogsmith_cli
         package = self.run / 'package'
