@@ -481,7 +481,7 @@ AUTHORITY_SCHEMA = "openteams/op-authority [0.1]"
 GRANT_SCHEMA = "openteams/op-grant [0.1]"
 PENDING_SCHEMA = "openteams/op-pending-decision [0.1]"
 DECISION_SCHEMA = "openteams/op-decision [0.1]"
-VERDICTS = ("approve", "reject", "edit")
+VERDICTS = ("approve", "reject", "edit", "defer")
 #: The verdicts of a decision about an ARTIFACT (machinery 0.7.0): one
 #: thing, taken whole or refused whole. There is no edit — an edited
 #: artifact is a different artifact, with different digests, and is decided
@@ -1507,7 +1507,7 @@ def apply_decision(pending, decision):
     if not isinstance(decisions, list):
         raise op_spec.OpSpecError("the decision document declares no "
                                   "decisions list.")
-    seen, approved, rejected, edited, history = set(), [], [], [], []
+    seen, approved, rejected, edited, deferred, history = set(), [], [], [], [], []
     for index, entry in enumerate(decisions):
         where = f"decisions[{index}]"
         if not isinstance(entry, dict):
@@ -1537,6 +1537,9 @@ def apply_decision(pending, decision):
         elif verdict == "reject":
             change = dict(proposed[cid])
             rejected.append(cid)
+        elif verdict == "defer":
+            change = dict(proposed[cid])
+            deferred.append(cid)
         else:
             change = entry.get("change")
             if not isinstance(change, dict) or change.get("change_id") != cid:
@@ -1568,7 +1571,7 @@ def apply_decision(pending, decision):
     # `approved` carries the effective objects, which for an
     # edited change is the EDITED one.
     return {"approved": approved, "rejected": rejected, "edited": edited,
-            "history": history,
+            "deferred": deferred, "history": history,
             "decided_by": decision["decided_by"].strip(),
             "decided_at": decision["decided_at"].strip()}
 

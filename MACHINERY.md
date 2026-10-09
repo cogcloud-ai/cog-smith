@@ -1485,3 +1485,13 @@ No provider selection, Op lifecycle policy or Workbench invocation code changes.
 Decision 0.1.3 review hardening: export verifies replayed decisions, preserves
 normal fixture directory permissions, and generated tests refuse empty sets.
 Replay refuses failed envelopes. Recorded paths require the original run location.
+
+### 0.8.1 — explicit deferred changes (2026-10-08)
+
+The shared Op runner accepts a `defer` verdict for a proposed change and records
+its id in `decision.deferred`, separate from approved and rejected ids. A deferred
+change never enters `approved`, so it cannot authorize a write grant. Artifact
+Gates remain whole-artifact accept/reject decisions. Existing change decisions
+keep their behavior and gain an empty deferred list. The runtime hash changes;
+created Ops carry the new master byte-identically. The Smith client adds
+`op decide` and scaffolded empty-scope admission files without per-Op Python.

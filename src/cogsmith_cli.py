@@ -58,6 +58,7 @@ import smith_manifest  # noqa: E402
 import smith_migrate  # noqa: E402
 import smith_models  # noqa: E402
 import smith_op      # noqa: E402
+import smith_decide  # noqa: E402
 import op_spec       # noqa: E402  (the Op machinery master, imported by smith_op)
 
 SMITH_ROOT = Path(__file__).resolve().parent.parent
@@ -432,6 +433,23 @@ def cmd_op_new(args):
     return smith_check.report(findings)
 
 
+def cmd_op_decide(args):
+    verdict = 'accept' if args.accept else 'reject' if args.reject_artifact else None
+    document = smith_decide.prepare(args.run, approve=args.approve, reject=args.reject,
+        reject_rest=args.reject_rest, defer_rest=args.defer_rest, verdict=verdict,
+        reason=args.reason, by=args.by, step=args.step)
+    package = Path(args.package).resolve() if args.package else Path(args.run).resolve().parent.parent
+    if args.resume and not (package / 'op.yaml').is_file():
+        raise op_spec.OpSpecError('For a custom runs directory, pass --package OP_DIR to resume.')
+    path = smith_decide.save(args.run, document, args.output)
+    print(json.dumps(document, indent=2))
+    print(f'Decision written to {path}', file=sys.stderr)
+    if args.resume:
+        return subprocess.run([sys.executable, str(package / 'src/op_runner.py'),
+            '--resume', str(Path(args.run).resolve()), '--decision', str(path)], cwd=package).returncode
+    return 0
+
+
 def cmd_op_check(args):
     started = time.monotonic()
     findings = smith_op.check(args.path, run_tests=args.tests)
@@ -602,6 +620,24 @@ def main():
     q.add_argument("--envelope", action="store_true",
                    help="emit an envelope-v1 result (findings in problems)")
     q.set_defaults(fn=cmd_op_check, cmd="op check")
+
+    q = op_sub.add_parser("decide", help="prepare a human decision from a paused run")
+    q.add_argument("run", metavar="RUN_DIR")
+    q.add_argument("--approve", action="extend", nargs="+", default=[])
+    q.add_argument("--reject", action="extend", nargs="+", default=[])
+    remainder = q.add_mutually_exclusive_group()
+    remainder.add_argument("--reject-rest", action="store_true")
+    remainder.add_argument("--defer-rest", action="store_true")
+    artifact = q.add_mutually_exclusive_group()
+    artifact.add_argument("--accept", action="store_true")
+    artifact.add_argument("--reject-artifact", action="store_true")
+    q.add_argument("--reason")
+    q.add_argument("--by", required=True)
+    q.add_argument("--step")
+    q.add_argument("--output", help="new decision file; existing files are never overwritten")
+    q.add_argument("--resume", action="store_true")
+    q.add_argument("--package", help="Op package, needed for custom run directories with --resume")
+    q.set_defaults(fn=cmd_op_decide, cmd="op decide", envelope=False)
 
     q = op_sub.add_parser("run", help="run an Op package's own runner")
     q.add_argument("path")
