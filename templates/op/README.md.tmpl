@@ -30,7 +30,10 @@ When a human Gate pauses, run from the public cog-smith directory:
 `pixi run python src/cogsmith_cli.py op decide RUN_DIR --approve ID
 --defer-rest --by NAME` (or `--accept` for an artifact Gate). This prepares a
 digest-bound decision and prints its file path. Apply that file through this
-Op's declared resume task. For a bounded cycle, use its `cycle --resume`
+Op's declared resume task from the generated Op directory:
+`pixi run op -- --resume RUN_DIR --decision FILE`.
+For a bounded cycle, use `pixi run cycle -- --resume CYCLE_DIR --decision FILE`
+when the cycle task is declared, rather than its ordinary resume
 task so the cycle retains its transitions and budget.
 
 Each run writes `runs/<run id>/` with the input request, every step request,
