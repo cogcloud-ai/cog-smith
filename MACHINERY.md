@@ -1495,3 +1495,78 @@ Gates remain whole-artifact accept/reject decisions. Existing change decisions
 keep their behavior and gain an empty deferred list. The runtime hash changes;
 created Ops carry the new master byte-identically. The Smith client adds
 `op decide` and scaffolded empty-scope admission files without per-Op Python.
+
+## Op machinery 0.8.2 — behavior fingerprint coverage
+
+The per-invocation Cog fingerprint now also covers `scripts/`, `binding/` and
+`contracts/`, matching Workbench composition invalidation coverage. Changes to a
+declared usage adapter or contract can no longer reuse an old result during
+resume. Tests, examples, evals, lockfiles and top-level prose remain outside this digest.
+Existing tracks created with older fingerprint coverage require their original
+runtime; upgrading the runtime changes the Op package and requires a new run.
+
+## Decision Cog machinery 0.1.4 — portable composition adapter
+
+The generated Workbench usage adapter is upgraded byte-identically from the
+public host canonical source. It resolves workspace-relative installations and
+prints an exact reactivation command after a stale host/consumer change. Nested
+consumer packages can locate the fixed public Workbench sibling in their ancestor
+workspace. Other decision machinery behavior is unchanged.
+
+## Op machinery 0.9.0 — bounded declarative cycles and single-call recovery
+
+`op.yaml` may declare a cycle outcome step/field, explicit outcome-to-restart
+transitions, optional declared preparation Cog steps/input replacements, attempt
+limits and integer cost reservation units per invocation. The shared `op_cycle.py`
+master and generated `cycle` task retain each phase's manifest, request, Track,
+candidate and review. Pure Cog phases are preflighted before starting; authority
+workflows are refused. Accepted prefix results are reused, never repurchased.
+
+Cost units are reserved durably before invocation, including retries. A refused
+or interrupted invocation is conservatively spent, never silently refunded.
+Reservation units are caller-defined caps, not measured vendor billing. Cycles
+stop before exceeding either budget, never expand limits on resume, and require
+a final artifact acceptance as declared by the Op. Phase mappings retain the
+original request directory. Original specs and machinery are fingerprinted.
+
+Ordinary single calls now checkpoint an asking ledger before invoking, so a
+successful envelope durably written before a crash can be recovered under the
+same request/Cog fingerprint. Failed Gates remain retryable; a manually marked
+running record with an already answered ledger remains subject to the existing
+resume behavior. Files and earlier attempts are retained. This fixes the remaining
+single-call window that would otherwise repeat paid work inside a cycle.
+
+Composed provider identity is now included in Op invocation fingerprints: exact
+consumer/context, provider/model binding revisions and host behavior digest.
+Workspace/state paths and derived installation checksums are excluded so a move
+alone does not invalidate results. Workbench composition behavior fingerprints
+exclude their own installation to avoid circular hashing; Op fingerprints add
+this separately admitted identity. A changed provider cannot reuse an old answer.
+
+Smith itself declares `op-decide` as a usage task so Workbench can prepare Gate
+decisions through the public operation instead of importing an internal helper.
+
+## Op machinery 0.9.1 — cycle review hardening
+
+Child Tracks record cycle ownership and refuse single-run continuation without
+the owning policy. Reservations precede asking checkpoints; resume cross-checks
+the ledger against non-imported child attempts. Consistent edits to every local
+receipt are not authenticated tamper protection. Refused decisions restore the
+cycle's prior status and discovered child paths remain recorded on exhaustion.
+
+## Op machinery 0.9.2
+
+Cycles retain the original request path before invoking Cogs, reconcile interrupted
+parent status with the child Track, and treat completion with warnings consistently.
+Attempt exhaustion preserves the finished transition Track. Optional declarative
+`terminal_errors` maps step IDs to envelope error codes that finish a cycle as
+`refused`, retaining the failed step and reason without repeated invocations.
+Reported error codes also apply to a well-formed failed Cog envelope retained
+in an invocation failure after a nonzero process exit. The failed Track and
+process evidence remain unchanged.
+
+## Op machinery 0.9.3
+
+Clear a recoverable failure reason before driving its retry, so paused or
+completed builds display their current state. Terminal refusal and exhaustion
+reasons remain retained; malformed decisions still preserve a paused state.

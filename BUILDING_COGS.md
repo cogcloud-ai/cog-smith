@@ -1,8 +1,8 @@
 # Building and Improving Cogs
 
 **Audience:** New Cog builders, reviewers, and coding agents  
-**Describes:** cog-smith Op machinery 0.8.1 / context-cog machinery 0.4.5 /
-code-cog machinery 0.2.0 / decision-cog machinery 0.1.3 (tested against the
+**Describes:** cog-smith Op machinery 0.9.3 / context-cog machinery 0.4.5 /
+code-cog machinery 0.2.0 / decision-cog machinery 0.1.4 (tested against the
 machinery constants)  
 **Status:** The public CogSpec v0.1 is an experimental discussion draft. The
 OpenTeams manifest and envelope described here are the current Collab profile,
