@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Describes:** cog-smith Op machinery 0.9.1 (tested against the machinery constant)
+**Describes:** cog-smith Op machinery 0.9.2 (tested against the machinery constant)
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from an internal Op-runner contract (a design note,
 not distributed).
@@ -631,7 +631,7 @@ and the admission say:
 A request for `docs.example.org/private` is denied at issuance, exactly as an
 unadmitted repository is. `repositories` is the earlier name for `targets`
 and is still read, in the admission and in `authority.requires`, so an
-existing document loads unchanged (Op machinery 0.9.1). One operation states
+existing document loads unchanged (Op machinery 0.9.2). One operation states
 one of the two names; stating both is refused. A read grant names its
 targets under the key its requirement used, so an existing spec keeps
 issuing the grant an existing Cog reads.
@@ -919,7 +919,7 @@ cannot authorize any target. For an Op that reaches nothing, no admission is
 needed or generated. Upgrade an older Op's machinery through the normal Smith
 process before using deferred verdicts; older runtimes refuse them.
 
-## Bounded declarative cycles (0.9.1)
+## Bounded declarative cycles (0.9.2)
 
 A pure Op may declare `cycle` with `outcome_step`, `outcome_field`,
 `max_attempts`, `max_cost_units`, `costs` and `transitions`. Limits may be input
@@ -950,3 +950,10 @@ with immutable attempts and retained candidate/review evidence. Resume discovers
 an interrupted phase and reuses its durable answers; it does not buy a new phase
 or new limits. Exhaustion reports the exact limiting budget and retains all work.
 See the public builder's manifest for revise and missing-evidence transitions.
+
+The optional cycle `terminal_errors` mapping declares nonempty lists of envelope
+error codes per step. A matching failed step finishes the cycle as `refused`; its
+reason and failed Track remain visible, and resume does not invoke it again.
+Other failures remain recoverable. `completed-with-problems` is successful (exit
+zero) while retaining warnings. Attempt exhaustion preserves the last finished
+transition Track. The original input path is recorded before any invocation.

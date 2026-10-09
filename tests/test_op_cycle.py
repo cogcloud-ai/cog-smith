@@ -124,6 +124,8 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(code, 1); self.assertEqual(output['status'], 'budget-exhausted')
         self.assertIn('Attempt budget', output['reason'])
         self.assertEqual(output['attempts'], 1)
+        track=json.loads((Path(output['run_dir'])/'track.json').read_text())
+        self.assertEqual(track['status'],'cycle-transition')
         before = len(self.calls)
         op_cycle.resume(self.package, output['cycle_dir'])
         self.assertEqual(len(self.calls), before)
@@ -136,7 +138,7 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(output['cost_units_reserved'], 1)
         track=json.loads((Path(output['run_dir'])/'track.json').read_text())
         self.assertEqual(track['status'],'budget-exhausted')
-        self.assertFalse(any(a.get('status')=='asking' for row in track['steps'] if row['id']=='author' for a in row.get('attempts',[])))
+        self.assertEqual(next(row for row in track['steps'] if row['id']=='author')['attempts'], [])
 
     def test_interrupted_answer_is_recovered_without_another_paid_call(self):
         code, output = op_cycle.start(self.package, self.request)
@@ -149,12 +151,49 @@ class CycleTests(unittest.TestCase):
         with patch.object(op_track, 'save', side_effect=crash_after_answer), self.assertRaisesRegex(RuntimeError, 'power loss'):
             op_cycle.resume(self.package, output['cycle_dir'], decision)
         self.assertEqual([r['operation'] for r in self.calls].count('author'), 1)
+        self.assertEqual(json.loads(Path(output['cycle']).read_text())['status'], 'running')
         self.outcomes = ['pass']
         code, resumed = op_cycle.resume(self.package, output['cycle_dir'])
         self.assertEqual(code, 3)
         self.assertEqual([r['operation'] for r in self.calls].count('design'), 1)
         self.assertEqual([r['operation'] for r in self.calls].count('author'), 1)
         self.assertEqual(resumed['cost_units_reserved'], 3)
+
+    def test_completion_with_warnings_is_successful_on_initial_and_terminal_resume(self):
+        self.outcomes = ['pass']
+        # Inject a warning into the final review while retaining its valid payload.
+        invoke = op_runner.invoke_cog.side_effect
+        def warned(*args, **kwargs):
+            result = invoke(*args, **kwargs)
+            if json.loads(Path(args[2]).read_text())['operation'] == 'review':
+                result['problems'] = [{'severity': 'warning', 'code': 'advisory', 'message': 'Synthetic warning'}]
+            return result
+        with patch.object(op_runner, 'invoke_cog', side_effect=warned):
+            code, output = self.start_and_accept_contract()
+        code, final = op_cycle.resume(self.package, output['cycle_dir'], self.decide(output))
+        self.assertEqual(code, 0)
+        self.assertEqual(final['status'], 'completed-with-problems')
+        self.assertTrue(final['ok'])
+        code, again = op_cycle.resume(self.package, output['cycle_dir'])
+        self.assertEqual(code, 0); self.assertTrue(again['ok'])
+
+    def test_declared_terminal_error_keeps_reason_and_does_not_repeat(self):
+        doc = cycle_spec(); doc['cycle']['terminal_errors'] = {'prepare': ['invalid-revision']}
+        (self.package/'op.yaml').write_text(json.dumps(doc))
+        invoke = op_runner.invoke_cog.side_effect
+        def refuse(*args, **kwargs):
+            if json.loads(Path(args[2]).read_text())['operation'] == 'prepare':
+                result = fx.envelope(ok=False)
+                result['error'] = {'code': 'invalid-revision', 'detail': 'Finding is outside the accepted scope'}
+                return result
+            return invoke(*args, **kwargs)
+        with patch.object(op_runner, 'invoke_cog', side_effect=refuse):
+            code, output = self.start_and_accept_contract()
+        self.assertEqual(code, 1); self.assertEqual(output['status'], 'refused')
+        self.assertIn('outside', output['reason'])
+        before = len(self.calls)
+        code, again = op_cycle.resume(self.package, output['cycle_dir'])
+        self.assertEqual(again['status'], 'refused'); self.assertEqual(len(self.calls), before)
 
     def test_rejection_finishes_cycle_and_changed_budgets_are_refused(self):
         self.outcomes = ['pass']

@@ -1553,3 +1553,11 @@ the owning policy. Reservations precede asking checkpoints; resume cross-checks
 the ledger against non-imported child attempts. Consistent edits to every local
 receipt are not authenticated tamper protection. Refused decisions restore the
 cycle's prior status and discovered child paths remain recorded on exhaustion.
+
+## Op machinery 0.9.2
+
+Cycles retain the original request path before invoking Cogs, reconcile interrupted
+parent status with the child Track, and treat completion with warnings consistently.
+Attempt exhaustion preserves the finished transition Track. Optional declarative
+`terminal_errors` maps step IDs to envelope error codes that finish a cycle as
+`refused`, retaining the failed step and reason without repeated invocations.
