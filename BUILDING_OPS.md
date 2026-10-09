@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Describes:** cog-smith Op machinery 0.8.2 (tested against the machinery constant)
+**Describes:** cog-smith Op machinery 0.9.3 (tested against the machinery constant)
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from an internal Op-runner contract (a design note,
 not distributed).
@@ -631,7 +631,7 @@ and the admission say:
 A request for `docs.example.org/private` is denied at issuance, exactly as an
 unadmitted repository is. `repositories` is the earlier name for `targets`
 and is still read, in the admission and in `authority.requires`, so an
-existing document loads unchanged (Op machinery 0.8.2). One operation states
+existing document loads unchanged (Op machinery 0.9.3). One operation states
 one of the two names; stating both is refused. A read grant names its
 targets under the key its requirement used, so an existing spec keeps
 issuing the grant an existing Cog reads.
@@ -918,3 +918,42 @@ Fill in the intended targets before admitting a real run; the generated file
 cannot authorize any target. For an Op that reaches nothing, no admission is
 needed or generated. Upgrade an older Op's machinery through the normal Smith
 process before using deferred verdicts; older runtimes refuse them.
+
+## Bounded declarative cycles (0.9.3)
+
+A pure Op may declare `cycle` with `outcome_step`, `outcome_field`,
+`max_attempts`, `max_cost_units`, `costs` and `transitions`. Limits may be input
+mappings; they resolve once and remain fixed. Costs are nonnegative integer
+reservation units for every initial/preparation step. Count model turns as one
+unit, for example, and deterministic work as zero. These units bound declared
+invocations; they do not measure invoices, prices or token usage. If a caller
+uses monetary units, the caller must supply defensible per-invocation upper
+bounds separately. A failed/interrupted launch is conservatively spent.
+
+A transition is `{restart: STEP, prepare: [COG_STEPS], replace: {STEP: {input:
+MAPPING, depends_on: [IDS]}}}`. Only input mappings and dependencies may change;
+Cog selection, Gates and authority cannot silently change. Every expanded phase
+is validated before the first invocation. A phase receives the declared
+`cycle_previous` input with every prior step's request, payload, envelope and
+applied decision. Preparation is bounded Cog work; lifecycle policy stays here.
+Only passed prefix steps are reused, and human artifact prefix steps must already
+be accepted. Changed prefix Cogs require a new cycle. This profile refuses
+external reaches/authority rather than inventing rules for repeated effects.
+
+Use `pixi run cycle -- --request examples/request.json`. It returns `cycle_dir`
+and the active child's `run_dir`/pending Gate. Prepare a decision with Smith's
+`op decide CHILD_RUN --accept --by NAME`, then pass the saved file to
+`pixi run cycle -- --resume CYCLE_DIR --decision FILE`. Do not use the single-run
+helper's `--resume` for a cycle. `pixi run op` still executes one candidate.
+`cycles/` is local state. Each phase stores its own native manifest and Track,
+with immutable attempts and retained candidate/review evidence. Resume discovers
+an interrupted phase and reuses its durable answers; it does not buy a new phase
+or new limits. Exhaustion reports the exact limiting budget and retains all work.
+See the public builder's manifest for revise and missing-evidence transitions.
+
+The optional cycle `terminal_errors` mapping declares nonempty lists of envelope
+error codes per step. A matching failed step finishes the cycle as `refused`; its
+reason and failed Track remain visible, and resume does not invoke it again.
+Other failures remain recoverable. `completed-with-problems` is successful (exit
+zero) while retaining warnings. Attempt exhaustion preserves the last finished
+transition Track. The original input path is recorded before any invocation.

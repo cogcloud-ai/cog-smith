@@ -163,7 +163,7 @@ class TestCard(unittest.TestCase):
         # F7: check is USAGE for smith (validates OTHER cogs) — declared, not inferred
         self.assertEqual(set(c["ops"]["usage"]),
                          {"new", "card", "generate-descriptors", "check",
-                          "migrate"})
+                          "migrate", "op-decide"})
         self.assertEqual(c["card"], 1)
 
 

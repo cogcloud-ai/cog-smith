@@ -18,6 +18,7 @@ new = "python src/cogsmith_cli.py new"
 check = "python src/cogsmith_cli.py check"
 card = "python src/cogsmith_cli.py card"
 migrate = "python src/cogsmith_cli.py migrate"
+op-decide = "python src/cogsmith_cli.py op decide"
 generate-descriptors = "python src/cogsmith_cli.py generate-descriptors"
 test = "python -m unittest discover -s tests -v"
 
@@ -68,6 +69,12 @@ audience = "usage"
 name = "card"
 kind = "command"
 task = "card"
+audience = "usage"
+
+[[tool.cog.interfaces]]
+name = "op-decide"
+kind = "command"
+task = "op-decide"
 audience = "usage"
 
 [[tool.cog.interfaces]]
