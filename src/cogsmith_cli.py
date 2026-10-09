@@ -439,6 +439,10 @@ def cmd_op_decide(args):
         reject_rest=args.reject_rest, defer_rest=args.defer_rest, verdict=verdict,
         reason=args.reason, by=args.by, step=args.step)
     package = Path(args.package).resolve() if args.package else Path(args.run).resolve().parent.parent
+    if args.resume:
+        track = json.loads((Path(args.run) / 'track.json').read_text())
+        if track.get('cycle_owner'):
+            raise op_spec.OpSpecError('Cycle children require pixi run cycle -- --resume ' + track['cycle_owner'] + '; prepare a decision without --resume.')
     if args.resume and not (package / 'op.yaml').is_file():
         raise op_spec.OpSpecError('For a custom runs directory, pass --package OP_DIR to resume.')
     path = smith_decide.save(args.run, document, args.output)

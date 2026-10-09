@@ -54,3 +54,10 @@ that honestly as an empty list.
 Edit `op.yaml`, then `pixi run test`. Adding a step means adding a Cog and
 declaring it; the runner never grows per-Op behaviour. See
 `cog-smith/BUILDING_OPS.md`.
+
+If `op.yaml` declares bounded outcome transitions, use `pixi run cycle --
+--request examples/request.json`. Each round retains its own manifest, Track,
+candidate and review under `cycles/`. The result includes `cycle_dir` and the
+active child's `run_dir`. Prepare its decision without `--resume`, then use
+`pixi run cycle -- --resume CYCLE_DIR --decision FILE`. Attempts and declared cost
+reservation units remain fixed; reservation units are not vendor invoices.
