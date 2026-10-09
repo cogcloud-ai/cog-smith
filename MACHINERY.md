@@ -1561,3 +1561,6 @@ parent status with the child Track, and treat completion with warnings consisten
 Attempt exhaustion preserves the finished transition Track. Optional declarative
 `terminal_errors` maps step IDs to envelope error codes that finish a cycle as
 `refused`, retaining the failed step and reason without repeated invocations.
+Reported error codes also apply to a well-formed failed Cog envelope retained
+in an invocation failure after a nonzero process exit. The failed Track and
+process evidence remain unchanged.

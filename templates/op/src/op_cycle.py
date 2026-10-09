@@ -187,6 +187,9 @@ def drive(package, directory, state, phases, decision=None):
                     state['reason'] = '; '.join((failed.get('gate') or {}).get('reasons') or ['Step failed: ' + failed['id']])
                     envelope = read(failed['envelope']) if failed.get('envelope') else {}
                     error = envelope.get('error') or {}
+                    reported = envelope.get('raw')
+                    if error.get('code') == 'invocation-failed' and isinstance(reported, dict) and not op_runner.envelope_problems(reported) and reported.get('ok') is False:
+                        error = reported.get('error') or error
                     if error.get('code') in state['configuration'].get('terminal_errors', {}).get(failed['id'], []):
                         state['status'] = 'refused'
                         state['reason'] = error.get('detail') or envelope.get('detail') or state['reason']
