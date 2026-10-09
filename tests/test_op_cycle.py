@@ -205,6 +205,41 @@ class CycleTests(unittest.TestCase):
         with self.assertRaises(op_spec.OpSpecError):
             op_cycle.resume(self.package, output['cycle_dir'])
 
+    def test_recoverable_failure_reason_disappears_after_retry_and_acceptance(self):
+        self.outcomes = ['pass']
+        code, output = op_cycle.start(self.package, self.request)
+        invoke = op_runner.invoke_cog.side_effect
+        def fail_once(*args, **kwargs):
+            if json.loads(Path(args[2]).read_text())['operation'] == 'author':
+                result = fx.envelope(ok=False)
+                result['error'] = {'code':'model-unavailable','detail':'Synthetic endpoint unavailable'}
+                return result
+            return invoke(*args, **kwargs)
+        with patch.object(op_runner,'invoke_cog',side_effect=fail_once):
+            code, failed = op_cycle.resume(self.package,output['cycle_dir'],self.decide(output))
+        self.assertEqual(failed['status'],'failed');self.assertIn('unavailable',failed['reason'])
+        code, paused = op_cycle.resume(self.package,output['cycle_dir'])
+        self.assertEqual(code,3);self.assertNotIn('reason',paused)
+        self.assertNotIn('reason',json.loads(Path(paused['cycle']).read_text()))
+        code, accepted = op_cycle.resume(self.package,output['cycle_dir'],self.decide(paused))
+        self.assertEqual(code,0);self.assertNotIn('reason',accepted)
+
+    def test_wrapped_process_failure_preserves_terminal_cog_error(self):
+        doc=cycle_spec();doc['cycle']['terminal_errors']={'prepare':['invalid-revision']}
+        (self.package/'op.yaml').write_text(json.dumps(doc))
+        invoke=op_runner.invoke_cog.side_effect
+        def refuse(*args, **kwargs):
+            if json.loads(Path(args[2]).read_text())['operation']=='prepare':
+                raw=fx.envelope(ok=False);raw['error']={'code':'invalid-revision','detail':'Immutable scope refusal'}
+                return op_runner.failed_envelope(args[0],args[1],'Process exited 1',raw=raw,carried=raw,evidence={'returncode':1})
+            return invoke(*args, **kwargs)
+        with patch.object(op_runner,'invoke_cog',side_effect=refuse):
+            code, refused=self.start_and_accept_contract()
+        self.assertEqual(refused['status'],'refused');self.assertEqual(refused['reason'],'Immutable scope refusal')
+        with patch.object(op_runner,'invoke_cog') as again:
+            code, stopped=op_cycle.resume(self.package,refused['cycle_dir'])
+        again.assert_not_called();self.assertEqual(stopped['reason'],'Immutable scope refusal')
+
 
 class CycleDeclarationTests(unittest.TestCase):
     def test_unknown_replacement_and_effectful_phase_are_refused(self):

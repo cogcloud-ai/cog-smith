@@ -1564,3 +1564,9 @@ Attempt exhaustion preserves the finished transition Track. Optional declarative
 Reported error codes also apply to a well-formed failed Cog envelope retained
 in an invocation failure after a nonzero process exit. The failed Track and
 process evidence remain unchanged.
+
+## Op machinery 0.9.3
+
+Clear a recoverable failure reason before driving its retry, so paused or
+completed builds display their current state. Terminal refusal and exhaustion
+reasons remain retained; malformed decisions still preserve a paused state.
