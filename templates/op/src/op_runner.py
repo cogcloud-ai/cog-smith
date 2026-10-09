@@ -655,8 +655,8 @@ def canonical_sha256(value):
 COG_MANIFESTS = ("pixi.toml", "cog.yaml")
 
 #: The directories whose every file is part of a Cog's package digest: its
-#: context (prompts, schemas, fixtures the Cog reads) and its source.
-COG_DIGEST_DIRS = ("context", "src")
+#: context, source, declared usage scripts, binding code and contracts.
+COG_DIGEST_DIRS = ("context", "src", "scripts", "binding", "contracts")
 
 #: What of an installed binding belongs to a RESULT's identity. `model.json`
 #: is gitignored installation state and carries the endpoint and the name of
@@ -704,7 +704,8 @@ def cog_package_sha256(cog_dir):
 
     A result belongs to a Cog as well as to a request: two answers are
     evidence of the same thing only when the same Cog produced them. The
-    digest covers the Cog's manifest, every file under `context/` and `src/`
+    digest covers the Cog's manifest and every file under `context/`, `src/`,
+    `scripts/`, `binding/` and `contracts/`
     by sorted relative path, and — when an installation left a `model.json` —
     ONLY the `model` and `response_format` it names.
 

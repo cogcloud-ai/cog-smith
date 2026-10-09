@@ -2395,6 +2395,22 @@ class CogPackageDigestTests(unittest.TestCase):
         self.assertNotEqual(op_runner.cog_package_sha256(self.cog),
                             self.digest)
 
+    def test_scripts_bindings_and_contracts_invalidate_results(self):
+        for folder in ('scripts', 'binding', 'contracts'):
+            with self.subTest(folder=folder):
+                path = self.cog / folder / 'behavior.txt'
+                path.parent.mkdir(exist_ok=True)
+                before = op_runner.cog_package_sha256(self.cog)
+                path.write_text('changed behavior')
+                self.assertNotEqual(op_runner.cog_package_sha256(self.cog), before)
+
+    def test_evidence_prose_and_locks_do_not_invalidate_results(self):
+        for name in ('COG.md', 'README.md', 'pixi.lock', 'tests/new.py', 'evals/new.json', 'examples/new.json'):
+            path = self.cog / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text('evidence or prose')
+        self.assertEqual(op_runner.cog_package_sha256(self.cog), self.digest)
+
     def test_build_products_are_not_part_of_it(self):
         cache = self.cog / "src" / "__pycache__"
         cache.mkdir()

@@ -1495,3 +1495,20 @@ Gates remain whole-artifact accept/reject decisions. Existing change decisions
 keep their behavior and gain an empty deferred list. The runtime hash changes;
 created Ops carry the new master byte-identically. The Smith client adds
 `op decide` and scaffolded empty-scope admission files without per-Op Python.
+
+## Op machinery 0.8.2 — behavior fingerprint coverage
+
+The per-invocation Cog fingerprint now also covers `scripts/`, `binding/` and
+`contracts/`, matching Workbench composition invalidation coverage. Changes to a
+declared usage adapter or contract can no longer reuse an old result during
+resume. Tests, examples, evals, lockfiles and top-level prose remain outside this digest.
+Existing tracks created with older fingerprint coverage require their original
+runtime; upgrading the runtime changes the Op package and requires a new run.
+
+## Decision Cog machinery 0.1.4 — portable composition adapter
+
+The generated Workbench usage adapter is upgraded byte-identically from the
+public host canonical source. It resolves workspace-relative installations and
+prints an exact reactivation command after a stale host/consumer change. Nested
+consumer packages can locate the fixed public Workbench sibling in their ancestor
+workspace. Other decision machinery behavior is unchanged.
