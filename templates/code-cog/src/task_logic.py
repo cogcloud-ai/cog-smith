@@ -61,7 +61,7 @@ decided change or reconciling by reads reports no write.
                 content_sha256=cog_core.change_content_sha256(change))
             if not ok:
                 used.append(cog_core.use("write", resource, cid, "denied", detail))
-                problems.append(cog_core.problem("authority", detail, "warn"))
+                problems.append(cog_core.problem("authority", detail, "warning"))
                 continue
             journal.append({"change_id": cid, "phase": "applying"})
             ...                              # 4. the one external call
