@@ -1645,3 +1645,21 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   (a draft) is kept. `op check` reports a missing or invalid `OP.md`, and an
   OP.md `name` other than the id's last segment, as core-layer WARNINGS; an
   OP.md `version` that differs from op.yaml's is an ERROR.
+- **A cycle that cannot go on says so.** When a transition's next phase could
+  not be prepared — `new_phase` refusing to carry a prefix step that did not
+  pass, an unaccepted artifact, or a prefix Cog that changed — the cycle
+  exited 2 `invalid-input` and its saved state stayed `running`. `drive` now
+  records any refusal that would leave the state `running` though it would
+  stop every resume (a refused transition, a first phase that cannot be
+  prepared, a refusal while a phase runs) as the new terminal status
+  `cycle-failed`, with a `reason`
+  and a `failure` record naming the phase, its outcome, the restart step
+  when it was a transition, and the problems; it exits 1, and `resume`
+  reports it without driving anything. `cycle-failed` is distinct from
+  `failed`, which remains a failed child run the cycle can resume. A refusal
+  that leaves a true state is still raised (exit 2): a bad decision keeps the
+  cycle `paused`. An `OSError` is an interruption, like a crash: it is
+  still raised and leaves the true, resumable `running` state, from which
+  `resume` recovers durable work. `resume`'s own up-front refusals (a changed package,
+  machinery, request, limits or ledger) leave the state as it was, so
+  restoring what changed lets the cycle continue.

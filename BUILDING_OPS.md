@@ -1005,6 +1005,13 @@ See the public builder's manifest for revise and missing-evidence transitions.
 The optional cycle `terminal_errors` mapping declares nonempty lists of envelope
 error codes per step. A matching failed step finishes the cycle as `refused`; its
 reason and failed Track remain visible, and resume does not invoke it again.
-Other failures remain recoverable. `completed-with-problems` is successful (exit
+Other failures remain recoverable. A transition whose next phase cannot be
+prepared (a prefix step that did not pass, an unaccepted artifact, a prefix
+Cog that changed), or any other refusal that would leave the cycle's state
+`running` though every resume would meet it again, ends the cycle
+`cycle-failed` (exit 1) with a `reason` and a
+`failure` record naming the phase and transition; resume reports it and runs
+nothing (since 0.10.0). An interruption (an I/O error, a crash) still leaves
+`running`, and resume carries on. `completed-with-problems` is successful (exit
 zero) while retaining warnings. Attempt exhaustion preserves the last finished
 transition Track. The original input path is recorded before any invocation.

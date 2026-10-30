@@ -242,6 +242,91 @@ class CycleTests(unittest.TestCase):
         again.assert_not_called();self.assertEqual(stopped['reason'],'Immutable scope refusal')
 
 
+    # ------------------------------- machinery 0.10.0: a true cycle state --
+
+    def refuse_transition(self):
+        """Edit the accepted design Cog after its phase used it, so the next
+        phase cannot reuse that prefix step: `new_phase` refuses it."""
+        invoke = op_runner.invoke_cog.side_effect
+        def edit_design_during_review(*args, **kwargs):
+            if json.loads(Path(args[2]).read_text())['operation'] == 'review':
+                manifest = self.root / 'cog-design' / 'pixi.toml'
+                manifest.write_text(manifest.read_text() + '\n# edited\n')
+            return invoke(*args, **kwargs)
+        with patch.object(op_runner, 'invoke_cog', side_effect=edit_design_during_review):
+            return self.start_and_accept_contract()
+
+    def test_a_refused_transition_is_a_failed_cycle_not_a_running_one(self):
+        code, output = self.refuse_transition()
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output['status'], 'cycle-failed')
+        self.assertIn('Could not start phase 2', output['reason'])
+        self.assertIn('reusable prefix Cog changed', output['reason'])
+        failure = output['failure']
+        self.assertEqual((failure['phase'], failure['outcome'], failure['restart']), (1, 'revise', 'author'))
+        state = json.loads(Path(output['cycle']).read_text())
+        self.assertEqual(state['status'], 'cycle-failed')
+        self.assertEqual(state['reason'], output['reason'])
+        self.assertEqual(len(state['phases']), 1)
+        self.assertEqual(state['phases'][0]['status'], 'cycle-transition')
+
+    def test_resume_reports_a_failed_cycle_and_drives_nothing(self):
+        code, output = self.refuse_transition()
+        before = len(self.calls)
+        with patch.object(op_cycle, 'new_phase') as again:
+            code, resumed = op_cycle.resume(self.package, output['cycle_dir'])
+        again.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertEqual(resumed['status'], 'cycle-failed')
+        self.assertEqual(resumed['reason'], output['reason'])
+        self.assertEqual(len(self.calls), before)
+
+    def test_the_cli_exits_one_for_a_refused_transition(self):
+        code, output = self.refuse_transition()
+        import io, contextlib, sys
+        stdout = io.StringIO()
+        argv = sys.argv
+        sys.argv = ['op_cycle.py', '--resume', output['cycle_dir']]
+        try:
+            with patch.object(op_cycle, 'ROOT', self.package), contextlib.redirect_stdout(stdout):
+                exit_code = op_cycle.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(json.loads(stdout.getvalue())['status'], 'cycle-failed')
+
+    def test_a_refusal_while_a_phase_runs_is_a_failed_cycle(self):
+        """Any other refusal out of `drive` that would leave the state
+        `running` is recorded the same way."""
+        with patch.object(op_runner, 'run', side_effect=op_spec.OpSpecError('refused by the runner')):
+            code, output = op_cycle.start(self.package, self.request)
+        self.assertEqual(code, 1)
+        self.assertEqual(output['status'], 'cycle-failed')
+        self.assertIn('Could not run phase 1', output['reason'])
+        self.assertIn('refused by the runner', output['reason'])
+        self.assertEqual(json.loads(Path(output['cycle']).read_text())['status'], 'cycle-failed')
+
+    def test_an_interruption_stays_running_and_resumable(self):
+        """An OSError is an interruption, like a crash: the `running` state
+        is true, and resume carries the cycle on."""
+        with patch.object(op_runner, 'run', side_effect=OSError('interrupted')):
+            with self.assertRaises(OSError):
+                op_cycle.start(self.package, self.request)
+        directory = next((self.package / 'cycles').iterdir())
+        self.assertEqual(json.loads((directory / 'cycle.json').read_text())['status'], 'running')
+        code, output = op_cycle.resume(self.package, directory)
+        self.assertEqual(code, 3, output)
+        self.assertEqual(output['step'], 'design')
+
+    def test_a_refused_first_phase_is_a_failed_cycle(self):
+        with patch.object(op_cycle, 'new_phase', side_effect=op_spec.OpSpecError('cannot prepare')):
+            code, output = op_cycle.start(self.package, self.request)
+        self.assertEqual(code, 1)
+        self.assertEqual(output['status'], 'cycle-failed')
+        self.assertEqual(output['failure']['phase'], 1)
+        self.assertIn('prepare the first phase', output['reason'])
+
+
 class CycleDeclarationTests(unittest.TestCase):
     def test_unknown_replacement_and_effectful_phase_are_refused(self):
         doc = cycle_spec(); doc['cycle']['transitions']['revise']['replace']['author']['cog'] = {'id': 'different'}
