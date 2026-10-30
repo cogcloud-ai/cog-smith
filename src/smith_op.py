@@ -22,6 +22,13 @@ without the Cogs) is a warning, not an error. A missing or invalid `OP.md`
 is a warning too, so a package created before `op new` wrote one keeps
 passing, as is an OP.md `name` other than the last segment of op.yaml's
 `id`; an OP.md `version` other than op.yaml's is an error.
+
+Both `openteams/op-manifest [0.2]` and `[0.1]` specs are accepted (Op
+machinery 0.11.0). `op new` writes the spec in the profile it declares — it
+never rewrites a `[0.1]` spec, whose changes name `repository` where `[0.2]`
+reads `target` — and `op check` warns on a `[0.1]` spec, naming what moving
+to `[0.2]` takes. For a `[0.2]` spec, a stated Cog version other than the
+Cog's is an error.
 """
 import hashlib
 import json
@@ -88,7 +95,7 @@ def _steps_markdown(spec):
     lines = []
     for index, step in enumerate(spec.ordered, start=1):
         cog = step.get("cog") or {}
-        name = step.get("name") or step["id"]
+        name = op_spec.step_title(step) or step["id"]
         loop = " (once per element)" if step.get("foreach") else ""
         lines.append(f"{index}. **{step['id']}** — {name}{loop}: "
                      f"`{cog.get('id')}` task `{cog.get('task')}`")
@@ -189,7 +196,7 @@ def _one_line_value(value, what):
 
 
 def _tokens(spec, dest, license=None, publisher=None):
-    summary = " ".join(str(spec.description or spec.name or spec.id).split())
+    summary = " ".join(str(spec.description or spec.title or spec.id).split())
     description = summary
     if len(description) > OP_MD_DESCRIPTION_MAX:
         description = description[:OP_MD_DESCRIPTION_MAX - 3].rstrip() + "..."
@@ -197,7 +204,7 @@ def _tokens(spec, dest, license=None, publisher=None):
         "OP_NAME": dest.name,
         "OP_ID": spec.id,
         "OP_VERSION": spec.version,
-        "OP_TITLE": spec.name or dest.name,
+        "OP_TITLE": spec.title or dest.name,
         "OP_SUMMARY": summary,
         "OP_SUMMARY_TOML": json.dumps(summary),
         "OP_STEPS_MD": _steps_markdown(spec),
@@ -211,7 +218,8 @@ def _tokens(spec, dest, license=None, publisher=None):
             license or DEFAULT_LICENSE, "license")),
         "OP_PUBLISHER_YAML": json.dumps(_one_line_value(
             publisher or DEFAULT_PUBLISHER, "publisher")),
-        "OP_SCHEMA_YAML": op_spec.SCHEMA_STRING,
+        # The profile op.yaml declares: OP.md names what actually runs.
+        "OP_SCHEMA_YAML": spec.schema,
         "OP_GATES_MD": _gates_markdown(spec),
         "OP_AUTHORITY_MD": _authority_markdown(spec),
         "OP_OUTPUTS_MD": _outputs_markdown(spec),
@@ -385,6 +393,8 @@ def check(root, run_tests=False):
                 "an Op, not a Cog; Ops declare op.yaml.")
     for level, detail in op_md_findings(root, spec):
         (err if level == "error" else warn)("core", "opmd", detail)
+    if spec.profile == op_spec.PROFILE_0_1:
+        warn("profile", "opspec-profile", migration_hint(spec))
     if not (root / "tests" / "test_op.py").exists():
         warn("runtime", "tests", "no tests/test_op.py — the generated suite "
                                  "is the package's own regression net.")
@@ -398,7 +408,8 @@ def check(root, run_tests=False):
     # same steps for the same reasons.
     for step in spec.steps:
         source = root / str((step.get("cog") or {}).get("source"))
-        for level, detail in op_spec.cog_step_findings(step, source):
+        for level, detail in op_spec.cog_step_findings(step, source,
+                                                       spec.profile):
             (err if level == "error" else warn)("profile", "steps", detail)
 
     if run_tests and not any(f["level"] == "error" for f in findings):
@@ -408,6 +419,22 @@ def check(root, run_tests=False):
         if result.returncode != 0:
             err("runtime", "tests", (result.stderr or result.stdout)[-800:])
     return findings
+
+
+def migration_hint(spec):
+    """The warning a `[0.1]` spec carries: it runs unchanged, and this is what
+    declaring `openteams/op-manifest [0.2]` takes. Never an error."""
+    return (f"op.yaml declares {op_spec.SCHEMA_STRING_0_1!r}, which still "
+            f"runs; to move to {op_spec.SCHEMA_STRING_0_2!r}, rename `name` "
+            f"to `title` (top level and on every step, including cycle "
+            f"preparation steps), state every `cog.version`, write "
+            f"`targets` for `repositories`, and have every proposed change "
+            f"name what it changes as `target` — a write target the "
+            f"admission lists. [0.2] also refuses operator objects with "
+            f"other keys, `$path` values beginning with `~`, and actions "
+            f"other than read and write, and at run time requires each "
+            f"named Cog present at its stated version and every envelope to "
+            f"name the step's Cog. Update OP.md's manifest_schema with it.")
 
 
 def op_md_findings(root, spec):
@@ -429,6 +456,12 @@ def op_md_findings(root, spec):
                                  f"op.yaml's id {spec.id!r} names "
                                  f"{expected!r}; OP.md's name should be the "
                                  f"id's last segment."))
+    schema = meta.get("manifest_schema")
+    if schema in op_spec.SCHEMA_STRINGS and schema != spec.schema:
+        findings.append(("warn", f"{OP_MD} declares manifest_schema "
+                                 f"{schema!r}, but op.yaml declares "
+                                 f"{spec.schema!r}; the entry file names the "
+                                 f"profile that runs."))
     if "version" in meta and str(meta["version"]) != spec.version:
         findings.append(("error", f"{OP_MD} declares version "
                                   f"{meta['version']!r}, but op.yaml is "
@@ -457,8 +490,8 @@ def op_md_problems(root):
     relative path to an existing file inside the package after symlinks are
     followed, and `manifest_schema` a non-empty string. Then what this
     runner can say about the pointer: it runs `op.yaml` under
-    `openteams/op-manifest [0.1]`. Agreement with op.yaml's `id` and
-    `version` is `op_md_findings`'s."""
+    `openteams/op-manifest [0.1]` or `[0.2]`. Agreement with op.yaml's `id`,
+    `version` and `schema` is `op_md_findings`'s."""
     root = Path(root)
     path = root / OP_MD
     if not path.is_file():
@@ -515,10 +548,10 @@ def op_md_problems(root):
             problems.append(f"{OP_MD} declares manifest_schema {schema!r}; "
                             f"it names the execution profile as a "
                             f"non-empty string.")
-        elif schema != op_spec.SCHEMA_STRING:
+        elif schema not in op_spec.SCHEMA_STRINGS:
             problems.append(f"{OP_MD} declares manifest_schema {schema!r}; "
                             f"this package's runner implements "
-                            f"{op_spec.SCHEMA_STRING!r} only.")
+                            f"{list(op_spec.SCHEMA_STRINGS)}.")
     manifest = meta.get("manifest")
     if "manifest" in meta:
         problems.extend(_manifest_pointer_problems(root, manifest))
