@@ -18,6 +18,7 @@ import op_spec    # noqa: E402
 import op_track   # noqa: E402
 
 SCHEMA = op_spec.SCHEMA_STRING
+SCHEMA_0_2 = op_spec.SCHEMA_STRING_0_2
 
 
 def spec_doc(steps=None, inputs=None, **extra):
@@ -34,6 +35,27 @@ def spec_doc(steps=None, inputs=None, **extra):
     }
     doc.update(extra)
     return copy.deepcopy(doc)
+
+
+def as_0_2(doc):
+    """DOC as an `openteams/op-manifest [0.2]` document: the schema string,
+    and `title` for `name` on the Op and every step, including the steps a
+    cycle transition prepares."""
+    doc = copy.deepcopy(doc)
+    doc["schema"] = SCHEMA_0_2
+    steps = list(doc.get("steps") or [])
+    for transition in ((doc.get("cycle") or {}).get("transitions")
+                       or {}).values():
+        steps.extend(transition.get("prepare") or [])
+    for item in [doc] + steps:
+        if isinstance(item, dict) and "name" in item:
+            item["title"] = item.pop("name")
+    return doc
+
+
+def spec_doc_0_2(steps=None, inputs=None, **extra):
+    """`spec_doc`, as a `[0.2]` document."""
+    return as_0_2(spec_doc(steps, inputs, **extra))
 
 
 def cog_step(sid, task="ask", depends_on=None, **extra):
@@ -287,6 +309,19 @@ def change(change_id, repository=REPO, kind="label", summary="add a label",
     it; pass one explicitly to build a proposal that misstates its hash."""
     body = {"change_id": change_id, "kind": kind,
             "target": f"{repository}#1", "repository": repository,
+            "summary": summary}
+    return dict(body,
+                content_sha256=(content_sha256 if content_sha256 is not None
+                                else op_runner.change_content_sha256(body)),
+                target_sha256=target_sha256)
+
+
+def change_0_2(change_id, target=REPO, kind="label", summary="add a label",
+               target_sha256="1" * 64, content_sha256=None):
+    """A proposed change as a `[0.2]` Op reads it: `target` names what it
+    changes — a write target the admission lists — and there is no
+    `repository`."""
+    body = {"change_id": change_id, "kind": kind, "target": target,
             "summary": summary}
     return dict(body,
                 content_sha256=(content_sha256 if content_sha256 is not None

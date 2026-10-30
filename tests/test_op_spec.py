@@ -106,9 +106,11 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("closed", text)
 
     def test_other_schema_values_are_refused(self):
-        doc = fx.spec_doc()
-        doc["schema"] = "openteams/op-manifest [0.2]"
-        self.assertIn("schema must be", one(doc))
+        for schema in ("openteams/op-manifest [0.3]", "op-manifest", None):
+            with self.subTest(schema=schema):
+                doc = fx.spec_doc()
+                doc["schema"] = schema
+                self.assertIn("schema must be one of", one(doc))
 
     def test_unknown_gate_policy_is_refused(self):
         step = fx.cog_step("first")

@@ -29,7 +29,22 @@ try:                                                   # pragma: no cover
 except ImportError:                                    # pragma: no cover
     _SchemaValidator = None
 
-SCHEMA_STRING = "openteams/op-manifest [0.1]"
+SCHEMA_STRING_0_1 = "openteams/op-manifest [0.1]"
+SCHEMA_STRING_0_2 = "openteams/op-manifest [0.2]"
+#: Every Op manifest profile this machinery runs (0.11.0), oldest first.
+SCHEMA_STRINGS = (SCHEMA_STRING_0_1, SCHEMA_STRING_0_2)
+#: The `[0.1]` string, under the name every caller before 0.11.0 imported:
+#: those callers build `[0.1]` documents (with `name`), so this constant keeps
+#: meaning `[0.1]`. A new document declares `SCHEMA_STRING_0_2`.
+SCHEMA_STRING = SCHEMA_STRING_0_1
+PROFILE_0_1 = "0.1"
+PROFILE_0_2 = "0.2"
+#: Where a run context carries its document's profile. `$`-prefixed, so it
+#: can never be a mapping-path root an Op reads nor a `foreach` variable.
+PROFILE_CONTEXT_KEY = "$profile"
+#: The field of a proposed change that names what it changes — the target a
+#: write admission must list. `[0.1]` documents name it `repository`.
+CHANGE_TARGET_KEYS = {PROFILE_0_1: "repository", PROFILE_0_2: "target"}
 GATE_POLICY = "envelope-ok-no-error-problems"
 #: A human Gate is a POLICY on a step, never a step of its own: the step
 #: runs its Cog, the envelope goes through the ordinary policy, and only a
@@ -62,6 +77,10 @@ TOP_KEYS = {"schema", "id", "version", "name", "description", "inputs",
             "steps", "outputs", "track", "authority", "cycle"}
 STEP_KEYS = {"id", "name", "depends_on", "cog", "foreach", "input",
              "expected_outcome", "gate", "on_fail", "authority", "repeat"}
+#: `[0.2]` calls the Op's and each step's human-readable name `title`; `name`
+#: is refused by name there (and is the title of a `[0.1]` document).
+TOP_KEYS_0_2 = (TOP_KEYS - {"name"}) | {"title"}
+STEP_KEYS_0_2 = (STEP_KEYS - {"name"}) | {"title"}
 COG_KEYS = {"id", "version", "source", "task"}
 INPUT_KEYS = {"name", "description", "required", "default", "schema"}
 FOREACH_KEYS = {"items", "as"}
@@ -91,6 +110,9 @@ STEP_AUTHORITY_KEYS = {"requires"}
 #: read as an alias; a document that states both is refused (0.8.0).
 TARGET_KEYS = ("targets", "repositories")
 REQUIREMENT_KEYS = {"resource", "action", "changes", *TARGET_KEYS}
+#: `[0.2]` names targets `targets` only, and an action is a read or a write.
+REQUIREMENT_KEYS_0_2 = {"resource", "action", "changes", "targets"}
+ACTIONS_0_2 = ("read", "write")
 DEFAULT_TTL_MINUTES = 60
 
 # Refused by name, with the reason it is refused. A value of None means a
@@ -164,6 +186,29 @@ class OpSpecError(Exception):
     def __init__(self, problems):
         self.problems = [problems] if isinstance(problems, str) else list(problems)
         super().__init__("\n".join(self.problems))
+
+
+def profile_of(doc):
+    """The profile a document declares: `0.2` for `openteams/op-manifest
+    [0.2]`, and `0.1` for anything else — a `[0.1]` document, and a document
+    whose schema is refused anyway, which is read with the `[0.1]` key sets
+    so its other findings stay the ones 0.10.0 reported."""
+    if isinstance(doc, dict) and doc.get("schema") == SCHEMA_STRING_0_2:
+        return PROFILE_0_2
+    return PROFILE_0_1
+
+
+def step_title(step):
+    """A step's human-readable name: `title` in `[0.2]`, `name` in `[0.1]`."""
+    if not isinstance(step, dict):
+        return None
+    return step.get("title", step.get("name"))
+
+
+def change_target_key(profile):
+    """The field a proposed change names what it changes under: `target` in
+    `[0.2]`, `repository` in `[0.1]`."""
+    return CHANGE_TARGET_KEYS.get(profile, CHANGE_TARGET_KEYS[PROFILE_0_1])
 
 
 # ---------------------------------------------------------------- lookup --
@@ -392,7 +437,14 @@ def reads_steps(expr):
 # ------------------------------------------------------------ validation --
 
 def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
-                   problems, human_steps=()):
+                   problems, human_steps=(), strict=False):
+    """Every problem with one mapping expression. STRICT is a `[0.2]`
+    document (0.11.0): an object holding an operator key has exactly that
+    operator's key set, and a literal `$path` never begins with `~`."""
+    def walk(node, at):
+        _expr_problems(node, at, input_names, step_ids, dep_ids, loop_vars,
+                       problems, human_steps, strict)
+
     if isinstance(expr, dict):
         keys = frozenset(expr)
         if keys in OPERATORS:
@@ -402,19 +454,21 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                 _path_problems(expr["$from"], where, input_names, step_ids,
                                dep_ids, loop_vars, problems, human_steps)
                 if "$default" in keys:
-                    _expr_problems(expr["$default"], where, input_names,
-                                   step_ids, dep_ids, loop_vars, problems,
-                                   human_steps)
+                    walk(expr["$default"], where)
                 return
             if "$run_dir" in keys:
                 problem = _literal_run_dir_problem(expr["$run_dir"], where)
                 if problem:
                     problems.append(problem)
                     return
+            if "$path" in keys and strict:
+                problem = _literal_path_problem(expr["$path"], where)
+                if problem:
+                    problems.append(problem)
+                    return
             for key in ("$path", "$run_dir", "$stem", "$sha256"):
                 if key in keys:
-                    _expr_problems(expr[key], where, input_names, step_ids,
-                                   dep_ids, loop_vars, problems, human_steps)
+                    walk(expr[key], where)
             return
         unknown = unknown_dollar_keys(expr)
         if unknown:
@@ -422,18 +476,44 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                 f"{where} uses unknown mapping operator(s) {unknown}; the "
                 f"mapping vocabulary is closed ({OPERATOR_NAMES}).")
             return
+        if strict and dollar_keys(expr):
+            # [0.2]: `{$from: x, label: y}` and a `$default` without `$from`
+            # were ordinary data in [0.1], so a misspelled sibling silently
+            # changed what the step was sent.
+            operators = dollar_keys(expr)
+            others = sorted(str(k) for k in expr if k not in operators)
+            held = (f"operator key(s) {operators} beside {others}" if others
+                    else f"operator keys {operators}, which are no "
+                         f"operator's key set")
+            problems.append(
+                f"{where} holds {held}; an object holding an operator key "
+                f"has exactly that operator's keys ({OPERATOR_NAMES}), and "
+                f"data that needs $-prefixed keys is written with $literal "
+                f"(rule operator-exact-keyset).")
+            return
         for key, value in expr.items():
             if not isinstance(key, str):
                 problems.append(f"{where} has key {key!r}, which is not a "
                                 f"string; a request document's keys are "
                                 f"strings.")
                 continue
-            _expr_problems(value, f"{where}.{key}", input_names, step_ids,
-                           dep_ids, loop_vars, problems, human_steps)
+            walk(value, f"{where}.{key}")
     elif isinstance(expr, list):
         for index, item in enumerate(expr):
-            _expr_problems(item, f"{where}[{index}]", input_names, step_ids,
-                           dep_ids, loop_vars, problems, human_steps)
+            walk(item, f"{where}[{index}]")
+
+
+def _literal_path_problem(operand, where):
+    """Why a `$path` operand is refused AT LOAD in a `[0.2]` document, or
+    None: a literal (a string, or a `$literal` of one) that begins with `~`.
+    A computed operand is checked when it is evaluated."""
+    if isinstance(operand, dict) and frozenset(operand) == frozenset({"$literal"}):
+        operand = operand["$literal"]
+    if isinstance(operand, str) and operand.startswith("~"):
+        return (f"{where} asks $path for {operand!r}, which begins with ~; an "
+                f"Op's paths never depend on whose machine runs it (rule "
+                f"path-no-home).")
+    return None
 
 
 def _literal_run_dir_problem(operand, where):
@@ -758,12 +838,14 @@ def decision_step(requirement):
 
 
 def _authority_problems(step, sid, step_ids, human_steps, problems,
-                        artifact_steps=()):
+                        artifact_steps=(), strict=False):
     """Every problem with one step's `authority:` block.
 
     `artifact_steps` are the human Gates that decide about an ARTIFACT
     (0.7.0): their decision is one verdict, not an approved list, so no
-    write grant can be asked for from one."""
+    write grant can be asked for from one. STRICT is a `[0.2]` document
+    (0.11.0): `repositories` is refused, and an action is `read` or
+    `write`."""
     authority = step.get("authority")
     if authority is None:
         return
@@ -800,7 +882,13 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
             problems.append(f"{where} must be an object with resource and "
                             f"action.")
             continue
-        for key in sorted(str(k) for k in set(requirement) - REQUIREMENT_KEYS):
+        if strict and "repositories" in requirement:
+            problems.append(f"{where} declares repositories, the former name "
+                            f"of targets; a requirement names what it "
+                            f"touches as targets (rule targets-only).")
+        known = REQUIREMENT_KEYS_0_2 if strict else REQUIREMENT_KEYS
+        for key in sorted(str(k) for k in set(requirement) - known
+                          - ({"repositories"} if strict else set())):
             problems.append(f"unknown key {key!r} on {where}; the "
                             f"requirement vocabulary is closed.")
         for field in ("resource", "action"):
@@ -809,6 +897,14 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
                 problems.append(f"{where} declares {field} "
                                 f"{requirement.get(field)!r}; a requirement's "
                                 f"{field} is a string.")
+        if (strict and isinstance(requirement.get("action"), str)
+                and requirement["action"]
+                and requirement["action"] not in ACTIONS_0_2):
+            problems.append(f"{where} declares action "
+                            f"{requirement['action']!r}; an action is read or "
+                            f"write, and other effects are not in this Op "
+                            f"spec (rule read-or-write).")
+            continue
         # Whatever the action: a write's lists are not what the grant is
         # issued from, so a conflict there would otherwise pass unread.
         both = all(key in requirement for key in TARGET_KEYS)
@@ -934,26 +1030,108 @@ def schema_problems(schema, name):
     return []
 
 
+def _strict_problems(doc):
+    """The top-level tightenings a `[0.2]` document is held to (machinery
+    0.11.0; profile `op-manifest [0.2]`, "Tightenings"): typed identity,
+    description, `inputs[].required` and `track.records`."""
+    problems = []
+    for field in ("id", "version", "title"):
+        if field not in doc or doc[field] in ("", None):
+            problems.append(f"the Op spec is missing required field "
+                            f"{field!r}.")
+        elif not isinstance(doc[field], str):
+            problems.append(f"the Op spec declares {field} {doc[field]!r}, "
+                            f"which is not a string; quote it (rule "
+                            f"required-identity).")
+    if "description" in doc and not isinstance(doc["description"], str):
+        problems.append(f"the Op spec declares description "
+                        f"{doc['description']!r}, which is not a string.")
+    inputs = doc.get("inputs")
+    for declared in inputs if isinstance(inputs, list) else []:
+        if not isinstance(declared, dict):
+            continue
+        name = declared.get("name")
+        if "required" in declared and not isinstance(declared["required"],
+                                                     bool):
+            problems.append(f"Op input {name!r} declares required "
+                            f"{declared['required']!r}; required is true or "
+                            f"false.")
+        if "description" in declared and not isinstance(
+                declared["description"], str):
+            problems.append(f"Op input {name!r} declares description "
+                            f"{declared['description']!r}, which is not a "
+                            f"string.")
+    track = doc.get("track")
+    if isinstance(track, dict) and "records" in track:
+        records = track["records"]
+        if not isinstance(records, list) or any(not isinstance(r, str)
+                                                for r in records):
+            problems.append(f"the Op spec declares track.records "
+                            f"{records!r}; track.records is a list of "
+                            f"strings (and is ignored).")
+    return problems
+
+
+def _strict_step_problems(step, sid):
+    """The step tightenings a `[0.2]` document is held to (0.11.0): `title`,
+    never `name`; typed `title` and `expected_outcome`; a stated
+    `cog.version`."""
+    problems = []
+    if "name" in step:
+        problems.append(f"Op step {sid!r} declares name:; a step's "
+                        f"human-readable name is title, as the Op's is (rule "
+                        f"step-title).")
+    for field in ("title", "expected_outcome"):
+        if field in step and not isinstance(step[field], str):
+            problems.append(f"Op step {sid!r} declares {field} "
+                            f"{step[field]!r}, which is not a string"
+                            + (" (rule step-title)." if field == "title"
+                               else "."))
+    cog = step.get("cog")
+    if isinstance(cog, dict) and cog.get("version") in (None, ""):
+        problems.append(f"Op step {sid!r} is missing cog.version; a step "
+                        f"states the version of the Cog it was written "
+                        f"against, and the run checks it (rule "
+                        f"cog-version-required).")
+    return problems
+
+
 def validate(doc):
-    """Every problem with a spec document, as one-sentence strings."""
+    """Every problem with a spec document, as one-sentence strings.
+
+    The document's `schema` picks the rules: a `[0.2]` document is held to
+    the profile's tightenings (`_strict_problems` and the STRICT branches
+    below, machinery 0.11.0); a `[0.1]` document is validated exactly as
+    0.10.0 validated it."""
     problems = []
     if not isinstance(doc, dict):
         raise OpSpecError("an Op spec is a mapping with schema, id, version, "
                           "and steps.")
+    strict = profile_of(doc) == PROFILE_0_2
+    top_keys = TOP_KEYS_0_2 if strict else TOP_KEYS
+    step_keys = STEP_KEYS_0_2 if strict else STEP_KEYS
 
     for key, phase in REFUSED_TOP.items():
         if key in doc:
             problems.append(f"the Op spec declares {key}:, which the runner "
                             f"subset does not carry — {phase}.")
-    for key in sorted(str(k) for k in set(doc) - TOP_KEYS - set(REFUSED_TOP)):
+    if strict and "name" in doc:
+        problems.append("the Op spec declares name:; the Op's human-readable "
+                        "name is title (rule required-identity).")
+    for key in sorted(str(k) for k in set(doc) - top_keys - set(REFUSED_TOP)
+                      - ({"name"} if strict else set())):
         problems.append(f"unknown top-level Op spec key {key!r}; the Op spec "
                         f"vocabulary is closed.")
-    if doc.get("schema") != SCHEMA_STRING:
-        problems.append(f"the Op spec schema must be {SCHEMA_STRING!r}, got "
-                        f"{doc.get('schema')!r}.")
-    for field in ("id", "version", "name"):
-        if not doc.get(field):
-            problems.append(f"the Op spec is missing required field {field!r}.")
+    if doc.get("schema") not in SCHEMA_STRINGS:
+        problems.append(f"the Op spec schema must be one of "
+                        f"{list(SCHEMA_STRINGS)}, got {doc.get('schema')!r}.")
+    if strict:
+        problems.extend(_strict_problems(doc))
+    else:
+        for field in ("id", "version", "name"):
+            if not doc.get(field):
+                problems.append(f"the Op spec is missing required field "
+                                f"{field!r}.")
 
     inputs = doc.get("inputs") or []
     input_names = set()
@@ -1031,6 +1209,8 @@ def validate(doc):
         if not _has_id(step):
             continue
         sid = step["id"]
+        if strict:
+            problems.extend(_strict_step_problems(step, sid))
         for key, phase in REFUSED_STEP.items():
             if key not in step:
                 continue
@@ -1041,8 +1221,9 @@ def validate(doc):
                 problems.append(f"Op step {sid!r} declares a {key}: step, "
                                 f"which the runner subset does not carry — "
                                 f"{phase}.")
-        for key in sorted(str(k) for k in set(step) - STEP_KEYS
-                          - set(REFUSED_STEP)):
+        for key in sorted(str(k) for k in set(step) - step_keys
+                          - set(REFUSED_STEP)
+                          - ({"name"} if strict else set())):
             problems.append(f"unknown key {key!r} on Op step {sid!r}; the step "
                             f"vocabulary is closed.")
         declared_deps = step.get("depends_on")
@@ -1087,7 +1268,8 @@ def validate(doc):
         _gate_problems(step, sid, problems)
 
         _authority_problems(step, sid, step_ids, human_gate_steps(steps),
-                            problems, artifact_gate_steps(steps))
+                            problems, artifact_gate_steps(steps),
+                            strict=strict)
         _repeat_problems(step, sid, problems)
 
         on_fail = step.get("on_fail", "stop")
@@ -1161,10 +1343,11 @@ def validate(doc):
         if step.get("foreach") is not None:
             _expr_problems((step["foreach"] or {}).get("items"),
                            f"Op step {sid!r} foreach.items", input_names,
-                           step_ids, dep_ids, set(), problems, human_steps)
+                           step_ids, dep_ids, set(), problems, human_steps,
+                           strict)
         _expr_problems(step.get("input") or {}, f"Op step {sid!r} input",
                        input_names, step_ids, dep_ids, loop_vars, problems,
-                       human_steps)
+                       human_steps, strict)
         if sid in artifact_steps and isinstance(gate_artifact(step), dict):
             # The artifact is evaluated AFTER the step's own Cog answered, so
             # it may read this step's payload and envelope as well as its
@@ -1173,7 +1356,7 @@ def validate(doc):
             _expr_problems(gate_artifact(step),
                            f"Op step {sid!r} gate.artifact", input_names,
                            step_ids, dep_ids | {sid}, loop_vars, problems,
-                           human_steps - {sid})
+                           human_steps - {sid}, strict)
         for index, requirement in enumerate(requirements(step)):
             if not isinstance(requirement, dict):
                 continue
@@ -1183,7 +1366,7 @@ def validate(doc):
                         requirement[field],
                         f"Op step {sid!r} authority.requires[{index}].{field}",
                         input_names, step_ids, dep_ids, loop_vars, problems,
-                        human_steps)
+                        human_steps, strict)
 
     outputs = doc.get("outputs") or {}
     if not isinstance(outputs, dict):
@@ -1191,7 +1374,7 @@ def validate(doc):
                         "expressions.")
     else:
         _expr_problems(outputs, "the Op spec's outputs", input_names, step_ids,
-                       step_ids, set(), problems, human_steps)
+                       step_ids, set(), problems, human_steps, strict)
 
     if not problems and 'cycle' in doc:
         try:
@@ -1215,7 +1398,10 @@ def cycle_phases(doc):
     ids = [step['id'] for step in ordered]
     if cycle['outcome_step'] not in ids or not isinstance(cycle['outcome_field'], str) or not cycle['outcome_field']:
         raise OpSpecError('cycle must name a declared outcome step and payload field.')
-    if any(requirements(step) for step in ordered) or base.get('authority'):
+    # [0.2] (0.11.0): ANY top-level authority beside a cycle, `{}` included.
+    declares_authority = ('authority' in base if profile_of(doc) == PROFILE_0_2
+                          else base.get('authority'))
+    if any(requirements(step) for step in ordered) or declares_authority:
         raise OpSpecError('The bounded cycle profile supports pure steps without authority only.')
     if any(value['name'] == 'cycle_previous' for value in base.get('inputs', [])):
         raise OpSpecError('cycle_previous is reserved for durable phase input.')
@@ -1258,7 +1444,7 @@ def cycle_phases(doc):
         raise OpSpecError('cycle terminal_errors maps declared steps to distinct nonempty envelope error codes.')
     for key in ('max_attempts', 'max_cost_units'):
         problems = []
-        _expr_problems(cycle[key], 'cycle.' + key, {value['name'] for value in base.get('inputs', [])}, set(), set(), set(), problems, set())
+        _expr_problems(cycle[key], 'cycle.' + key, {value['name'] for value in base.get('inputs', [])}, set(), set(), set(), problems, set(), profile_of(doc) == PROFILE_0_2)
         if problems:
             raise OpSpecError(problems)
     return phases
@@ -1271,9 +1457,16 @@ class OpSpec:
         self.doc = doc
         self.path = Path(path).resolve() if path else None
         self.ordered = validate(doc)
+        self.schema = doc["schema"]
+        #: `0.1` or `0.2`: which profile's run-time rules apply (0.11.0).
+        self.profile = profile_of(doc)
         self.id = doc["id"]
         self.version = str(doc.get("version", ""))
-        self.name = doc.get("name")
+        #: The human-readable name: `title` in `[0.2]`, `name` in `[0.1]`.
+        #: `name` stays as the same value for callers written before 0.11.0.
+        self.title = doc.get("title" if self.profile == PROFILE_0_2
+                             else "name")
+        self.name = self.title
         self.description = doc.get("description")
         self.inputs = doc.get("inputs") or []
         self.steps = doc["steps"]
