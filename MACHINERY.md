@@ -1630,3 +1630,11 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   payload is the list of element payloads, so the pause could never be asked;
   the spec used to load and fail when the run reached it. A `foreach` with
   the envelope Gate or an artifact Gate still loads.
+- **`op new` writes `OP.md`.** Not machinery (it is not hashed): Smith's Op
+  template now renders `templates/op/OP.md.tmpl`, the Op Spec v0.1 entry file
+  (`type: op [0.1]`, a kebab-case `name`, `description`, quoted `version`,
+  `license`, `publisher`, `manifest: op.yaml`,
+  `manifest_schema: openteams/op-manifest [0.1]`, and a body generated from
+  the spec). An existing `OP.md` (a draft) is kept. `op check` reports a
+  missing or invalid `OP.md` as a core-layer WARNING; it applies no
+  OP.md/op.yaml name-agreement rule.

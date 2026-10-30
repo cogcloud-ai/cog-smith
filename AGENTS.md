@@ -26,11 +26,13 @@ the single source of the machinery every created Cog carries.
   under `pixi run new`: the pixi task shell re-parses the arguments. Use
   `python src/cogsmith_cli.py new …` inside `pixi shell`, or a request file.
 - Validate: `pixi run check -- <path> [--tests] [--envelope]`
-- Ops: `python src/cogsmith_cli.py op new --from-spec <spec> --dir <dir>` and
+- Ops: `python src/cogsmith_cli.py op new --from-spec <spec> --dir <dir>
+  [--license L] [--publisher P]` and
   `op check <dir> [--tests] [--envelope]` — the Op half of the builder
   (BUILDING_OPS.md). Op machinery lives in `templates/op/src/` and is
   enforced by hash the same way Cog machinery is; an Op package carries no
-  per-Op Python at all.
+  per-Op Python at all. `op new` also writes `OP.md`, the Op Spec entry
+  file; `op check` warns (never errors) when it is missing or invalid.
 - Card: `pixi run card -- <path> [--json | --envelope]`
 - `--envelope` emits envelope v1 for Op consumption:
   binding null (deterministic tooling cog), findings in `problems`,

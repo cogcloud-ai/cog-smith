@@ -2,8 +2,9 @@
 
 {{OP_SUMMARY}}
 
-`op.yaml` is the executable spec: identity, declared inputs, the Cog steps
-and their Gates, and what the Track records. The runner (`src/op_runner.py`)
+`OP.md` is the Op Spec entry file: it names this Op and its manifest and
+says, in prose, what the Op does. `op.yaml` is the executable spec: identity,
+declared inputs, the Cog steps and their Gates, and what the Track records. The runner (`src/op_runner.py`)
 sequences those steps, builds each step's request from the spec's mapping
 expressions, invokes each Cog only through the usage task that Cog declares,
 gates the envelope it gets back, and writes a durable Track. No Python in

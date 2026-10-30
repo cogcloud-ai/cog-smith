@@ -1,0 +1,39 @@
+---
+type: op [0.1]
+name: {{OP_MD_NAME}}
+description: {{OP_DESCRIPTION_YAML}}
+version: {{OP_VERSION_YAML}}
+license: {{OP_LICENSE_YAML}}
+publisher: {{OP_PUBLISHER_YAML}}
+manifest: op.yaml
+manifest_schema: {{OP_SCHEMA_YAML}}
+---
+
+# {{OP_TITLE}}
+
+## Outcome
+
+{{OP_SUMMARY}}
+
+## Steps
+
+Each step invokes a Cog through a usage task that Cog declares, and its
+result passes the step's Gate before anything later depends on it.
+
+{{OP_STEPS_MD}}
+
+## Human Gates
+
+{{OP_GATES_MD}}
+
+## Authority
+
+{{OP_AUTHORITY_MD}}
+
+## Deliverable
+
+{{OP_OUTPUTS_MD}}
+
+*(Created by cog-smith `op new` from `op.yaml`. `op.yaml` is the manifest
+that runs; where this account and `op.yaml` disagree, `op.yaml` is what
+runs. Extend this account with why each Cog is there.)*

@@ -35,6 +35,7 @@ If you remember only one thing, remember this:
 An Op package is:
 
     op-my-workflow/
+    ├── OP.md                 # the Op Spec entry file: names op.yaml, describes the Op
     ├── op.yaml               # the executable spec — the only thing you author
     ├── pixi.toml             # tasks: op, test
     ├── src/                  # op_runner.py, op_spec.py, op_track.py — SHARED
@@ -77,7 +78,19 @@ feature to build on.
    The spec is validated first, so a refused construct never reaches disk.
    `--dir` may point at a directory that already exists (the folder holding
    the proposal, say) as long as none of the files being written are already
-   there; a collision refuses by filename.
+   there; a collision refuses by filename. An `OP.md` already there — an Op
+   Spec draft — is kept, not replaced.
+
+   `op new` writes `OP.md`, the Op Spec v0.1 entry file: frontmatter with
+   `type: op [0.1]`, the package's kebab-case `name`, the spec's
+   `description`, the quoted `version`, `license` and `publisher` (the Cog
+   defaults, Apache-2.0 and OpenTeams, unless `--license` / `--publisher`
+   say otherwise), `manifest: op.yaml` and
+   `manifest_schema: openteams/op-manifest [0.1]`; then a short account of the
+   outcome, the steps, the human Gates, the authority and the deliverable,
+   generated from `op.yaml`. `op.yaml` is what runs. `op check` reports a
+   missing or invalid `OP.md` as a warning, so an Op created before `op new`
+   wrote one keeps passing.
 4. **Run.**
 
    ```bash

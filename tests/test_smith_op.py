@@ -66,7 +66,7 @@ class CreateTests(SmithOpCase):
         result = smith_op.create(self.spec_path, self.dest)
         self.assertEqual(result["op_id"], "openteams/op-test")
         self.assertEqual(result["steps"], ["first", "second"])
-        for rel in ("op.yaml", "pixi.toml", "README.md", ".gitignore",
+        for rel in ("OP.md", "op.yaml", "pixi.toml", "README.md", ".gitignore",
                     "src/op_runner.py", "src/op_spec.py", "src/op_track.py",
                     "tests/test_op.py", "examples/request.json"):
             self.assertTrue((self.dest / rel).exists(), rel)
@@ -369,6 +369,199 @@ class CliTests(SmithOpCase):
                             str(request), "--dry-run")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["status"], "planned")
+
+
+class OpMdTests(SmithOpCase):
+    """Op machinery 0.10.0: `op new` writes the Op Spec core entry file,
+    OP.md, and `op check` reports a missing or invalid one as a WARNING so
+    existing Ops without one keep passing."""
+
+    def frontmatter(self, root=None):
+        text = ((root or self.dest) / "OP.md").read_text()
+        match = smith_op.OP_MD_FRONTMATTER_RE.match(text)
+        self.assertIsNotNone(match, text[:200])
+        return yaml.safe_load(match.group(1)), text[match.end():]
+
+    def opmd_findings(self, root=None):
+        return [f for f in smith_op.check(root or self.dest)
+                if f["check"] == "opmd"]
+
+    def rich_spec(self):
+        doc = self.spec_doc()
+        doc["description"] = 'Drafts notes: "careful" ones, for review.'
+        doc["steps"][0]["gate"] = {"policy": "human"}
+        doc["steps"][1]["gate"] = {
+            "policy": "human", "decides": "artifact",
+            "artifact": {"kind": "summary", "digests": {
+                "text": {"$sha256": {"$from": "steps.second.payload"}}}}}
+        doc["outputs"] = {"summary": {"$from": "steps.second.payload.text"}}
+        return doc
+
+    def test_op_new_writes_a_valid_entry_file(self):
+        result = smith_op.create(self.spec_path, self.dest)
+        self.assertIn("OP.md", result["files"])
+        meta, body = self.frontmatter()
+        self.assertEqual(meta, {
+            "type": "op [0.1]", "name": "op-sample",
+            "description": "A two-step linear Op used by the machinery tests.",
+            "version": "0.1.0", "license": "Apache-2.0",
+            "publisher": "OpenTeams", "manifest": "op.yaml",
+            "manifest_schema": "openteams/op-manifest [0.1]"})
+        self.assertIsInstance(meta["version"], str)
+        self.assertEqual(smith_op.op_md_problems(self.dest), [])
+        self.assertEqual(self.opmd_findings(), [])
+        for heading in ("# Test Op", "## Outcome", "## Steps",
+                        "## Human Gates", "## Authority", "## Deliverable"):
+            self.assertIn(heading, body)
+        self.assertIn("**first**", body)
+        self.assertIn("`openteams/cog-second` task `summarize`", body)
+        self.assertIn("None. Every step is accepted by the envelope Gate",
+                      body)
+        self.assertIn("None. No step reaches outside the run.", body)
+
+    def test_the_body_names_the_human_gates_and_the_deliverable(self):
+        self.spec_path.write_text(yaml.safe_dump(self.rich_spec(),
+                                                 sort_keys=False))
+        smith_op.create(self.spec_path, self.dest)
+        meta, body = self.frontmatter()
+        self.assertEqual(meta["description"],
+                         'Drafts notes: "careful" ones, for review.')
+        self.assertIn("**first** — a person approves, rejects, edits or "
+                      "defers each change", body)
+        self.assertIn("**second** — a person accepts or rejects the "
+                      "`summary` artifact", body)
+        self.assertIn("The run's `outputs`: `summary`.", body)
+        self.assertEqual(smith_op.op_md_problems(self.dest), [])
+
+    def test_the_body_names_what_each_step_requires(self):
+        doc = self.spec_doc()
+        doc["steps"][0]["gate"] = {"policy": "human"}
+        doc["steps"][1]["authority"] = {"requires": [
+            {"resource": "github", "action": "write",
+             "changes": {"$from": "steps.first.decision.approved"}}]}
+        self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+        smith_op.create(self.spec_path, self.dest)
+        _, body = self.frontmatter()
+        self.assertIn("**second** requires `github` `write`, authorized only "
+                      "by the human decision at `first`.", body)
+
+    def test_the_name_follows_the_core_naming_rules(self):
+        for directory, name in (("op-sample", "op-sample"),
+                                ("My_Op  Pkg", "my-op-pkg"),
+                                ("--x--y--", "x-y"),
+                                ("7-steps", "7-steps")):
+            with self.subTest(directory=directory):
+                dest = self.root / "names" / directory
+                smith_op.create(self.spec_path, dest)
+                meta, _ = self.frontmatter(dest)
+                self.assertEqual(meta["name"], name)
+                self.assertEqual(smith_op.op_md_problems(dest), [])
+
+    def test_license_and_publisher_can_be_stated(self):
+        smith_op.create(self.spec_path, self.dest, license="BSD-3-Clause",
+                        publisher="Example: Org")
+        meta, _ = self.frontmatter()
+        self.assertEqual(meta["license"], "BSD-3-Clause")
+        self.assertEqual(meta["publisher"], "Example: Org")
+
+    def test_the_cli_passes_license_and_publisher(self):
+        result = subprocess.run(
+            [sys.executable, str(CLI), "op", "new", "--from-spec",
+             str(self.spec_path), "--dir", str(self.dest), "--license", "MIT",
+             "--publisher", "Example Org"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        meta, _ = self.frontmatter()
+        self.assertEqual((meta["license"], meta["publisher"]),
+                         ("MIT", "Example Org"))
+
+    def test_an_existing_draft_op_md_is_kept(self):
+        """An OP.md written before its manifest is an Op Spec draft; `op new`
+        into its directory keeps it rather than refusing or replacing it."""
+        self.dest.mkdir()
+        draft = "---\ntype: op\nname: op-sample\ndescription: A draft.\n---\n"
+        (self.dest / "OP.md").write_text(draft)
+        result = smith_op.create(self.spec_path, self.dest)
+        self.assertEqual(result["kept"], ["OP.md"])
+        self.assertNotIn("OP.md", result["files"])
+        self.assertEqual((self.dest / "OP.md").read_text(), draft)
+        findings = self.opmd_findings()
+        self.assertTrue(findings)
+        self.assertEqual({f["level"] for f in findings}, {"warn"})
+        self.assertIn("declares no 'manifest'",
+                      " ".join(f["detail"] for f in findings))
+
+    def test_a_package_without_op_md_still_passes_with_a_warning(self):
+        smith_op.create(self.spec_path, self.dest)
+        (self.dest / "OP.md").unlink()
+        findings = smith_op.check(self.dest)
+        self.assertEqual(self.errors(findings), [])
+        opmd = [f for f in findings if f["check"] == "opmd"]
+        self.assertEqual(len(opmd), 1)
+        self.assertEqual(opmd[0]["level"], "warn")
+        self.assertIn("no OP.md", opmd[0]["detail"])
+        checked = subprocess.run([sys.executable, str(CLI), "op", "check",
+                                  str(self.dest)], capture_output=True,
+                                 text=True)
+        self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+
+    def test_an_invalid_op_md_is_a_warning_naming_why(self):
+        smith_op.create(self.spec_path, self.dest)
+        good = (self.dest / "OP.md").read_text()
+        (self.dest / "other.yaml").write_text("x: 1\n")
+        cases = {
+            "no frontmatter": ("# Just a heading\n", "frontmatter"),
+            "bad type": (good.replace("type: op [0.1]", "type: op [0.2]"),
+                         "declares type"),
+            "bad name": (good.replace("name: op-sample", "name: Op_Sample"),
+                         "declares name"),
+            "doubled hyphen": (good.replace("name: op-sample",
+                                            "name: op--sample"),
+                               "declares name"),
+            "no description": (good.replace("description:", "summary:"),
+                               "declares no 'description'"),
+            "unquoted version": (good.replace('version: "0.1.0"',
+                                              "version: 1.0"),
+                                 "unquoted"),
+            "absolute manifest": (good.replace("manifest: op.yaml",
+                                               "manifest: /etc/op.yaml"),
+                                  "stays inside the Op directory"),
+            "escaping manifest": (good.replace("manifest: op.yaml",
+                                               "manifest: ../op.yaml"),
+                                  "stays inside the Op directory"),
+            "missing manifest": (good.replace("manifest: op.yaml",
+                                              "manifest: gone.yaml"),
+                                 "not a file"),
+            "another manifest": (good.replace("manifest: op.yaml",
+                                              "manifest: other.yaml"),
+                                 "runner runs op.yaml"),
+            "unsupported profile": (good.replace(
+                "manifest_schema: openteams/op-manifest [0.1]",
+                "manifest_schema: example.org/op-workflow [0.1]"),
+                "implements"),
+            "nested value": (good.replace("license: ", "tags: [a, b]\nlicense: "),
+                             "flat mapping"),
+        }
+        for name, (text, needle) in cases.items():
+            with self.subTest(name):
+                (self.dest / "OP.md").write_text(text)
+                findings = smith_op.check(self.dest)
+                self.assertEqual(self.errors(findings), [])
+                opmd = [f for f in findings if f["check"] == "opmd"]
+                self.assertTrue(opmd)
+                self.assertEqual({f["level"] for f in opmd}, {"warn"})
+                self.assertEqual({f["layer"] for f in opmd}, {"core"})
+                self.assertIn(needle, " ".join(f["detail"] for f in opmd))
+        (self.dest / "OP.md").write_bytes(b"---\nname: \xff\n---\n")
+        self.assertIn("UTF-8", " ".join(smith_op.op_md_problems(self.dest)))
+
+    def test_op_md_name_is_never_compared_with_op_yaml(self):
+        """The OP.md/op.yaml name-agreement rule is under discussion; `op
+        check` does not apply one."""
+        smith_op.create(self.spec_path, self.dest)
+        text = (self.dest / "OP.md").read_text()
+        (self.dest / "OP.md").write_text(text.replace("name: op-sample",
+                                                      "name: something-else"))
+        self.assertEqual(self.opmd_findings(), [])
 
 
 class ReviewRegressionTests(SmithOpCase):
