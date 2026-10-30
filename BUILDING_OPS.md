@@ -82,7 +82,10 @@ feature to build on.
    Spec draft — is kept, not replaced.
 
    `op new` writes `OP.md`, the Op Spec v0.1 entry file: frontmatter with
-   `type: op [0.1]`, the package's kebab-case `name`, the spec's
+   `type: op [0.1]`, a `name` that is the last segment of the spec's `id`
+   (`openteams/op-learning-shortlist` -> `op-learning-shortlist`; an id whose
+   last segment is not 1-64 lowercase letters, digits and single hyphens is
+   refused), the spec's
    `description`, the quoted `version`, `license` and `publisher` (the Cog
    defaults, Apache-2.0 and OpenTeams, unless `--license` / `--publisher`
    say otherwise), `manifest: op.yaml` and
@@ -90,7 +93,8 @@ feature to build on.
    outcome, the steps, the human Gates, the authority and the deliverable,
    generated from `op.yaml`. `op.yaml` is what runs. `op check` reports a
    missing or invalid `OP.md` as a warning, so an Op created before `op new`
-   wrote one keeps passing.
+   wrote one keeps passing, and warns when its `name` is not the id's last
+   segment; an OP.md `version` other than op.yaml's is an error.
 4. **Run.**
 
    ```bash

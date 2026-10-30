@@ -402,7 +402,7 @@ class OpMdTests(SmithOpCase):
         self.assertIn("OP.md", result["files"])
         meta, body = self.frontmatter()
         self.assertEqual(meta, {
-            "type": "op [0.1]", "name": "op-sample",
+            "type": "op [0.1]", "name": "op-test",
             "description": "A two-step linear Op used by the machinery tests.",
             "version": "0.1.0", "license": "Apache-2.0",
             "publisher": "OpenTeams", "manifest": "op.yaml",
@@ -445,17 +445,45 @@ class OpMdTests(SmithOpCase):
         self.assertIn("**second** requires `github` `write`, authorized only "
                       "by the human decision at `first`.", body)
 
-    def test_the_name_follows_the_core_naming_rules(self):
-        for directory, name in (("op-sample", "op-sample"),
-                                ("My_Op  Pkg", "my-op-pkg"),
-                                ("--x--y--", "x-y"),
-                                ("7-steps", "7-steps")):
+    def write_spec(self, **changes):
+        doc = self.spec_doc()
+        doc.update(changes)
+        self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+
+    def test_the_name_is_the_last_segment_of_the_manifest_id(self):
+        """The user's decision: OP.md's name is op.yaml's id's last segment,
+        whatever the package directory is called."""
+        self.write_spec(id="openteams/op-learning-shortlist")
+        for directory in ("op-learning-shortlist", "op", "My_Op Pkg"):
             with self.subTest(directory=directory):
                 dest = self.root / "names" / directory
                 smith_op.create(self.spec_path, dest)
                 meta, _ = self.frontmatter(dest)
-                self.assertEqual(meta["name"], name)
-                self.assertEqual(smith_op.op_md_problems(dest), [])
+                self.assertEqual(meta["name"], "op-learning-shortlist")
+                findings = self.opmd_findings(dest)
+                self.assertEqual(findings, [])
+
+    def test_an_id_segment_that_is_not_a_core_name_is_refused(self):
+        for op_id in ("openteams/Op_Learning", "openteams/op--x",
+                      "openteams/-op", "openteams/op-", "openteams/",
+                      "openteams/" + "a" * 65):
+            with self.subTest(op_id=op_id):
+                self.write_spec(id=op_id)
+                dest = self.root / "refused"
+                with self.assertRaises(smith_op.OpCreateError) as caught:
+                    smith_op.create(self.spec_path, dest)
+                self.assertIn("not a valid OP.md name", str(caught.exception))
+                self.assertFalse(dest.exists())
+
+    def test_the_cli_refuses_an_invalid_id_segment_by_name(self):
+        self.write_spec(id="openteams/Op_Learning")
+        result = subprocess.run(
+            [sys.executable, str(CLI), "op", "new", "--from-spec",
+             str(self.spec_path), "--dir", str(self.dest)],
+            capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a valid OP.md name", result.stdout + result.stderr)
+        self.assertFalse(self.dest.exists())
 
     def test_license_and_publisher_can_be_stated(self):
         smith_op.create(self.spec_path, self.dest, license="BSD-3-Clause",
@@ -478,7 +506,7 @@ class OpMdTests(SmithOpCase):
         """An OP.md written before its manifest is an Op Spec draft; `op new`
         into its directory keeps it rather than refusing or replacing it."""
         self.dest.mkdir()
-        draft = "---\ntype: op\nname: op-sample\ndescription: A draft.\n---\n"
+        draft = "---\ntype: op\nname: op-test\ndescription: A draft.\n---\n"
         (self.dest / "OP.md").write_text(draft)
         result = smith_op.create(self.spec_path, self.dest)
         self.assertEqual(result["kept"], ["OP.md"])
@@ -512,9 +540,9 @@ class OpMdTests(SmithOpCase):
             "no frontmatter": ("# Just a heading\n", "frontmatter"),
             "bad type": (good.replace("type: op [0.1]", "type: op [0.2]"),
                          "declares type"),
-            "bad name": (good.replace("name: op-sample", "name: Op_Sample"),
+            "bad name": (good.replace("name: op-test", "name: Op_Sample"),
                          "declares name"),
-            "doubled hyphen": (good.replace("name: op-sample",
+            "doubled hyphen": (good.replace("name: op-test",
                                             "name: op--sample"),
                                "declares name"),
             "no description": (good.replace("description:", "summary:"),
@@ -545,22 +573,51 @@ class OpMdTests(SmithOpCase):
             with self.subTest(name):
                 (self.dest / "OP.md").write_text(text)
                 findings = smith_op.check(self.dest)
-                self.assertEqual(self.errors(findings), [])
-                opmd = [f for f in findings if f["check"] == "opmd"]
+                # Only a version that differs from op.yaml's is an error;
+                # the unquoted `1.0` case is both (tested on its own below).
+                self.assertEqual([f for f in self.errors(findings)
+                                  if "describes the revision" not in f["detail"]],
+                                 [])
+                opmd = [f for f in findings if f["check"] == "opmd"
+                        and f["level"] == "warn"]
                 self.assertTrue(opmd)
-                self.assertEqual({f["level"] for f in opmd}, {"warn"})
                 self.assertEqual({f["layer"] for f in opmd}, {"core"})
                 self.assertIn(needle, " ".join(f["detail"] for f in opmd))
         (self.dest / "OP.md").write_bytes(b"---\nname: \xff\n---\n")
         self.assertIn("UTF-8", " ".join(smith_op.op_md_problems(self.dest)))
 
-    def test_op_md_name_is_never_compared_with_op_yaml(self):
-        """The OP.md/op.yaml name-agreement rule is under discussion; `op
-        check` does not apply one."""
+    def test_a_name_other_than_the_id_segment_is_a_warning(self):
         smith_op.create(self.spec_path, self.dest)
         text = (self.dest / "OP.md").read_text()
-        (self.dest / "OP.md").write_text(text.replace("name: op-sample",
-                                                      "name: something-else"))
+        (self.dest / "OP.md").write_text(text.replace("name: op-test",
+                                                      "name: op-sample"))
+        findings = self.opmd_findings()
+        self.assertEqual([f["level"] for f in findings], ["warn"])
+        self.assertIn("id's last segment", findings[0]["detail"])
+        self.assertEqual(self.errors(smith_op.check(self.dest)), [])
+
+    def test_a_version_other_than_op_yaml_is_an_error(self):
+        smith_op.create(self.spec_path, self.dest)
+        text = (self.dest / "OP.md").read_text()
+        (self.dest / "OP.md").write_text(text.replace('version: "0.1.0"',
+                                                      'version: "0.2.0"'))
+        errors = [f for f in self.errors(smith_op.check(self.dest))
+                  if f["check"] == "opmd"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["layer"], "core")
+        self.assertIn("'0.2.0'", errors[0]["detail"])
+        self.assertIn("'0.1.0'", errors[0]["detail"])
+        checked = subprocess.run([sys.executable, str(CLI), "op", "check",
+                                  str(self.dest)], capture_output=True,
+                                 text=True)
+        self.assertEqual(checked.returncode, 1, checked.stdout)
+
+    def test_an_absent_version_is_not_compared(self):
+        """`version` is recommended, not required: only a stated one that
+        differs is refused."""
+        smith_op.create(self.spec_path, self.dest)
+        text = (self.dest / "OP.md").read_text()
+        (self.dest / "OP.md").write_text(text.replace('version: "0.1.0"\n', ""))
         self.assertEqual(self.opmd_findings(), [])
 
 

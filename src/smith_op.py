@@ -20,7 +20,8 @@ and the task must be one of its declared USAGE interfaces. A source
 directory that is simply absent (the package is being checked on a machine
 without the Cogs) is a warning, not an error. A missing or invalid `OP.md`
 is a warning too, so a package created before `op new` wrote one keeps
-passing.
+passing, as is an OP.md `name` other than the last segment of op.yaml's
+`id`; an OP.md `version` other than op.yaml's is an error.
 """
 import hashlib
 import json
@@ -152,18 +153,32 @@ def _outputs_markdown(spec):
             f"request, result and Gate decision beside them.")
 
 
-def op_md_name(dest, spec):
-    """OP.md's `name`: the package directory's name when it already follows
-    the core naming rules (the Op's directory should have the same name),
-    otherwise that name — or the spec id's last segment — in kebab case."""
-    for candidate in (Path(dest).name, str(spec.id).rsplit("/", 1)[-1]):
-        name = re.sub(r"[^a-z0-9]+", "-", candidate.lower()).strip("-")
-        name = name[:OP_MD_NAME_MAX].rstrip("-")
-        if name and OP_MD_NAME_RE.match(name):
-            return name
-    raise OpCreateError(f"cannot derive an OP.md name from {Path(dest).name!r} "
-                        f"or {spec.id!r}; name the directory in lowercase "
-                        f"letters, digits and single hyphens.")
+def id_name(op_id):
+    """The last path segment of an Op's manifest `id` — the `name` its OP.md
+    states (`openteams/op-learning-shortlist` -> `op-learning-shortlist`)."""
+    return str(op_id).rsplit("/", 1)[-1]
+
+
+def valid_core_name(name):
+    """True when NAME follows the core naming rules: 1-64 lowercase ASCII
+    letters, digits and hyphens, no leading, trailing or doubled hyphen."""
+    return (isinstance(name, str) and 0 < len(name) <= OP_MD_NAME_MAX
+            and bool(OP_MD_NAME_RE.match(name)))
+
+
+def op_md_name(spec):
+    """OP.md's `name`: the last segment of the manifest `id`. A segment that
+    is not a valid core name is refused, never rewritten into one — the
+    name is how the Op is recognized, so it is stated, not guessed."""
+    name = id_name(spec.id)
+    if not valid_core_name(name):
+        raise OpCreateError(
+            f"op.yaml id {spec.id!r} ends in {name!r}, which is not a valid "
+            f"OP.md name; OP.md's name is the id's last segment, and a name "
+            f"is 1-64 lowercase letters, digits and hyphens, with no leading, "
+            f"trailing or doubled hyphen. Rename the id, e.g. "
+            f"'example.org/op-my-workflow'.")
+    return name
 
 
 def _one_line_value(value, what):
@@ -189,7 +204,7 @@ def _tokens(spec, dest, license=None, publisher=None):
         # OP.md (Op Spec v0.1): YAML scalars written as JSON strings, which
         # YAML reads as double-quoted scalars — so a colon or a quote in a
         # description can never break the frontmatter.
-        "OP_MD_NAME": op_md_name(dest, spec),
+        "OP_MD_NAME": op_md_name(spec),
         "OP_DESCRIPTION_YAML": json.dumps(description),
         "OP_VERSION_YAML": json.dumps(str(spec.version)),
         "OP_LICENSE_YAML": json.dumps(_one_line_value(
@@ -368,8 +383,8 @@ def check(root, run_tests=False):
             err("runtime", "tasks",
                 "pixi.toml carries a [tool.cog] manifest — this package is "
                 "an Op, not a Cog; Ops declare op.yaml.")
-    for detail in op_md_problems(root):
-        warn("core", "opmd", detail)
+    for level, detail in op_md_findings(root, spec):
+        (err if level == "error" else warn)("core", "opmd", detail)
     if not (root / "tests" / "test_op.py").exists():
         warn("runtime", "tests", "no tests/test_op.py — the generated suite "
                                  "is the package's own regression net.")
@@ -395,18 +410,55 @@ def check(root, run_tests=False):
     return findings
 
 
+def op_md_findings(root, spec):
+    """[(level, detail)] for ROOT's `OP.md` against the loaded op.yaml SPEC.
+
+    Every entry-file problem `op_md_problems` names is a WARNING — a missing
+    OP.md included, so a package created before `op new` wrote one keeps
+    passing — and so is a `name` that is not the last segment of op.yaml's
+    `id`. A `version` that differs from op.yaml's is an ERROR: OP.md would
+    then describe a different revision of the Op than the one that runs."""
+    findings = [("warn", detail) for detail in op_md_problems(root)]
+    meta = op_md_frontmatter(root)
+    if not isinstance(meta, dict):
+        return findings
+    expected = id_name(spec.id)
+    name = meta.get("name")
+    if "name" in meta and name != expected:
+        findings.append(("warn", f"{OP_MD} declares name {name!r}, but "
+                                 f"op.yaml's id {spec.id!r} names "
+                                 f"{expected!r}; OP.md's name should be the "
+                                 f"id's last segment."))
+    if "version" in meta and str(meta["version"]) != spec.version:
+        findings.append(("error", f"{OP_MD} declares version "
+                                  f"{meta['version']!r}, but op.yaml is "
+                                  f"version {spec.version!r}; the entry file "
+                                  f"describes the revision that runs."))
+    return findings
+
+
+def op_md_frontmatter(root):
+    """OP.md's frontmatter mapping, or None when there is none to read."""
+    path = Path(root) / OP_MD
+    try:
+        text = path.read_bytes().decode("utf-8")
+        match = OP_MD_FRONTMATTER_RE.match(text)
+        return yaml.safe_load(match.group(1)) if match else None
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+
+
 def op_md_problems(root):
     """Why ROOT's `OP.md` is missing or is not a valid Op Spec v0.1 entry
-    file naming this package's manifest. `op check` reports each as a
-    WARNING: a package created before `op new` wrote OP.md keeps passing.
+    file naming this package's manifest — each a WARNING in `op check`.
 
     The core validation of Op Spec v0.1: valid UTF-8 opening with YAML
     frontmatter; `type`, `name` and `description` valid; `manifest` a
     relative path to an existing file inside the package after symlinks are
     followed, and `manifest_schema` a non-empty string. Then what this
     runner can say about the pointer: it runs `op.yaml` under
-    `openteams/op-manifest [0.1]`. Nothing here compares OP.md's `name`
-    with op.yaml's."""
+    `openteams/op-manifest [0.1]`. Agreement with op.yaml's `id` and
+    `version` is `op_md_findings`'s."""
     root = Path(root)
     path = root / OP_MD
     if not path.is_file():
@@ -441,9 +493,7 @@ def op_md_problems(root):
         problems.append(f"{OP_MD} declares type {kind!r}; an Op Spec v0.1 "
                         f"entry file declares 'op' or 'op [0.1]'.")
     name = meta.get("name")
-    if "name" in meta and not (isinstance(name, str)
-                               and len(name) <= OP_MD_NAME_MAX
-                               and OP_MD_NAME_RE.match(name)):
+    if "name" in meta and not valid_core_name(name):
         problems.append(f"{OP_MD} declares name {name!r}; a name is 1-64 "
                         f"lowercase letters, digits and single hyphens, not "
                         f"starting or ending with a hyphen.")

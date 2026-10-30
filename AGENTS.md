@@ -32,7 +32,9 @@ the single source of the machinery every created Cog carries.
   (BUILDING_OPS.md). Op machinery lives in `templates/op/src/` and is
   enforced by hash the same way Cog machinery is; an Op package carries no
   per-Op Python at all. `op new` also writes `OP.md`, the Op Spec entry
-  file; `op check` warns (never errors) when it is missing or invalid.
+  file, named after the last segment of op.yaml's `id`; `op check` warns
+  when it is missing, invalid or differently named, and errors only when its
+  `version` differs from op.yaml's.
 - Card: `pixi run card -- <path> [--json | --envelope]`
 - `--envelope` emits envelope v1 for Op consumption:
   binding null (deterministic tooling cog), findings in `problems`,

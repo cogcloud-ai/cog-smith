@@ -1635,9 +1635,13 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   durable state across runs is not part of this Op spec. Message-only.
 - **`op new` writes `OP.md`.** Not machinery (it is not hashed): Smith's Op
   template now renders `templates/op/OP.md.tmpl`, the Op Spec v0.1 entry file
-  (`type: op [0.1]`, a kebab-case `name`, `description`, quoted `version`,
-  `license`, `publisher`, `manifest: op.yaml`,
+  (`type: op [0.1]`, `name`, `description`, quoted `version`, `license`,
+  `publisher`, `manifest: op.yaml`,
   `manifest_schema: openteams/op-manifest [0.1]`, and a body generated from
-  the spec). An existing `OP.md` (a draft) is kept. `op check` reports a
-  missing or invalid `OP.md` as a core-layer WARNING; it applies no
-  OP.md/op.yaml name-agreement rule.
+  the spec). `name` is the last segment of op.yaml's `id`
+  (`openteams/op-learning-shortlist` -> `op-learning-shortlist`), whatever
+  the package directory is called; a segment that is not a valid core name
+  refuses `op new` by name rather than being rewritten. An existing `OP.md`
+  (a draft) is kept. `op check` reports a missing or invalid `OP.md`, and an
+  OP.md `name` other than the id's last segment, as core-layer WARNINGS; an
+  OP.md `version` that differs from op.yaml's is an ERROR.
