@@ -13,6 +13,8 @@ from pathlib import Path
 import op_fixtures as fx
 from op_fixtures import op_runner, op_spec
 
+import test_op_authority as ta
+
 
 def problems(doc):
     try:
@@ -47,6 +49,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(spec.title, "Test Op")
         self.assertEqual(spec.name, "Test Op")
         self.assertEqual(op_spec.step_title(spec.steps[0]), "Step first")
+        self.assertEqual(spec.change_target_key, "target")
 
     def test_a_0_1_document_reads_name_as_title(self):
         spec = op_spec.OpSpec(fx.spec_doc())
@@ -54,6 +57,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(spec.profile, op_spec.PROFILE_0_1)
         self.assertEqual(spec.title, "Test Op")
         self.assertEqual(op_spec.step_title(spec.steps[0]), "Step first")
+        self.assertEqual(spec.change_target_key, "repository")
 
     def test_schema_string_keeps_meaning_0_1_for_existing_callers(self):
         self.assertEqual(op_spec.SCHEMA_STRING, "openteams/op-manifest [0.1]")
@@ -491,6 +495,103 @@ class PathHomeAtRunTimeTests(RunCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.fake.calls[0]["request"]["source"],
                          str((self.root / "texts.json").resolve()))
+
+
+
+# ------------------------------------------------- changes and targets --
+
+class ChangeTargetTests(ta.AuthorityCase):
+    """Under [0.2] a proposed change names what it changes as `target`: the
+    write admission must list it, an edit may not change it, and the grant
+    carries it. ([0.1] keeps `repository`: tests/test_op_authority.py.)"""
+
+    def answers(self, *changes):
+        def stamp(payload, sid):
+            return fx.envelope(payload=payload, cog_id=f"openteams/cog-{sid}")
+        return {"ask": [stamp({"items": []}, "example-reader"),
+                        stamp({"changes": list(changes)}, "compose"),
+                        stamp({"applied": True}, "example-writer")]}
+
+    def write_with(self, verdicts, *changes):
+        code, output, _ = self.start(doc=fx.as_0_2(ta.spec_doc()),
+                                     answers=self.answers(*changes))
+        self.assertEqual(code, op_runner.PAUSED_EXIT, output)
+        decision = self.decide(output, verdicts)
+        code, out, track = self.resume(output, decision)
+        return code, out, self.step(track, "example-writer")
+
+    def test_an_admitted_target_is_granted_under_target(self):
+        code, out, record = self.write_with({"c-a": "approve"},
+                                            fx.change_0_2("c-a"))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(record["status"], "passed")
+        grant = json.loads(Path(record["grant"]).read_text())
+        granted = grant["operations"][0]["changes"][0]
+        self.assertEqual(granted["target"], fx.REPO)
+        self.assertNotIn("repository", granted)
+        self.assertEqual(granted["content_sha256"],
+                         op_runner.change_content_sha256(
+                             fx.change_0_2("c-a")))
+
+    def test_a_target_the_admission_does_not_list_is_denied(self):
+        code, out, record = self.write_with(
+            {"c-a": "approve"}, fx.change_0_2("c-a", target=ta.OTHER_REPO))
+        self.assertEqual(record["status"], "denied")
+        self.assertIn("names target 'someone-else/private'",
+                      record["gate"]["reasons"][0])
+
+    def test_a_0_1_shaped_change_is_denied_on_its_finer_target(self):
+        """A [0.1] change names the admitted repository as `repository` and
+        an item inside it as `target`; under [0.2] `target` is what is
+        checked, so it is denied rather than written."""
+        code, out, record = self.write_with({"c-a": "approve"},
+                                            fx.change("c-a"))
+        self.assertEqual(record["status"], "denied")
+        self.assertIn(f"names target '{fx.REPO}#1'",
+                      record["gate"]["reasons"][0])
+
+    def test_a_change_naming_no_target_is_denied(self):
+        change = fx.change_0_2("c-a")
+        del change["target"]
+        change["content_sha256"] = op_runner.change_content_sha256(change)
+        code, out, record = self.write_with({"c-a": "approve"}, change)
+        self.assertEqual(record["status"], "denied")
+        self.assertIn("names target None", record["gate"]["reasons"][0])
+
+    def test_an_edit_may_not_change_the_target(self):
+        code, output, _ = self.start(doc=fx.as_0_2(ta.spec_doc()),
+                                     answers=self.answers(
+                                         fx.change_0_2("c-a")))
+        edited = dict(fx.change_0_2("c-a"), target=ta.OTHER_REPO)
+        decision = self.decide(output, {"c-a": edited})
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.resume(output, decision)
+        self.assertIn("retargets the change to target 'someone-else/private'",
+                      "\n".join(caught.exception.problems))
+
+    def test_an_edit_of_content_only_is_granted(self):
+        edited = dict(fx.change_0_2("c-a"), summary="add two labels")
+        code, out, record = self.write_with({"c-a": edited},
+                                            fx.change_0_2("c-a"))
+        self.assertEqual(code, 0, out)
+        granted = json.loads(Path(record["grant"]).read_text())[
+            "operations"][0]["changes"][0]
+        self.assertEqual(granted["content_sha256"],
+                         op_runner.change_content_sha256(edited))
+
+    def test_apply_decision_defaults_to_the_0_1_field(self):
+        pending = {"run_id": "r", "step": "compose",
+                   "payload": {"changes": [fx.change("c-a")]}}
+        pending["payload_sha256"] = op_runner.canonical_sha256(
+            pending["payload"])
+        edited = dict(fx.change("c-a"), target="elsewhere#2")
+        decision = fx.decision_doc("r", "compose", pending["payload_sha256"],
+                                   {"c-a": edited})
+        value = op_runner.apply_decision(pending, decision)
+        self.assertEqual(value["edited"], ["c-a"])
+        with self.assertRaises(op_spec.OpSpecError):
+            op_runner.apply_decision(pending, decision,
+                                     change_target_key="target")
 
 
 if __name__ == "__main__":

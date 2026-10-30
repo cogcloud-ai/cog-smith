@@ -5,11 +5,21 @@ this file — `smith op check` enforces it by hash, exactly as `smith check`
 enforces Cog machinery. If an Op needs behaviour this module does not have,
 the answer is a Cog step, never a script in the Op.
 
-The spec is `openteams/op-manifest [0.1]`: identity, declared `inputs`, a
-list of Cog `steps` with mapping expressions for their requests, optional
-`outputs`, and the `track` records. The vocabulary is CLOSED — anything the
-runner subset does not carry is refused BY NAME at load, with the reason,
-so an author never discovers a missing construct mid-run.
+The spec is `openteams/op-manifest [0.2]` (the published execution profile)
+or `openteams/op-manifest [0.1]` (every Op written before it): identity,
+declared `inputs`, a list of Cog `steps` with mapping expressions for their
+requests, optional `outputs`, and the `track` records. The vocabulary is
+CLOSED — anything the runner subset does not carry is refused BY NAME at
+load, with the reason, so an author never discovers a missing construct
+mid-run.
+
+A `[0.2]` document is held to the profile's tightenings (machinery 0.11.0):
+`title` where `[0.1]` says `name`, typed identity fields, a stated
+`cog.version`, `targets` only, `read`/`write` actions only, operator objects
+with exactly their operator's keys, and no `$path` beginning with `~`. At run
+time it also requires the named Cogs to be present at their stated versions
+and every envelope to name the step's Cog, and a proposed change names what
+it changes as `target`. A `[0.1]` document keeps the 0.10.0 behaviour.
 """
 from __future__ import annotations
 
@@ -1483,6 +1493,11 @@ class OpSpec:
         self.track = doc.get("track") or {}
         self.authority = doc.get("authority") or {}
         self.ttl_minutes = ttl_minutes(doc)
+
+    @property
+    def change_target_key(self):
+        """The field a proposed change names its target under."""
+        return change_target_key(self.profile)
 
     def step(self, sid):
         for step in self.steps:

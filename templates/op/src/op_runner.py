@@ -148,6 +148,17 @@ A run validates every step's Cog declaration before it creates anything (so
 a refused declaration leaves no run directory and no half-open Track), and a
 run that stops records the steps it never reached as `not-reached`, so the
 Track always lists every step of the spec.
+
+The document's `schema` picks the run-time rules (0.11.0). A run of an
+`openteams/op-manifest [0.2]` document is refused before anything is created
+when a named Cog is not present or is at another version than the step
+states; an envelope whose `cog.id` is not the step's Cog is a failed
+invocation; a `$path` that evaluates to a value beginning with `~` fails the
+step; and a proposed change names what it changes as `target`, which is what
+a write admission must list, what an edit may not change, and what the grant
+carries. A `[0.1]` document runs exactly as it did under 0.10.0: version
+differences warn, a missing Cog fails only when invoked, and a change names
+`repository`.
 """
 from __future__ import annotations
 
@@ -1013,12 +1024,16 @@ def _change_id(value):
     return cid if isinstance(cid, str) and cid else None
 
 
-def granted_change(change):
-    """What a grant carries about one approved change: its id, the
-    repository it touches, and BOTH hashes. Every field is required and none
-    may be null — a grant that fails open on a hash authorizes anything."""
+def granted_change(change, target_key="repository"):
+    """What a grant carries about one approved change: its id, what it
+    changes, and BOTH hashes. Every field is required and none may be null —
+    a grant that fails open on a hash authorizes anything.
+
+    TARGET_KEY is the field the change names what it changes under:
+    `target` for a `[0.2]` document, `repository` for a `[0.1]` one (0.11.0);
+    the grant carries it under the same name."""
     entry = {"change_id": change.get("change_id"),
-             "repository": change.get("repository")}
+             target_key: change.get(target_key)}
     for field in CHANGE_HASHES:
         entry[field] = change.get(field)
     return entry
@@ -1099,11 +1114,18 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions,
                     raise Denied(f"change {cid!r} was approved against other "
                                  f"content than the one requested")
             admitted = admitted_targets(authority, resource, "write")
+            target_key = spec.change_target_key
             for cid, change in approved.items():
-                repository = change.get("repository")
-                if not isinstance(repository, str) or repository not in admitted:
+                changes_what = change.get(target_key)
+                if not isinstance(changes_what, str) \
+                        or changes_what not in admitted:
+                    if target_key == "target":
+                        raise Denied(f"change {cid!r} names target "
+                                     f"{changes_what!r}, which this run's "
+                                     f"admission does not list as a "
+                                     f"{resource} write target")
                     raise Denied(f"change {cid!r} targets repository "
-                                 f"{repository!r}, which this run was not "
+                                 f"{changes_what!r}, which this run was not "
                                  f"admitted to write")
                 for field in CHANGE_HASHES:
                     problem = hex64_problem(change.get(field), field,
@@ -1122,7 +1144,7 @@ def issue_grant(step, context, authority, spec, run_id, run_dir, decisions,
             # EXACTLY the approved list, never the requested one.
             operations.append({
                 "resource": resource, "action": "write",
-                "changes": [granted_change(c)
+                "changes": [granted_change(c, target_key)
                             for c in record["value"].get("approved") or []],
             })
             provenance = {"kind": "gate", "step": target,
@@ -1492,10 +1514,13 @@ def normalized_change(change):
     return change
 
 
-def edited_change_problems(edit, proposed, where):
+def edited_change_problems(edit, proposed, where, target_key="repository"):
     """Why an edited change is not the SAME KIND of change as the one it
     replaces. An edit may change content; it may not change what the change
-    IS, the item it targets, or the state it was approved against."""
+    IS, the item it targets, or the state it was approved against.
+
+    TARGET_KEY names what the change changes: `target` in a `[0.2]`
+    document, `repository` in a `[0.1]` one (0.11.0)."""
     problems = []
     unknown = sorted(str(k) for k in set(edit) - set(proposed))
     if unknown:
@@ -1513,10 +1538,10 @@ def edited_change_problems(edit, proposed, where):
         problems.append(f"{where} changes target_sha256; an edit changes what "
                         f"is written, never the target state it was approved "
                         f"against.")
-    if "repository" in proposed and \
-            edit.get("repository") != proposed.get("repository"):
-        problems.append(f"{where} retargets the change to repository "
-                        f"{edit.get('repository')!r}; an edit stays on the "
+    if target_key in proposed and \
+            edit.get(target_key) != proposed.get(target_key):
+        problems.append(f"{where} retargets the change to {target_key} "
+                        f"{edit.get(target_key)!r}; an edit stays on the "
                         f"item that was proposed.")
     return problems
 
@@ -1564,7 +1589,7 @@ def apply_artifact_decision(pending, decision, problems):
             "decided_at": decision["decided_at"].strip()}
 
 
-def apply_decision(pending, decision):
+def apply_decision(pending, decision, change_target_key="repository"):
     """The decision, checked against what was actually proposed, as
     {approved, rejected, edited, history} — or, for a step that asks about
     an artifact (0.7.0), as {verdict, artifact, artifact_sha256, reason,
@@ -1579,7 +1604,10 @@ def apply_decision(pending, decision):
     Every proposed change gets exactly one decision; a decision about
     anything else is refused; an edited change is re-hashed from its edited
     content, and THAT hash is what a write grant will carry. A decision can
-    only select among the proposed changes: it can never add one."""
+    only select among the proposed changes: it can never add one.
+
+    CHANGE_TARGET_KEY is the field an edit may not change: `target` for a
+    `[0.2]` document, `repository` (the default) for a `[0.1]` one."""
     problems = []
     actual_sha256 = canonical_sha256(pending.get("payload"))
     if decision.get("run_id") != pending["run_id"]:
@@ -1664,7 +1692,8 @@ def apply_decision(pending, decision):
                                 f"change (the same change_id).")
                 continue
             edit_problems = edited_change_problems(change, proposed[cid],
-                                                   f"{where}'s edited change")
+                                                   f"{where}'s edited change",
+                                                   change_target_key)
             if edit_problems:
                 problems.extend(edit_problems)
                 continue
@@ -3374,7 +3403,8 @@ def _resume(package_root, run_dir, track_path, decision_path,
                 f"run paused on; the artifact changed on disk since the "
                 f"Track recorded it, so no decision about it can be "
                 f"applied.")
-        value = apply_decision(pending, decision)
+        value = apply_decision(pending, decision,
+                               change_target_key=spec.change_target_key)
         decision_copy = run_dir / "decisions" / f"{sid}.json"
         op_track.write_json(decision_copy, decision, base=run_dir)
         digest = sha256_file(decision_copy)
