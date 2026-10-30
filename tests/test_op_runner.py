@@ -1821,6 +1821,42 @@ class ProcessBoundaryTests(unittest.TestCase):
                     {"ok": True}, "not an envelope at all"):
             self.assertEqual(op_runner.gate_envelope(bad)["status"], "fail")
 
+    def test_ok_true_with_an_error_object_never_passes(self):
+        """Machinery 0.10.0 (Op Spec ENVELOPE.md): a consumer MUST treat any
+        `error` as a failed invocation. `ok: true` beside an error object is
+        malformed output — through the seam and at the Gate."""
+        claimed = {"envelope": 1, "ok": True, "payload": {"text": "x"},
+                   "error": {"code": "invalid-input", "detail": "x"},
+                   "problems": []}
+        self.assertTrue(op_runner.envelope_problems(claimed))
+        gate = op_runner.gate_envelope(claimed)
+        self.assertEqual(gate["status"], "fail")
+        self.assertTrue(any("never ok" in r for r in gate["reasons"]))
+        self.answer(self.Result(0, json.dumps(claimed)))
+        result = self.invoke()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "invocation-failed")
+        self.assertIn("never ok", result["error"]["detail"])
+        self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
+
+    def test_an_error_that_is_not_code_and_detail_is_malformed(self):
+        base = {"envelope": 1, "ok": False, "payload": None, "problems": []}
+        for error in ("model down", {"detail": "no code"},
+                      {"code": "", "detail": "empty code"},
+                      {"code": "model-call-failed"}, ["x"]):
+            with self.subTest(error=error):
+                self.assertTrue(op_runner.envelope_problems(
+                    dict(base, error=error)))
+                self.assertEqual(op_runner.gate_envelope(
+                    dict(base, error=error))["status"], "fail")
+        # A well-formed failure and a null error are both envelope v1.
+        self.assertEqual(op_runner.envelope_problems(dict(
+            base, error={"code": "model-call-failed", "detail": "502"})), [])
+        self.assertEqual(op_runner.envelope_problems(
+            dict(base, ok=True, error=None)), [])
+        self.assertEqual(op_runner.envelope_problems(
+            {"envelope": 1, "ok": True, "problems": []}), [])
+
 
 class ForeachBoundaryTests(RunnerCase):
     """Finding 16: the foreach boundaries §6's tests did not assert — and,

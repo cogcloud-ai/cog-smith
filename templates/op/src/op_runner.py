@@ -239,7 +239,11 @@ def envelope_problems(value):
     are checked, not merely field presence: an `ok` that is the string
     "false", or `problems` that are bare strings, are malformed output, not a
     result — they become a controlled invocation failure with the output kept
-    as evidence."""
+    as evidence.
+
+    An `error` is `null` or `{code, detail}`, and an envelope that carries
+    one is never `ok` (machinery 0.10.0): `ok: true` beside an error object
+    is malformed output, so it can never reach the policy as a pass."""
     if not isinstance(value, dict):
         return ["the Cog's result is not a JSON object."]
     problems = []
@@ -252,6 +256,25 @@ def envelope_problems(value):
     if not isinstance(value.get("ok"), bool):
         problems.append(f"the Cog's result declares ok {value.get('ok')!r}, "
                         f"which is not true or false.")
+    error = value.get("error")
+    if error is not None:
+        if not isinstance(error, dict):
+            problems.append(f"the Cog's result declares error {error!r}, "
+                            f"which is neither null nor an object with code "
+                            f"and detail.")
+        else:
+            code = error.get("code")
+            if not isinstance(code, str) or not code:
+                problems.append(f"the Cog's result declares error.code "
+                                f"{code!r}, which is not a non-empty string.")
+            if not isinstance(error.get("detail"), str):
+                problems.append(f"the Cog's result declares error.detail "
+                                f"{error.get('detail')!r}, which is not a "
+                                f"string.")
+            if value.get("ok") is True:
+                problems.append("the Cog's result declares ok: true and an "
+                                "error; an envelope that carries an error is "
+                                "a failed invocation, never ok.")
     listed = value.get("problems")
     if not isinstance(listed, list) or any(not isinstance(p, dict)
                                            for p in listed):

@@ -1570,3 +1570,17 @@ process evidence remain unchanged.
 Clear a recoverable failure reason before driving its retry, so paused or
 completed builds display their current state. Terminal refusal and exhaustion
 reasons remain retained; malformed decisions still preserve a paused state.
+
+## Op machinery 0.10.0 — alignment with the published Op Spec
+
+A MINOR bump: the runner and the spec loader now refuse inputs the Op Spec
+(`ENVELOPE.md`, `schemas/envelope-1.schema.json`, the `op-manifest` profile and
+core principle 7) says are not results or not runnable, and some of those
+inputs used to pass. Every master's hash changes; Op packages pick the change
+up by re-copying. A run started under 0.9.x is resumed by its own runtime.
+
+- **An envelope that carries an error is not ok.** `envelope_problems` checks
+  `error`: it is `null` or `{code, detail}` with a non-empty string `code` and
+  a string `detail`, and `ok: true` beside an error object is malformed output.
+  Such an envelope used to pass the Gate; it is now an invocation failure with
+  the Cog's output kept as evidence, and the Gate fails it.

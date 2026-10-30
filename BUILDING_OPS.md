@@ -1,7 +1,7 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Describes:** cog-smith Op machinery 0.9.3 (tested against the machinery constant)
+**Describes:** cog-smith Op machinery 0.10.0 (tested against the machinery constant)
 **Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
 proposal, implemented from an internal Op-runner contract (a design note,
 not distributed).
@@ -524,7 +524,10 @@ the Op layer synthesises an `ok: false` envelope, keeps what the Cog did emit
 as evidence in `raw`, and the Gate decides about that like any other result.
 A well-formed envelope v1 is required to have `envelope: 1` (the integer, not
 `true`), a boolean `ok`, and `problems` as a list of objects; anything else is
-malformed output, not a result.
+malformed output, not a result. An `error` is `null` or `{code, detail}`, and
+an envelope that carries one is never ok: `ok: true` beside an error object is
+malformed output too (since 0.10.0), so a Cog cannot pass the Gate
+while reporting that its invocation failed.
 
 Every synthetic failure carries its process evidence in ONE place —
 `error.evidence` — as `{command, returncode, stdout_tail, stderr_tail}` (each
@@ -631,7 +634,7 @@ and the admission say:
 A request for `docs.example.org/private` is denied at issuance, exactly as an
 unadmitted repository is. `repositories` is the earlier name for `targets`
 and is still read, in the admission and in `authority.requires`, so an
-existing document loads unchanged (Op machinery 0.9.3). One operation states
+existing document loads unchanged (Op machinery 0.10.0). One operation states
 one of the two names; stating both is refused. A read grant names its
 targets under the key its requirement used, so an existing spec keeps
 issuing the grant an existing Cog reads.
