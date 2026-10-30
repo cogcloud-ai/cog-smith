@@ -876,6 +876,7 @@ construct and the phase that adds it — never discovered mid-run:
 | two write requirements reading different human gates | one gate per writing step |
 | `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `requests`, `envelopes`, `input-request.json`, `run.lock` or `track.json` | the runner's control entries are reserved |
 | `$run_dir` naming the run directory itself (`""`, `.`, null) | `$run_dir` names a directory inside the run |
+| a `foreach` step with a human Gate over changes | the Gate reads one `changes` list; a foreach payload is a list of element payloads |
 | `authority` on a step whose Cog is not `kind: code` | the runner supports authority on code Cogs only |
 | a requirement outside the Cog's declared `reaches` | the Cog does not declare it |
 | a step that names a reaching Cog and requires nothing | a reaching Cog runs only under a grant |

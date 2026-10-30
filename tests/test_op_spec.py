@@ -51,6 +51,32 @@ class RefusalTests(unittest.TestCase):
         step["gate"] = {"policy": "human", "guards": []}
         op_spec.validate(fx.spec_doc([step]))
 
+    def foreach_step(self, gate):
+        step = fx.cog_step("propose")
+        step["foreach"] = {"items": {"$from": "inputs.note"}, "as": "item"}
+        step["input"] = {"item": {"$from": "item"}}
+        step["gate"] = gate
+        return fx.spec_doc([step])
+
+    def test_a_foreach_step_with_a_human_gate_over_changes_is_refused(self):
+        """Machinery 0.10.0: the Gate reads one `changes` list from the
+        payload, and a foreach payload is the list of element payloads, so
+        the pause could never be asked. It used to load and fail there."""
+        for gate in ({"policy": "human"},
+                     {"policy": "human", "decides": "changes"}):
+            with self.subTest(gate=gate):
+                text = one(self.foreach_step(gate))
+                self.assertIn("declares foreach and a human Gate over "
+                              "changes", text)
+
+    def test_a_foreach_step_with_another_gate_still_loads(self):
+        artifact = {"policy": "human", "decides": "artifact",
+                    "artifact": {"kind": "batch", "digests": {
+                        "all": {"$sha256": {"$from": "steps.propose.payload"}}}}}
+        for gate in ({"policy": op_spec.GATE_POLICY}, artifact):
+            with self.subTest(gate=gate):
+                self.assertEqual(problems(self.foreach_step(gate)), [])
+
     def test_state_is_refused_with_its_phase(self):
         text = one(fx.spec_doc(state={"store": "sqlite"}))
         self.assertIn("state:", text)

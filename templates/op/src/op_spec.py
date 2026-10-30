@@ -1095,6 +1095,19 @@ def validate(doc):
                             f"choose one of {list(ON_FAIL)}.")
 
         foreach = step.get("foreach")
+        if (foreach is not None and isinstance(step.get("gate"), dict)
+                and gate_policy(step) == HUMAN_GATE_POLICY
+                and gate_decides(step) == DECIDES_CHANGES):
+            # Machinery 0.10.0. A human Gate over changes reads ONE `changes`
+            # list from the step's payload, and a foreach step's payload is
+            # the LIST of element payloads: the pause could never be asked.
+            # It used to load and fail when the run reached the pause.
+            problems.append(f"Op step {sid!r} declares foreach and a human "
+                            f"Gate over changes; the Gate reads one changes "
+                            f"list from the step's payload, but a foreach "
+                            f"step's payload is the list of its element "
+                            f"payloads. Gate a later step that gathers the "
+                            f"proposals instead.")
         if foreach is not None:
             if not isinstance(foreach, dict):
                 problems.append(f"Op step {sid!r}'s foreach must be an object "

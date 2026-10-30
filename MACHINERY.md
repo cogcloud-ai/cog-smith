@@ -1625,3 +1625,8 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   hashes) are a failed human Gate with the reasons, as an unstateable
   artifact already was — `on_fail` applies and no pending document is
   written. `op_cycle` reports the Track's `reason` for a failed child.
+- **A `foreach` step with a human Gate over changes is refused at load.** The
+  Gate reads one `changes` list from the step's payload, and a foreach
+  payload is the list of element payloads, so the pause could never be asked;
+  the spec used to load and fail when the run reached it. A `foreach` with
+  the envelope Gate or an artifact Gate still loads.
