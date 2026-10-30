@@ -189,7 +189,10 @@ def drive(package, directory, state, phases, decision=None):
                     state['reason'] = '; '.join((failed.get('gate') or {}).get('reasons') or ['Step failed: ' + failed['id']])
                     envelope = read(failed['envelope']) if failed.get('envelope') else {}
                     error = envelope.get('error') or {}
-                    reported = envelope.get('raw')
+                    # A well-formed envelope from a Cog that exited nonzero
+                    # is kept as error.evidence.envelope (machinery 0.10.0).
+                    evidence = error.get('evidence') if isinstance(error.get('evidence'), dict) else {}
+                    reported = evidence.get('envelope')
                     if error.get('code') == 'invocation-failed' and isinstance(reported, dict) and not op_runner.envelope_problems(reported) and reported.get('ok') is False:
                         error = reported.get('error') or error
                     if error.get('code') in state['configuration'].get('terminal_errors', {}).get(failed['id'], []):

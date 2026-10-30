@@ -1832,7 +1832,10 @@ class ProcessBoundaryTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "invocation-failed")
         self.assertIn("139", result["error"]["detail"])
-        self.assertEqual(result["raw"], good)        # kept as evidence
+        # Kept as evidence — in error.evidence, never in `raw`, which
+        # envelope v1 types as text (machinery 0.10.0).
+        self.assertEqual(result["error"]["evidence"]["envelope"], good)
+        self.assertIsNone(result["raw"])
         self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
 
     def test_a_launch_failure_becomes_a_failed_envelope_not_an_exception(self):
@@ -1857,7 +1860,9 @@ class ProcessBoundaryTests(unittest.TestCase):
         result = self.invoke()
         self.assertFalse(result["ok"])
         self.assertIn("problem objects", result["error"]["detail"])
-        self.assertEqual(result["raw"]["problems"], ["broken"])
+        self.assertEqual(result["error"]["evidence"]["envelope"]["problems"],
+                         ["broken"])
+        self.assertIsNone(result["raw"])
         self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
 
     def test_the_gate_never_crashes_on_a_malformed_envelope(self):
@@ -1901,6 +1906,94 @@ class ProcessBoundaryTests(unittest.TestCase):
             dict(base, ok=True, error=None)), [])
         self.assertEqual(op_runner.envelope_problems(
             {"envelope": 1, "ok": True, "problems": []}), [])
+
+
+class SynthesizedEnvelopeTests(unittest.TestCase):
+    """Machinery 0.10.0: every envelope the runner synthesizes for a failed
+    invocation is itself envelope v1, checked against the structural rules
+    of the Op Spec's envelope-1 schema (`fx.envelope_1_violations`). The
+    nonzero-exit case used to put the Cog's envelope OBJECT in `raw`, which
+    envelope v1 types as text."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def setUp(self):
+        self.real_run = op_runner.subprocess.run
+
+    def tearDown(self):
+        op_runner.subprocess.run = self.real_run
+
+    def synthesize(self, answer):
+        def run(command, **kwargs):
+            result = answer(command)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        op_runner.subprocess.run = run
+        result = op_runner.invoke_cog(Path("/nowhere/cog"), "ask",
+                                      Path("/r.json"))
+        self.assertEqual(result["error"]["code"], "invocation-failed")
+        self.assertEqual(fx.envelope_1_violations(result), [])
+        self.assertEqual(op_runner.envelope_problems(result), [])
+        self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
+        return result
+
+    def test_every_synthesis_path_is_envelope_1(self):
+        good = fx.envelope(payload={"text": "fine"})
+        refused = "ask: error: unrecognized arguments: {flag} /r.json"
+        cases = {
+            "launch failure": lambda c: OSError("no pixi"),
+            "no envelope": lambda c: self.Result(1, "Traceback ...", "boom"),
+            "malformed envelope": lambda c: self.Result(0, json.dumps(
+                {"envelope": True, "ok": "yes", "problems": ["x"],
+                 "raw": {"not": "text"}})),
+            "ok with an error": lambda c: self.Result(0, json.dumps(dict(
+                good, error={"code": "invalid-input", "detail": "x"}))),
+            "nonzero exit after a good envelope": lambda c: self.Result(
+                139, json.dumps(good), "Segmentation fault"),
+            "both request flags refused": lambda c: self.Result(
+                2, "", refused.format(flag=c[-2])),
+            "long streams": lambda c: self.Result(1, "x" * 5000,
+                                                  "y" * 5000),
+        }
+        for name, answer in cases.items():
+            with self.subTest(name):
+                self.synthesize(answer)
+
+    def test_the_original_envelope_is_kept_as_evidence_not_raw(self):
+        failed = fx.envelope(ok=False)
+        failed["error"] = {"code": "contract-unsatisfiable",
+                           "detail": "cannot do that"}
+        result = self.synthesize(lambda c: self.Result(1, json.dumps(failed),
+                                                       "exit 1"))
+        self.assertIsNone(result["raw"])
+        self.assertEqual(result["error"]["evidence"]["envelope"], failed)
+        self.assertEqual(result["error"]["evidence"]["returncode"], 1)
+        self.assertEqual(result["cog"], failed["cog"])
+        self.assertEqual(result["binding"], failed["binding"])
+
+    def test_only_fields_envelope_1_can_type_are_carried(self):
+        """A Cog that exited nonzero after an envelope whose optional fields
+        are the wrong type: the synthesized envelope names the directory it
+        invoked and carries no binding, rather than becoming malformed."""
+        odd = dict(fx.envelope(payload={}), cog={"id": 7}, binding="b")
+        result = self.synthesize(lambda c: self.Result(3, json.dumps(odd)))
+        self.assertEqual(result["cog"], {"id": "unavailable:cog",
+                                         "version": None})
+        self.assertIsNone(result["binding"])
+        self.assertEqual(result["error"]["evidence"]["envelope"], odd)
+
+    def test_the_checker_itself_refuses_the_old_shape(self):
+        """The constraint the tests above rely on: an object in `raw`, or a
+        null `error.evidence`, is not envelope v1."""
+        old = dict(fx.envelope(ok=False), raw={"envelope": 1})
+        self.assertTrue(fx.envelope_1_violations(old))
+        nulled = fx.envelope(ok=False)
+        nulled["error"]["evidence"] = None
+        self.assertTrue(fx.envelope_1_violations(nulled))
+        self.assertEqual(fx.envelope_1_violations(fx.envelope(ok=False)), [])
 
 
 class ForeachBoundaryTests(RunnerCase):

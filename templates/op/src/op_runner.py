@@ -315,32 +315,58 @@ def problem_shape_problems(problem, index):
 
 
 def failed_envelope(cog_dir, task, detail, raw=None, carried=None,
-                    evidence=None):
+                    evidence=None, emitted=None):
     """A synthetic ok:false envelope for an invocation that never produced a
-    usable result. What the Cog did emit is kept in `raw` as evidence; when
-    that output was a well-formed envelope, its identity, binding and
-    problems are carried across rather than thrown away.
+    usable result. When the Cog's output was a well-formed envelope, its
+    identity, binding and problems are carried across rather than thrown
+    away.
 
     `error.evidence` is the ONE place process evidence lives, on EVERY
     synthetic failure: `{command, returncode, stdout_tail, stderr_tail}` and,
     when the seam tried the other request flag first, `previous_attempts`
-    with the same fields (BUILDING_OPS, "When a Cog invocation fails")."""
+    with the same fields (BUILDING_OPS, "When a Cog invocation fails").
+
+    The synthesized envelope is itself envelope v1 (machinery 0.10.0).
+    `raw` is text or null, as in any envelope: it holds what the Cog printed
+    when that held no envelope at all. A JSON object the Cog DID print — a
+    malformed envelope, or a well-formed one from a process that exited
+    nonzero — is kept whole as `error.evidence.envelope` (EMITTED); before
+    0.10.0 it sat in `raw`, which envelope v1 types as a string. Only the
+    carried fields envelope v1 can type are carried: an identity with a
+    non-empty string id, a binding object, and well-formed problems."""
     carried = carried if isinstance(carried, dict) else {}
+    error = {"code": "invocation-failed", "detail": str(detail)}
+    if evidence is not None or emitted is not None:
+        record = dict(evidence or {})
+        if emitted is not None:
+            record["envelope"] = emitted
+        error["evidence"] = record
+    binding = carried.get("binding")
+    listed = carried.get("problems")
     return {
         "envelope": 1,
-        "cog": carried.get("cog") or {"id": f"unavailable:{Path(cog_dir).name}",
-                                      "version": None},
+        "cog": _carried_cog(carried.get("cog"), cog_dir),
         "task": task,
         "ok": False,
-        "error": {"code": "invocation-failed", "detail": detail,
-                  "evidence": evidence},
+        "error": error,
         "payload": None,
-        "raw": raw,
-        "problems": [p for p in carried.get("problems") or []
-                     if isinstance(p, dict)],
-        "binding": carried.get("binding"),
+        "raw": raw if isinstance(raw, str) else None,
+        "problems": [p for p in (listed if isinstance(listed, list) else [])
+                     if isinstance(p, dict) and not problem_shape_problems(p, 0)],
+        "binding": binding if isinstance(binding, dict) else None,
         "timing": {"latency_s": 0},
     }
+
+
+def _carried_cog(cog, cog_dir):
+    """The identity a synthesized envelope names: the Cog's own, when it
+    stated one envelope v1 can carry (a non-empty string id, a string or
+    null version), and otherwise the directory the runner invoked."""
+    if isinstance(cog, dict) and isinstance(cog.get("id"), str) and cog["id"]:
+        version = cog.get("version")
+        return {"id": cog["id"],
+                "version": version if isinstance(version, str) else None}
+    return {"id": f"unavailable:{Path(cog_dir).name}", "version": None}
 
 
 def _evidence(command, returncode, stdout, stderr, previous):
@@ -417,15 +443,15 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
                                evidence=evidence)
     malformed = envelope_problems(envelope)
     if malformed:
-        return failed_envelope(cog_dir, task, " ".join(malformed), raw=envelope,
-                               evidence=evidence)
+        return failed_envelope(cog_dir, task, " ".join(malformed),
+                               evidence=evidence, emitted=envelope)
     if completed.returncode != 0:
         detail = (f"the Cog command for task {task!r} exited "
                   f"{completed.returncode}")
         if stderr:
             detail += f": {stderr[-400:]}"
-        return failed_envelope(cog_dir, task, detail, raw=envelope,
-                               carried=envelope, evidence=evidence)
+        return failed_envelope(cog_dir, task, detail, carried=envelope,
+                               evidence=evidence, emitted=envelope)
     return envelope
 
 

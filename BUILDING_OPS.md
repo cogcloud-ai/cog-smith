@@ -521,7 +521,11 @@ severity `error`; warnings produce `pass-with-problems` and the run
 continues. A Cog that could not be launched, exited nonzero, or printed
 something that is not a well-formed envelope v1 is an *invocation failure*:
 the Op layer synthesises an `ok: false` envelope, keeps what the Cog did emit
-as evidence in `raw`, and the Gate decides about that like any other result.
+as evidence, and the Gate decides about that like any other result. The
+synthesized envelope is itself envelope v1: output that held no envelope stays
+in `raw` as text, and a JSON object the Cog did print — a malformed envelope,
+or a well-formed one from a process that exited nonzero — is kept whole as
+`error.evidence.envelope`, never in `raw`.
 A well-formed envelope v1 is required to have `envelope: 1` (the integer, not
 `true`), a boolean `ok`, and `problems` as a list of `{check, detail,
 severity}` objects — `check` a non-empty string, `detail` a string, and

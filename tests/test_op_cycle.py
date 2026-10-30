@@ -231,7 +231,8 @@ class CycleTests(unittest.TestCase):
         def refuse(*args, **kwargs):
             if json.loads(Path(args[2]).read_text())['operation']=='prepare':
                 raw=fx.envelope(ok=False);raw['error']={'code':'invalid-revision','detail':'Immutable scope refusal'}
-                return op_runner.failed_envelope(args[0],args[1],'Process exited 1',raw=raw,carried=raw,evidence={'returncode':1})
+                return op_runner.failed_envelope(args[0],args[1],'Process exited 1',carried=raw,emitted=raw,
+                    evidence=op_runner._evidence(['pixi','run','prepare'],1,json.dumps(raw),'',[]))
             return invoke(*args, **kwargs)
         with patch.object(op_runner,'invoke_cog',side_effect=refuse):
             code, refused=self.start_and_accept_contract()

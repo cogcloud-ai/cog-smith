@@ -69,6 +69,108 @@ def envelope(ok=True, payload=None, problems=None, cog_id="openteams/cog-x",
     }
 
 
+def envelope_1_violations(value, where="$"):
+    """Every way VALUE breaks the structural rules of envelope v1, as the Op
+    Spec's envelope-1 JSON Schema states them — expressed here directly, so
+    cog-smith's tests vendor nothing from the spec: required `envelope`
+    (the integer 1), `ok` (a boolean) and `problems`; `cog` with a non-empty
+    string id and a string-or-null version; `task` a string; `error` null or
+    `{code, detail, evidence?}`; `raw` text or null; `binding`, `timing` and
+    `provider_result` objects or null; and `ok` false beside an error object.
+    """
+    found = []
+    if not isinstance(value, dict):
+        return [f"{where} is not an object"]
+    for key in ("envelope", "ok", "problems"):
+        if key not in value:
+            found.append(f"{where}.{key} is required")
+    if "envelope" in value and (type(value["envelope"]) is not int
+                                or value["envelope"] != 1):
+        found.append(f"{where}.envelope is not the integer 1")
+    if "ok" in value and not isinstance(value["ok"], bool):
+        found.append(f"{where}.ok is not a boolean")
+    if "cog" in value:
+        cog = value["cog"]
+        if not isinstance(cog, dict) or not isinstance(cog.get("id"), str) \
+                or not cog["id"]:
+            found.append(f"{where}.cog has no non-empty string id")
+        elif "version" in cog and not isinstance(cog["version"], (str, type(None))):
+            found.append(f"{where}.cog.version is not a string or null")
+    if "task" in value and not isinstance(value["task"], str):
+        found.append(f"{where}.task is not a string")
+    if "raw" in value and not isinstance(value["raw"], (str, type(None))):
+        found.append(f"{where}.raw is not a string or null")
+    for key in ("binding", "timing", "provider_result"):
+        if key in value and not isinstance(value[key], (dict, type(None))):
+            found.append(f"{where}.{key} is not an object or null")
+    timing = value.get("timing")
+    if isinstance(timing, dict) and "latency_s" in timing:
+        latency = timing["latency_s"]
+        if isinstance(latency, bool) or not isinstance(latency, (int, float)) \
+                or latency < 0:
+            found.append(f"{where}.timing.latency_s is not a number >= 0")
+    error = value.get("error")
+    if error is not None:
+        if not isinstance(error, dict):
+            found.append(f"{where}.error is not null or an object")
+        else:
+            if not isinstance(error.get("code"), str) or not error["code"]:
+                found.append(f"{where}.error.code is not a non-empty string")
+            if not isinstance(error.get("detail"), str):
+                found.append(f"{where}.error.detail is not a string")
+            if "evidence" in error:
+                found.extend(_evidence_violations(error["evidence"],
+                                                  f"{where}.error.evidence"))
+            if value.get("ok") is not False:
+                found.append(f"{where} carries an error but ok is not false")
+    problems = value.get("problems")
+    if "problems" in value and not isinstance(problems, list):
+        found.append(f"{where}.problems is not an array")
+    for index, problem in enumerate(problems if isinstance(problems, list) else []):
+        at = f"{where}.problems[{index}]"
+        if not isinstance(problem, dict):
+            found.append(f"{at} is not an object")
+            continue
+        if not isinstance(problem.get("check"), str) or not problem["check"]:
+            found.append(f"{at}.check is not a non-empty string")
+        if not isinstance(problem.get("detail"), str):
+            found.append(f"{at}.detail is not a string")
+        if problem.get("severity") not in ("error", "warning", "warn"):
+            found.append(f"{at}.severity is not error, warning or warn")
+    return found
+
+
+def _evidence_violations(evidence, where):
+    if not isinstance(evidence, dict):
+        return [f"{where} is not an object"]
+    found = []
+    for key in ("command", "returncode", "stdout_tail", "stderr_tail"):
+        if key not in evidence:
+            found.append(f"{where}.{key} is required")
+    command = evidence.get("command")
+    if "command" in evidence and (not isinstance(command, list) or any(
+            not isinstance(part, str) for part in command)):
+        found.append(f"{where}.command is not an array of strings")
+    code = evidence.get("returncode")
+    if "returncode" in evidence and code is not None and (
+            isinstance(code, bool) or not isinstance(code, int)):
+        found.append(f"{where}.returncode is not an integer or null")
+    for key in ("stdout_tail", "stderr_tail"):
+        if key in evidence and (not isinstance(evidence[key], str)
+                                or len(evidence[key]) > 2000):
+            found.append(f"{where}.{key} is not a string of at most 2000 "
+                         f"characters")
+    previous = evidence.get("previous_attempts")
+    if "previous_attempts" in evidence:
+        if not isinstance(previous, list):
+            found.append(f"{where}.previous_attempts is not an array")
+        else:
+            for index, attempt in enumerate(previous):
+                found.extend(_evidence_violations(
+                    attempt, f"{where}.previous_attempts[{index}]"))
+    return found
+
+
 def write_package(root, doc):
     """A minimal Op package on disk: op.yaml is all the runner needs."""
     root = Path(root)

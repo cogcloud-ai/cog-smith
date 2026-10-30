@@ -1589,3 +1589,13 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   `error`, `warning` or `warn` (`warn` is deprecated and still accepted in
   envelope 1). A missing or unrecognized severity used to read as a warning,
   so the step passed with problems; it is malformed output now.
+- **A synthesized envelope is envelope v1.** On a nonzero exit after a
+  well-formed envelope, and on a malformed envelope, the runner put the Cog's
+  envelope OBJECT in `raw`, which envelope v1 types as text or null. That
+  object is now `error.evidence.envelope` (the evidence object admits further
+  keys), `raw` stays text or null, `error.evidence` is omitted rather than
+  null when there is none, and only a carried identity, binding and problems
+  envelope v1 can type are carried. `op_cycle` reads a Cog's own error code
+  for `terminal_errors` from `error.evidence.envelope`. A cycle started under
+  0.9.x is refused on resume by its machinery digest, so no Track mixes the two
+  locations.

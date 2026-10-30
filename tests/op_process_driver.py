@@ -63,7 +63,7 @@ def make_invoke(canned):
                 cog_dir, task,
                 f"the Cog command for task {task!r} exited "
                 f"{completed.returncode}",
-                raw=envelope, carried=envelope, evidence=evidence)
+                carried=envelope, evidence=evidence, emitted=envelope)
         return envelope
 
     return invoke_cog
