@@ -5,10 +5,13 @@ run-time rules when it runs; a `[0.1]` document — every Op written before
 the profile — loads and runs exactly as it did under 0.10.0. Each rule is
 tested both ways.
 """
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import op_fixtures as fx
-from op_fixtures import op_spec
+from op_fixtures import op_runner, op_spec
 
 
 def problems(doc):
@@ -289,6 +292,205 @@ class SharedRulesTests(unittest.TestCase):
                                    "as": "item"}
                 self.assertIn("declares foreach and a human Gate over "
                               "changes", one(build([step])))
+
+
+
+# ------------------------------------------------------------ run time --
+
+class RunCase(unittest.TestCase):
+    """A package, the Cogs it names on disk, and a faked seam whose
+    envelopes name the Cog that was invoked."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.package = self.root / "op-test"
+        self.real_invoke = op_runner.invoke_cog
+        self.addCleanup(setattr, op_runner, "invoke_cog", self.real_invoke)
+        fx.write_cog(self.root, "first")
+
+    @staticmethod
+    def own(payload=None):
+        """An answer that names the Cog it came from, as a Cog does."""
+        def answer(_call, _request, cog_dir=None):
+            return fx.envelope(payload=payload or {"text": "done"},
+                               cog_id="openteams/cog-first")
+        return answer
+
+    def run_op(self, doc, answers=None, request=None):
+        fx.write_package(self.package, doc)
+        path = fx.write_request(self.root / "request.json",
+                                request if request is not None
+                                else {"note": "hello"})
+        self.fake = fx.FakeCog(answers if answers is not None
+                               else {"ask": self.own()})
+        op_runner.invoke_cog = self.fake
+        return op_runner.run(self.package, path)
+
+    def track(self, output):
+        return json.loads(Path(output["track"]).read_text())
+
+    def record(self, output, sid="first"):
+        return next(s for s in self.track(output)["steps"] if s["id"] == sid)
+
+
+class NamedCogTests(RunCase):
+    def test_a_0_2_run_whose_cogs_are_present_at_their_versions_runs(self):
+        code, output = self.run_op(fx.spec_doc_0_2())
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.record(output)["status"], "passed")
+
+    def test_0_2_refuses_a_stated_version_other_than_the_cogs(self):
+        doc = fx.spec_doc_0_2()
+        doc["steps"][0]["cog"]["version"] = "0.2.0"
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.run_op(doc)
+        self.assertIn("declares version '0.2.0'", str(caught.exception))
+        self.assertFalse((self.package / "runs").exists())
+        self.assertEqual(self.fake.calls, [])
+
+    def test_0_1_only_warns_about_a_stated_version(self):
+        doc = fx.spec_doc()
+        doc["steps"][0]["cog"]["version"] = "0.2.0"
+        code, output = self.run_op(doc)
+        self.assertEqual(code, 0, output)
+        findings = op_spec.cog_step_findings(
+            doc["steps"][0], self.root / "cog-first")
+        self.assertEqual([level for level, _ in findings], ["warn"])
+
+    def test_0_2_refuses_a_named_cog_that_is_not_present(self):
+        second = fx.cog_step("second", depends_on=["first"])
+        doc = fx.spec_doc_0_2([fx.cog_step("first"), second])
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            self.run_op(doc)
+        self.assertIn("'../cog-second', which is not present",
+                      str(caught.exception))
+        self.assertFalse((self.package / "runs").exists())
+
+    def test_0_1_runs_with_a_named_cog_that_is_not_present(self):
+        second = fx.cog_step("second", depends_on=["first"])
+        code, output = self.run_op(fx.spec_doc([fx.cog_step("first"), second]),
+                                   answers={"ask": fx.envelope()})
+        self.assertEqual(code, 0, output)
+
+    def test_a_validator_still_warns_about_a_missing_cog(self):
+        step = fx.as_0_2(fx.spec_doc())["steps"][0]
+        findings = op_spec.cog_step_findings(step, self.root / "cog-absent",
+                                             op_spec.PROFILE_0_2)
+        self.assertEqual([level for level, _ in findings], ["warn"])
+
+
+class Process:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+class EnvelopeIdentityTests(RunCase):
+    """Through the production `invoke_cog`: only the process is faked, so a
+    synthesized failure carries the process evidence envelope v1 requires."""
+
+    def answer_with(self, *envelopes, returncode=0):
+        answers = list(envelopes)
+        self.processes = []
+
+        def run(command, **kwargs):
+            self.processes.append(command)
+            value = answers[min(len(self.processes), len(answers)) - 1]
+            return Process(returncode, json.dumps(value))
+        real = op_runner.subprocess.run
+        self.addCleanup(setattr, op_runner.subprocess, "run", real)
+        op_runner.subprocess.run = run
+
+    def run_real(self, doc):
+        fx.write_package(self.package, doc)
+        path = fx.write_request(self.root / "request.json", {"note": "hello"})
+        return op_runner.run(self.package, path)
+
+    def test_0_2_passes_an_envelope_naming_the_steps_cog(self):
+        self.answer_with(fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-first"))
+        code, output = self.run_real(fx.spec_doc_0_2())
+        self.assertEqual(code, 0, output)
+
+    def test_0_2_fails_an_envelope_naming_another_cog(self):
+        self.answer_with(fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-other"))
+        code, output = self.run_real(fx.spec_doc_0_2())
+        self.assertEqual(code, 1, output)
+        record = self.record(output)
+        self.assertEqual(record["status"], "failed")
+        reasons = " ".join(record["gate"]["reasons"])
+        self.assertIn("names cog id 'openteams/cog-other'", reasons)
+        self.assertIn("failed invocation", reasons)
+        envelope = json.loads(Path(record["envelope"]).read_text())
+        self.assertIs(envelope["ok"], False)
+        self.assertEqual(envelope["cog"]["id"], "openteams/cog-first")
+        self.assertEqual(envelope["error"]["evidence"]["envelope"]["cog"]["id"],
+                         "openteams/cog-other")
+        self.assertEqual(fx.envelope_1_violations(envelope), [])
+
+    def test_0_2_fails_an_envelope_naming_no_cog(self):
+        answer = fx.envelope(payload={"text": "x"})
+        del answer["cog"]
+        self.answer_with(answer)
+        code, output = self.run_real(fx.spec_doc_0_2())
+        self.assertEqual(code, 1, output)
+        self.assertIn("names cog id None",
+                      " ".join(self.record(output)["gate"]["reasons"]))
+
+    def test_an_identity_failure_is_retried_like_any_failed_invocation(self):
+        self.answer_with(fx.envelope(cog_id="openteams/cog-other"),
+                         fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-first"))
+        doc = fx.spec_doc_0_2([fx.cog_step("first", on_fail="retry-once")])
+        code, output = self.run_real(doc)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.processes), 2)
+
+    def test_0_1_keeps_an_envelope_naming_another_cog(self):
+        self.answer_with(fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-other"))
+        code, output = self.run_real(fx.spec_doc())
+        self.assertEqual(code, 0, output)
+
+    def test_only_a_0_2_step_passes_the_seam_an_expected_cog(self):
+        self.run_op(fx.spec_doc_0_2())
+        self.assertEqual(self.fake.calls[0]["seam"],
+                         {"expected_cog_id": "openteams/cog-first"})
+        self.run_op(fx.spec_doc(), answers={"ask": fx.envelope()})
+        self.assertEqual(self.fake.calls[0]["seam"], {})
+
+
+class PathHomeAtRunTimeTests(RunCase):
+    def doc(self, build):
+        step = fx.cog_step("first")
+        step["input"] = {"source": {"$path": {"$from": "inputs.note"}}}
+        return build([step])
+
+    def test_0_2_fails_the_step_when_a_computed_path_begins_with_a_tilde(self):
+        code, output = self.run_op(self.doc(fx.spec_doc_0_2),
+                                   request={"note": "~/texts.json"})
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["failed_step"], "first")
+        self.assertIn("begins with ~", output["reason"])
+        self.assertIn("rule path-no-home", output["reason"])
+        self.assertEqual(self.fake.calls, [])
+
+    def test_0_1_expands_it(self):
+        code, output = self.run_op(self.doc(fx.spec_doc),
+                                   request={"note": "~/texts.json"},
+                                   answers={"ask": fx.envelope()})
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.fake.calls[0]["request"]["source"],
+                         str((Path.home() / "texts.json").resolve()))
+
+    def test_0_2_resolves_other_paths(self):
+        code, output = self.run_op(self.doc(fx.spec_doc_0_2),
+                                   request={"note": "texts.json"})
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.fake.calls[0]["request"]["source"],
+                         str((self.root / "texts.json").resolve()))
 
 
 if __name__ == "__main__":

@@ -386,7 +386,7 @@ def _evidence(command, returncode, stdout, stderr, previous):
 
 
 def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
-               journal_path=None):
+               journal_path=None, expected_cog_id=None):
     """Run one declared Cog task and return its envelope.
 
     `grant_path`, `run_id` and `journal_path` are the invocation context a
@@ -399,7 +399,10 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
     always has something to decide about: a command that could not be
     launched, a nonzero exit (even after printing an envelope — a process
     that dies at 139 has not succeeded), output with no envelope, and a
-    malformed envelope all arrive the same way.
+    malformed envelope all arrive the same way. So does, when
+    EXPECTED_COG_ID is given (a `[0.2]` step, 0.11.0), a well-formed
+    envelope whose `cog.id` is not that id: the failure names the step's Cog
+    and keeps the other envelope as evidence.
 
     The run lock's descriptor is passed to the child (`pass_fds`): while a
     Cog is running, the run stays locked even if this runner dies."""
@@ -447,6 +450,13 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
     if malformed:
         return failed_envelope(cog_dir, task, " ".join(malformed),
                                evidence=evidence, emitted=envelope)
+    if expected_cog_id is not None:
+        impostor = identity_problem(envelope, expected_cog_id)
+        if impostor:
+            return failed_envelope(
+                cog_dir, task, impostor,
+                carried={"cog": {"id": expected_cog_id, "version": None}},
+                evidence=evidence, emitted=envelope)
     if completed.returncode != 0:
         detail = (f"the Cog command for task {task!r} exited "
                   f"{completed.returncode}")
@@ -455,6 +465,20 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
         return failed_envelope(cog_dir, task, detail, carried=envelope,
                                evidence=evidence, emitted=envelope)
     return envelope
+
+
+def identity_problem(envelope, expected_cog_id):
+    """Why a well-formed ENVELOPE is not the step's Cog's result, or None
+    (machinery 0.11.0, `[0.2]` documents only): its `cog.id` must equal the
+    step's `cog.id`, and an envelope naming another Cog — or none — is a
+    failed invocation."""
+    cog = envelope.get("cog")
+    stated = cog.get("id") if isinstance(cog, dict) else None
+    if stated == expected_cog_id:
+        return None
+    return (f"the Cog's result names cog id {stated!r}, but the step invokes "
+            f"{expected_cog_id!r}; an envelope naming another Cog is a "
+            f"failed invocation.")
 
 
 def gate_envelope(envelope):
@@ -1719,6 +1743,11 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
     retry's own digests and its own path before it is paid for."""
     seam = dict(seam or {})
     before_invoke = seam.pop('_before_invoke', None)
+    # A [0.2] step names the Cog its envelope must name (0.11.0). Passed to
+    # the seam only when set, so a [0.1] Cog is invoked exactly as before.
+    expected_cog_id = seam.pop('_expected_cog_id', None)
+    if expected_cog_id is not None:
+        seam['expected_cog_id'] = expected_cog_id
     envelope_path = Path(envelope_path)
     path_for = path_for or (
         lambda n: attempt_envelope_path(envelope_path, n))
@@ -2806,6 +2835,9 @@ def _execute_steps(spec, track, context, run_dir, package_root, authority,
                     "journal_path": str(journal_path.resolve())}
         if cycle_policy:
             seam['_before_invoke'] = lambda sid=sid: cycle_policy['reserve'](sid)
+        if spec.profile == op_spec.PROFILE_0_2:
+            # Every envelope must name the step's Cog (0.11.0, [0.2]).
+            seam['_expected_cog_id'] = step["cog"]["id"]
 
         # ---- durability: the Track says the step is RUNNING, with the grant
         # and journal it was given, BEFORE the Cog is launched. Nothing
@@ -3046,6 +3078,7 @@ def run(package_root, request_path, dry_run=False, runs_dir=None,
         "steps": {},
         "run": {"dir": str(run_dir), "id": run_id},
         "request": {"dir": track['request_dir']},
+        op_spec.PROFILE_CONTEXT_KEY: spec.profile,
     }
     lock = RunLock(run_dir).acquire()
     try:
@@ -3297,6 +3330,7 @@ def _resume(package_root, run_dir, track_path, decision_path,
         # older Tracks fall back to where the copy lives.
         "request": {"dir": track.get("request_dir")
                     or str(Path(track["input_request"]).parent)},
+        op_spec.PROFILE_CONTEXT_KEY: spec.profile,
     }
     decisions = _restore_context(track, context)
 

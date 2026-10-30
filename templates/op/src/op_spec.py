@@ -371,6 +371,15 @@ def evaluate(expr, ctx):
                 value = evaluate(expr["$path"], ctx)
                 if value is None:
                     return None
+                if (ctx.get(PROFILE_CONTEXT_KEY) == PROFILE_0_2
+                        and str(value).startswith("~")):
+                    # [0.2] (0.11.0): a computed `~` path is refused here,
+                    # as a literal one is at load. [0.1] expands it.
+                    raise OpSpecError(
+                        f"$path of {expr['$path']!r} evaluates to "
+                        f"{value!r}, which begins with ~; an Op's paths "
+                        f"never depend on whose machine runs it (rule "
+                        f"path-no-home).")
                 path = Path(str(value)).expanduser()
                 if not path.is_absolute():
                     path = Path(ctx["request"]["dir"]) / path
@@ -1660,11 +1669,15 @@ def _authority_findings(step, sid, cog, manifest):
     return findings
 
 
-def cog_step_findings(step, source_dir):
+def cog_step_findings(step, source_dir, profile=PROFILE_0_1):
     """[(level, detail)] for one Cog step's declaration, checked against the
     Cog at SOURCE_DIR: it must be that Cog, and the task must be one of its
     declared USAGE interfaces. A source that is simply absent is a warning —
-    the declaration could not be verified on this machine."""
+    the declaration could not be verified on this machine (a RUN of a `[0.2]`
+    document refuses it: `declaration_problems`).
+
+    PROFILE `0.2` (0.11.0): a stated `cog.version` other than the Cog's is an
+    error, where `[0.1]` warns."""
     cog = step.get("cog") or {}
     sid = step.get("id")
     source = Path(source_dir)
@@ -1683,10 +1696,13 @@ def cog_step_findings(step, source_dir):
                                   f"{cog['id']!r} but {cog.get('source')!r} "
                                   f"identifies as {manifest.get('id')!r}."))
     if cog.get("version") and manifest.get("version") != cog["version"]:
-        findings.append(("warn", f"Op step {sid!r} declares version "
-                                 f"{cog['version']!r} but "
-                                 f"{cog.get('source')!r} is at "
-                                 f"{manifest.get('version')!r}."))
+        strict = profile == PROFILE_0_2
+        findings.append(("error" if strict else "warn",
+                         f"Op step {sid!r} declares version "
+                         f"{cog['version']!r} but {cog.get('source')!r} is at "
+                         f"{manifest.get('version')!r}"
+                         + ("; a step names the Cog version it runs."
+                            if strict else ".")))
     findings.extend(_authority_findings(step, sid, cog, manifest))
     if step.get("repeat") is not None and (manifest.get("reaches") or []):
         # The same rule as the `authority` refusal in `_repeat_problems`,
@@ -1719,11 +1735,23 @@ def cog_step_findings(step, source_dir):
 
 def declaration_problems(spec, package_root):
     """Every ERROR a step's Cog declaration carries, across the whole spec —
-    what the runner refuses before it invokes anything."""
+    what the runner refuses before it invokes anything.
+
+    For a `[0.2]` document (0.11.0) a named Cog that is not present when the
+    run starts is an error too, and so is a stated version that differs from
+    the Cog's."""
     problems = []
+    profile = getattr(spec, "profile", PROFILE_0_1)
     for step in spec.ordered:
         source = (Path(package_root)
                   / str((step.get("cog") or {}).get("source"))).resolve()
+        if profile == PROFILE_0_2 and not source.is_dir():
+            problems.append(f"Op step {step.get('id')!r} names cog source "
+                            f"{(step.get('cog') or {}).get('source')!r}, "
+                            f"which is not present; every Cog a run names "
+                            f"is present when it starts.")
+            continue
         problems.extend(detail for level, detail
-                        in cog_step_findings(step, source) if level == "error")
+                        in cog_step_findings(step, source, profile)
+                        if level == "error")
     return problems
