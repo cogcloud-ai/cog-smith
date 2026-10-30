@@ -282,7 +282,36 @@ def envelope_problems(value):
         # list the Gate may assume.
         problems.append("the Cog's result declares problems that are not a "
                         "list of problem objects.")
+    else:
+        for index, problem in enumerate(listed):
+            problems.extend(problem_shape_problems(problem, index))
     return problems
+
+
+#: The severities a problem may carry in envelope v1. `warn` is the
+#: deprecated spelling of `warning` and is still accepted in envelope 1.
+PROBLEM_SEVERITIES = ("error", "warning", "warn")
+
+
+def problem_shape_problems(problem, index):
+    """Why one entry of `problems` is not `{check, detail, severity}` as
+    envelope v1 defines it (machinery 0.10.0). A missing or unrecognized
+    severity is malformed output: the Gate cannot tell a warning from an
+    error it has never heard of, so it never guesses `pass-with-problems`."""
+    where = f"the Cog's result's problems[{index}]"
+    found = []
+    check = problem.get("check")
+    if not isinstance(check, str) or not check:
+        found.append(f"{where} declares check {check!r}, which is not a "
+                     f"non-empty string.")
+    if not isinstance(problem.get("detail"), str):
+        found.append(f"{where} declares detail {problem.get('detail')!r}, "
+                     f"which is not a string.")
+    severity = problem.get("severity")
+    if severity not in PROBLEM_SEVERITIES:
+        found.append(f"{where} declares severity {severity!r}; a problem's "
+                     f"severity is one of {list(PROBLEM_SEVERITIES)}.")
+    return found
 
 
 def failed_envelope(cog_dir, task, detail, raw=None, carried=None,
@@ -419,7 +448,8 @@ def gate_envelope(envelope):
             f"Cog invocation failed: {error.get('code', 'unknown')}: "
             f"{error.get('detail', '')}".rstrip())
     # `envelope_problems` above has already established that `problems` is a
-    # list of objects: the policy reads it without re-checking its type.
+    # list of `{check, detail, severity}` objects with a severity envelope v1
+    # names: the policy reads it without re-checking its shape.
     listed = envelope.get("problems") or []
     error_problems = [p for p in listed if p.get("severity") == "error"]
     reasons.extend(str(p.get("detail") or p.get("check")

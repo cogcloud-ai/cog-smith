@@ -1584,3 +1584,8 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   a string `detail`, and `ok: true` beside an error object is malformed output.
   Such an envelope used to pass the Gate; it is now an invocation failure with
   the Cog's output kept as evidence, and the Gate fails it.
+- **A problem is `{check, detail, severity}`.** Every entry of `problems` must
+  have a non-empty string `check`, a string `detail` and a `severity` of
+  `error`, `warning` or `warn` (`warn` is deprecated and still accepted in
+  envelope 1). A missing or unrecognized severity used to read as a warning,
+  so the step passed with problems; it is malformed output now.

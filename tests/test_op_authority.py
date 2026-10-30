@@ -702,7 +702,7 @@ class HumanGateTests(AuthorityCase):
     def test_only_a_passing_envelope_reaches_the_human(self):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": []},
-                                       problems=[{"severity": "error",
+                                       problems=[{"check": "contract", "severity": "error",
                                                   "detail": "bad"}]),
                            fx.envelope(payload={})]}
         code, output, track = self.start(answers=answers)

@@ -166,7 +166,7 @@ class CycleTests(unittest.TestCase):
         def warned(*args, **kwargs):
             result = invoke(*args, **kwargs)
             if json.loads(Path(args[2]).read_text())['operation'] == 'review':
-                result['problems'] = [{'severity': 'warning', 'code': 'advisory', 'message': 'Synthetic warning'}]
+                result['problems'] = [{'check': 'advisory', 'severity': 'warning', 'detail': 'Synthetic warning'}]
             return result
         with patch.object(op_runner, 'invoke_cog', side_effect=warned):
             code, output = self.start_and_accept_contract()

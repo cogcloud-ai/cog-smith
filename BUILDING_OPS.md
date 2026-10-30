@@ -523,8 +523,11 @@ something that is not a well-formed envelope v1 is an *invocation failure*:
 the Op layer synthesises an `ok: false` envelope, keeps what the Cog did emit
 as evidence in `raw`, and the Gate decides about that like any other result.
 A well-formed envelope v1 is required to have `envelope: 1` (the integer, not
-`true`), a boolean `ok`, and `problems` as a list of objects; anything else is
-malformed output, not a result. An `error` is `null` or `{code, detail}`, and
+`true`), a boolean `ok`, and `problems` as a list of `{check, detail,
+severity}` objects — `check` a non-empty string, `detail` a string, and
+`severity` one of `error`, `warning` or `warn` (the deprecated spelling of
+`warning`); anything else is malformed output, not a result. A problem with a
+missing or unrecognized severity is never read as a warning. An `error` is `null` or `{code, detail}`, and
 an envelope that carries one is never ok: `ok: true` beside an error object is
 malformed output too (since 0.10.0), so a Cog cannot pass the Gate
 while reporting that its invocation failed.

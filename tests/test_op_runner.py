@@ -45,10 +45,10 @@ class GateTests(unittest.TestCase):
     def test_three_legible_states(self):
         base = {"envelope": 1, "ok": True, "error": None, "problems": []}
         self.assertEqual(op_runner.gate_envelope(base)["status"], "pass")
-        warned = dict(base, problems=[{"severity": "warn", "detail": "look"}])
+        warned = dict(base, problems=[{"check": "contract", "severity": "warn", "detail": "look"}])
         self.assertEqual(op_runner.gate_envelope(warned)["status"],
                          "pass-with-problems")
-        errored = dict(base, problems=[{"severity": "error", "detail": "bad"}])
+        errored = dict(base, problems=[{"check": "contract", "severity": "error", "detail": "bad"}])
         self.assertEqual(op_runner.gate_envelope(errored)["status"], "fail")
         self.assertEqual(op_runner.gate_envelope(dict(base, ok=False))["status"],
                          "fail")
@@ -56,10 +56,40 @@ class GateTests(unittest.TestCase):
     def test_gate_records_policy_reasons_and_empty_guards(self):
         decision = op_runner.gate_envelope(
             {"envelope": 1, "ok": True,
-             "problems": [{"severity": "warn", "detail": "thin evidence"}]})
+             "problems": [{"check": "contract", "severity": "warn", "detail": "thin evidence"}]})
         self.assertEqual(decision["policy"], op_spec.GATE_POLICY)
         self.assertEqual(decision["guards"], [])
         self.assertEqual(decision["reasons"], ["thin evidence"])
+
+    def test_both_warning_spellings_pass_with_problems(self):
+        """`warn` is the deprecated spelling of `warning`; envelope 1 still
+        accepts it."""
+        for severity in ("warning", "warn"):
+            with self.subTest(severity=severity):
+                decision = op_runner.gate_envelope(
+                    {"envelope": 1, "ok": True, "problems": [
+                        {"check": "c", "detail": "d", "severity": severity}]})
+                self.assertEqual(decision["status"], "pass-with-problems")
+
+    def test_a_problem_without_a_known_severity_is_malformed_not_a_warning(self):
+        """Machinery 0.10.0: a problem whose severity is missing or not one
+        envelope v1 names used to read as a warning, so the step passed with
+        problems. It is malformed output now, and the Gate fails it."""
+        well = {"check": "grounding", "detail": "quote 3", "severity": "error"}
+        for bad in ({"check": "grounding", "detail": "quote 3"},
+                    dict(well, severity="fatal"),
+                    dict(well, severity="ERROR"),
+                    dict(well, severity=None),
+                    {"detail": "no check", "severity": "warning"},
+                    dict(well, check=""),
+                    dict(well, detail=None)):
+            with self.subTest(problem=bad):
+                envelope = {"envelope": 1, "ok": True, "problems": [bad]}
+                self.assertTrue(op_runner.envelope_problems(envelope))
+                decision = op_runner.gate_envelope(envelope)
+                self.assertEqual(decision["status"], "fail")
+                self.assertEqual(decision["reasons"][0],
+                                 "Cog result is not envelope v1.")
 
     def test_non_envelope_result_fails_the_gate(self):
         self.assertEqual(op_runner.gate_envelope({"ok": True})["status"], "fail")
@@ -120,10 +150,25 @@ class LinearRunTests(RunnerCase):
         self.assertEqual(output["outputs"], {"summary": "final"})
         self.assertEqual(track["outputs"], {"summary": "final"})
 
+    def test_an_unknown_problem_severity_fails_the_step(self):
+        """Machinery 0.10.0: this run used to complete with problems."""
+        answers = {"ask": fx.envelope(payload={"text": "a"},
+                                      problems=[{"check": "grounding",
+                                                 "detail": "unsure",
+                                                 "severity": "notice"}]),
+                   "summarize": fx.envelope(payload={"text": "b"})}
+        code, output, track, fake = self.go(self.doc(), answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "first")
+        first = self.step(track, "first")
+        self.assertEqual(first["status"], "failed")
+        self.assertIn("'notice'", " ".join(first["gate"]["reasons"]))
+        self.assertEqual(len(fake.calls), 1)
+
     def test_track_shape(self):
         answers = {"ask": fx.envelope(payload={"text": "a"}),
                    "summarize": fx.envelope(payload={"text": "b"},
-                                            problems=[{"severity": "warn",
+                                            problems=[{"check": "contract", "severity": "warn",
                                                        "detail": "thin"}])}
         code, output, track, _ = self.go(self.doc(), answers=answers)
         self.assertEqual(code, 0)
@@ -275,7 +320,7 @@ class OnFailTests(RunnerCase):
 
     def test_retry_once_never_retries_an_error_problem(self):
         answers = {"ask": fx.envelope(payload={"text": "x"},
-                                      problems=[{"severity": "error",
+                                      problems=[{"check": "contract", "severity": "error",
                                                  "detail": "ungrounded"}]),
                    "summarize": fx.envelope(payload={})}
         code, output, track, fake = self.go(self.two_steps("retry-once"),
@@ -343,7 +388,7 @@ class ForeachTests(RunnerCase):
     def test_a_warning_element_makes_the_step_pass_with_problems(self):
         answers = {"classify": [fx.envelope(payload={"label": "a"}),
                                 fx.envelope(payload={"label": "b"},
-                                            problems=[{"severity": "warn",
+                                            problems=[{"check": "contract", "severity": "warn",
                                                        "detail": "unsure"}])]}
         code, _, track, _ = self.go(self.doc(), request=self.request(),
                                     answers=answers)
@@ -483,7 +528,7 @@ class RepeatTests(RunnerCase):
     def test_a_repeat_with_problems_makes_the_step_pass_with_problems(self):
         answers = {"draft": [fx.envelope(payload={"n": 1}),
                              fx.envelope(payload={"n": 2},
-                                         problems=[{"severity": "warn",
+                                         problems=[{"check": "contract", "severity": "warn",
                                                     "detail": "unsure"}])]}
         code, _, track, _ = self.go(self.doc(count=2, require=2),
                                     answers=answers)
