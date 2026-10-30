@@ -6,7 +6,7 @@
 proposal, implemented from an internal Op-runner contract (a design note,
 not distributed).
 It is a runner SUBSET on purpose: durable state is refused by name, with the
-phase that adds it. There is no `tool:` step kind and never will be:
+reason. There is no `tool:` step kind and never will be:
 deterministic work in an Op is a model-free Cog of `kind: code`, invoked as
 an ordinary `cog:` step (decided 2026-09-17). There is no `human:` step kind
 either: a human Gate is a POLICY on the step that produces what the human
@@ -869,13 +869,13 @@ must resolve inside the run directory, reached through no link at all.
 ## 7. Refused by name
 
 These are refused when the spec LOADS, one sentence each, naming the
-construct and the phase that adds it — never discovered mid-run:
+construct and the reason — never discovered mid-run:
 
 | Construct | Message says |
 |---|---|
 | `tool:` step | never — deterministic work is a Cog of `kind: code`, invoked as a `cog:` step |
 | `human:` step | never — a human Gate is a policy on a step, `gate: {policy: human}` |
-| `state:` | phase 4 |
+| `state:` | durable state across runs is not part of this Op spec |
 | `authority` on a `foreach` step | the runner issues no per-element grants |
 | `on_fail: retry-once` on a step with `authority` or a reaching Cog | a reaching Cog recovers by resume and journal reconciliation |
 | `repeat` on a step with `authority`, a reaching Cog, or `gate.policy: human` | an effectful step is never repeated; a human decides about one set of proposals |

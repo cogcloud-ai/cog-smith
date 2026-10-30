@@ -359,7 +359,7 @@ class CliTests(SmithOpCase):
         result = self.smith("op", "new", "--from-spec", str(self.spec_path),
                             "--dir", str(self.dest))
         self.assertEqual(result.returncode, 2)
-        self.assertIn("phase 4", result.stderr)
+        self.assertIn("durable state across runs", result.stderr)
 
     def test_op_run_execs_the_packages_runner(self):
         self.smith("op", "new", "--from-spec", str(self.spec_path),

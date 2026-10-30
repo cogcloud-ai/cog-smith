@@ -1630,6 +1630,9 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   payload is the list of element payloads, so the pause could never be asked;
   the spec used to load and fail when the run reached it. A `foreach` with
   the envelope Gate or an artifact Gate still loads.
+- **A refusal says what and why, never when.** `state:` was refused with
+  "phase 4 adds it", naming an internal plan; it is now refused because
+  durable state across runs is not part of this Op spec. Message-only.
 - **`op new` writes `OP.md`.** Not machinery (it is not hashed): Smith's Op
   template now renders `templates/op/OP.md.tmpl`, the Op Spec v0.1 entry file
   (`type: op [0.1]`, a kebab-case `name`, `description`, quoted `version`,

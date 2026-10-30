@@ -8,8 +8,8 @@ the answer is a Cog step, never a script in the Op.
 The spec is `openteams/op-manifest [0.1]`: identity, declared `inputs`, a
 list of Cog `steps` with mapping expressions for their requests, optional
 `outputs`, and the `track` records. The vocabulary is CLOSED — anything the
-runner subset does not carry is refused BY NAME at load, with the phase that
-adds it, so an author never discovers a missing construct mid-run.
+runner subset does not carry is refused BY NAME at load, with the reason,
+so an author never discovers a missing construct mid-run.
 """
 from __future__ import annotations
 
@@ -93,11 +93,12 @@ TARGET_KEYS = ("targets", "repositories")
 REQUIREMENT_KEYS = {"resource", "action", "changes", *TARGET_KEYS}
 DEFAULT_TTL_MINUTES = 60
 
-# Refused by name, with the phase that adds the construct. A value of None
-# means the construct is never added: there is no tool: step kind —
+# Refused by name, with the reason it is refused. A value of None means a
+# step kind with its own reason below: there is no tool: step kind —
 # deterministic work is a Cog of kind: code, invoked as a cog: step — and no
 # human: step kind either: a human Gate is `gate: {policy: human}` on a step.
-REFUSED_TOP = {"state": "phase 4"}
+REFUSED_TOP = {"state": "durable state across runs is not part of this Op "
+                         "spec; a run reads only its request and its own steps"}
 REFUSED_STEP = {"tool": None, "human": None}
 REFUSED_STEP_REASON = {
     "tool": ("there is no tool: step kind — deterministic work is a Cog of "
@@ -943,7 +944,7 @@ def validate(doc):
     for key, phase in REFUSED_TOP.items():
         if key in doc:
             problems.append(f"the Op spec declares {key}:, which the runner "
-                            f"subset does not carry — {phase} adds it.")
+                            f"subset does not carry — {phase}.")
     for key in sorted(str(k) for k in set(doc) - TOP_KEYS - set(REFUSED_TOP)):
         problems.append(f"unknown top-level Op spec key {key!r}; the Op spec "
                         f"vocabulary is closed.")
@@ -1039,7 +1040,7 @@ def validate(doc):
             else:
                 problems.append(f"Op step {sid!r} declares a {key}: step, "
                                 f"which the runner subset does not carry — "
-                                f"{phase} adds it.")
+                                f"{phase}.")
         for key in sorted(str(k) for k in set(step) - STEP_KEYS
                           - set(REFUSED_STEP)):
             problems.append(f"unknown key {key!r} on Op step {sid!r}; the step "

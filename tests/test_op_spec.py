@@ -2,7 +2,7 @@
 
 Every
 construct outside the runner subset must be refused AT LOAD, named, with the
-phase that adds it — never discovered mid-run.
+reason — never discovered mid-run.
 """
 import tempfile
 import unittest
@@ -77,10 +77,11 @@ class RefusalTests(unittest.TestCase):
             with self.subTest(gate=gate):
                 self.assertEqual(problems(self.foreach_step(gate)), [])
 
-    def test_state_is_refused_with_its_phase(self):
+    def test_state_is_refused_with_its_reason(self):
         text = one(fx.spec_doc(state={"store": "sqlite"}))
         self.assertIn("state:", text)
-        self.assertIn("phase 4", text)
+        self.assertIn("durable state across runs", text)
+        self.assertNotIn("phase", text)
 
     def test_non_empty_guards_are_refused(self):
         step = fx.cog_step("first")
