@@ -2,9 +2,11 @@
 
 **Audience:** Op builders, reviewers, and coding agents
 **Describes:** cog-smith Op machinery 0.11.0 (tested against the machinery constant)
-**Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
-proposal, implemented from an internal Op-runner contract (a design note,
-not distributed).
+**Status:** The Op spec is the execution profile
+`openteams/op-manifest [0.2]` of the public Op Spec (its
+`profiles/op-manifest/PROFILE.md`); `[0.1]`, the laptop side's proposal
+implemented from an internal Op-runner contract, still runs unchanged — see
+[Profiles](#profiles-02-and-01).
 It is a runner SUBSET on purpose: durable state is refused by name, with the
 reason. There is no `tool:` step kind and never will be:
 deterministic work in an Op is a model-free Cog of `kind: code`, invoked as
@@ -88,13 +90,17 @@ feature to build on.
    refused), the spec's
    `description`, the quoted `version`, `license` and `publisher` (the Cog
    defaults, Apache-2.0 and OpenTeams, unless `--license` / `--publisher`
-   say otherwise), `manifest: op.yaml` and
-   `manifest_schema: openteams/op-manifest [0.1]`; then a short account of the
+   say otherwise), `manifest: op.yaml` and `manifest_schema` — the profile
+   op.yaml declares; then a short account of the
    outcome, the steps, the human Gates, the authority and the deliverable,
-   generated from `op.yaml`. `op.yaml` is what runs. `op check` reports a
+   generated from `op.yaml`. `op.yaml` is what runs, written exactly as the
+   spec declares it: `op new` never rewrites a `[0.1]` spec into `[0.2]`.
+   `op check` reports a
    missing or invalid `OP.md` as a warning, so an Op created before `op new`
    wrote one keeps passing, and warns when its `name` is not the id's last
-   segment; an OP.md `version` other than op.yaml's is an error.
+   segment or its `manifest_schema` is not op.yaml's `schema`; an OP.md
+   `version` other than op.yaml's is an error. A `[0.1]` op.yaml is a
+   warning (`opspec-profile`) naming what moving to `[0.2]` takes.
 4. **Run.**
 
    ```bash
@@ -127,10 +133,10 @@ it.
 A two-step linear Op: transcribe a recording, then attribute its speakers.
 
 ```yaml
-schema: openteams/op-manifest [0.1]
+schema: openteams/op-manifest [0.2]
 id: openteams/op-example-transcription
 version: "0.1.0"
-name: Video transcription with speaker attribution
+title: Video transcription with speaker attribution
 description: Produces a timestamped, speaker-labelled transcript from a recording.
 
 inputs:
@@ -149,7 +155,7 @@ inputs:
 
 steps:
   - id: transcribe
-    name: Transcribe the recording
+    title: Transcribe the recording
     cog:
       id: openteams/cog-media-transcriber
       version: "0.1.0"
@@ -166,7 +172,7 @@ steps:
     on_fail: stop
 
   - id: attribute-speakers
-    name: Attribute transcript segments to speakers
+    title: Attribute transcript segments to speakers
     depends_on: [transcribe]
     cog:
       id: openteams/cog-speaker-attribution
@@ -197,17 +203,20 @@ track:
 ### Mapping expressions
 
 The vocabulary is CLOSED. An object is an operator only when its key set is
-EXACTLY one of these; every other object is walked recursively, and scalars
-are literals. So `{$from: "x", label: "y"}` and `{$from: "x", $stem: "y"}` are
-both ordinary data — but a `$`-prefixed key that names no operator at all
-(`{$join: [...]}`, with or without siblings) is refused by name wherever it
-appears.
+EXACTLY one of these; an object with no `$`-prefixed key is walked
+recursively, and scalars are literals. A `$`-prefixed key that names no
+operator at all (`{$join: [...]}`, with or without siblings) is refused by
+name wherever it appears. In `[0.2]` any other object holding an operator key
+is refused too — `{$from: "x", label: "y"}`, a `$default` without `$from` —
+so a misspelled sibling (`default:` for `$default:`) is an error, not data;
+write data with `$`-prefixed keys as `{$literal: ...}`. A `[0.1]` document
+still reads those objects as ordinary data.
 
 | Operator | Meaning |
 |---|---|
 | `{$from: <path>}` | Read `inputs.<name>`, `steps.<id>.payload`, `steps.<id>.envelope`, `run.dir`, `run.id`, `request.dir`, or the `foreach` loop variable. Dotted keys index objects; integers index arrays. |
 | `{$from: ..., $default: <expr>}` | The value when present and not null, else the default (itself an expression). |
-| `{$path: <expr>}` | A filesystem path resolved against the request file's directory, absolute. |
+| `{$path: <expr>}` | A filesystem path resolved against the request file's directory, absolute. In `[0.2]` a value beginning with `~` is refused — a literal at load, a computed one when it is evaluated (a failed step); `[0.1]` expands it. |
 | `{$run_dir: <subpath>}` | A directory inside this run, absolute and created. The subpath is RELATIVE and never leaves the run: an absolute value, a `..` escape, or a symlink out of the run is refused before anything is created — including when the value arrived as mapped data. |
 | `{$stem: <expr>}` | `Path(value).stem`. |
 | `{$literal: <any>}` | The value verbatim — the escape hatch for data that looks like an operator. |
@@ -530,6 +539,38 @@ is OMITTED from the starter request. The
 generated test skips its dry-run assertions only while that starter request
 does not validate — a request that validates but maps badly FAILS the suite.
 
+## Profiles: [0.2] and [0.1]
+
+`schema:` picks the rules. `openteams/op-manifest [0.2]` is the published
+profile; `[0.1]` is every Op written before it, and runs exactly as it did
+under machinery 0.10.0. `op check` warns on a `[0.1]` spec; it is never an
+error. A `[0.2]` document is held to the profile's tightenings at LOAD:
+
+- `title` (top level and on every step, including cycle preparation steps)
+  where `[0.1]` says `name`; `name` is refused by name;
+- `id`, `version`, `title`, `description`, step `title` and
+  `expected_outcome` are strings, `inputs[].required` a boolean, and
+  `track.records` a list of strings;
+- every `cog` states its `version`; requirements say `targets`, never
+  `repositories`, and an `action` is `read` or `write`;
+- an object holding an operator key has exactly that operator's keys, and a
+  literal `$path` never begins with `~`;
+- a cycle Op declares no top-level `authority`, not even `{}`.
+
+And at RUN time: every named Cog must be present when the run starts, at the
+version the step states (a validator, `op check`, still warns on a Cog that is
+absent and errors on one at another version); an envelope whose `cog.id` is
+not the step's `cog.id` is a failed invocation, with the envelope kept as
+evidence; a computed `$path` beginning with `~` fails the step; and a
+proposed change names what it changes as `target` — the write target the
+admission must list, which an edit may not change and the grant carries.
+
+To move a `[0.1]` Op to `[0.2]`: rename `name` to `title`, state every
+`cog.version`, write `targets` for `repositories`, have every Cog that
+proposes changes name the admitted target as `target`, and set OP.md's
+`manifest_schema` to match. Refusal messages for the new rules name the
+profile's rule id (`rule step-title`, `rule operator-exact-keyset`, ...).
+
 ## 4. Gates, Guards, and the Track
 
 The only policy in this subset is `envelope-ok-no-error-problems`: a step
@@ -587,7 +628,8 @@ A step declares what it requires; it never grants itself anything:
 
 ```yaml
 - id: read-github
-  cog: {id: openteams/cog-example-reader, source: ../cog-example-reader, task: run}
+  cog: {id: openteams/cog-example-reader, version: "0.1.0",
+        source: ../cog-example-reader, task: run}
   authority:
     requires:
       - {resource: github, action: read,
@@ -595,13 +637,14 @@ A step declares what it requires; it never grants itself anything:
 
 - id: compose-proposals
   depends_on: [read-github]
-  cog: {id: openteams/cog-example-composer,
+  cog: {id: openteams/cog-example-composer, version: "0.1.0",
         source: ../cog-example-composer, task: run}
   gate: {policy: human}
 
 - id: write-github
   depends_on: [compose-proposals]
-  cog: {id: openteams/cog-example-writer, source: ../cog-example-writer, task: run}
+  cog: {id: openteams/cog-example-writer, version: "0.1.0",
+        source: ../cog-example-writer, task: run}
   authority:
     requires:
       - {resource: github, action: write,
@@ -615,8 +658,11 @@ by a reissue after an interruption — then invokes the Cog with `--grant`,
 `--run-id` and `--journal` **beside** the request. A read is issued only if
 its targets are a subset of the admitted ones; a write only if every
 requested change was approved by the named human decision, whose record must
-still hash to what the Track recorded. The grant carries EXACTLY the approved
-list — asking for more than was approved is a **denial, not a trim**. A
+still hash to what the Track recorded, and every approved change names a
+write target the admission lists — as `target` in a `[0.2]` document, as
+`repository` in a `[0.1]` one. The grant carries EXACTLY the approved
+list, each change with that same field — asking for more than was approved
+is a **denial, not a trim**. A
 denied step is recorded `denied`, is never invoked, and its `on_fail` applies
 as for a failure.
 
@@ -641,7 +687,8 @@ and the admission say:
 
 ```yaml
 - id: read-handbook
-  cog: {id: openteams/cog-site-reader, source: cogs/site-reader, task: run}
+  cog: {id: openteams/cog-site-reader, version: "0.1.0",
+        source: cogs/site-reader, task: run}
   input: {pages: {$from: inputs.site_config.pages}}
   authority:
     requires:
@@ -656,9 +703,9 @@ and the admission say:
 ```
 
 A request for `docs.example.org/private` is denied at issuance, exactly as an
-unadmitted repository is. `repositories` is the earlier name for `targets`
-and is still read, in the admission and in `authority.requires`, so an
-existing document loads unchanged (Op machinery 0.10.0). One operation states
+unadmitted repository is. `repositories` is the earlier name for `targets`.
+A `[0.2]` requirement refuses it; a `[0.1]` requirement and the admission
+still read it, so an existing document loads unchanged. One operation states
 one of the two names; stating both is refused. A read grant names its
 targets under the key its requirement used, so an existing spec keeps
 issuing the grant an existing Cog reads.
@@ -711,8 +758,8 @@ Its `payload_sha256` must match the hash of the pending PAYLOAD, recomputed
 when the decision is applied, or the run refuses it: the human decided about
 something else. An edited change is re-hashed from its edited content, and
 THAT hash is what the write grant carries; an edit may change what is
-written, never which item it targets or the `target_sha256` it was approved
-against. A decision can only select among the proposed changes; it can never
+written, never which item it targets (`target` in `[0.2]`, `repository` in
+`[0.1]`) or the `target_sha256` it was approved against. A decision can only select among the proposed changes; it can never
 add one. The applied decision is exposed as
 `{approved, rejected, edited, history, decided_by, decided_at}` — `approved`
 carrying the EFFECTIVE change objects (an edited change appears as the
@@ -749,7 +796,8 @@ the step's Cog answered, so it may read the step's own payload:
 
 ```yaml
 - id: design
-  cog: {id: openteams/cog-author, source: ../cog-author, task: ask-composed}
+  cog: {id: openteams/cog-author, version: "0.1.0", source: ../cog-author,
+        task: ask-composed}
   gate:
     policy: human
     decides: artifact
@@ -762,7 +810,8 @@ the step's Cog answered, so it may read the step's own payload:
 
 - id: author
   depends_on: [design]
-  cog: {id: openteams/cog-author, source: ../cog-author, task: ask-composed}
+  cog: {id: openteams/cog-author, version: "0.1.0", source: ../cog-author,
+        task: ask-composed}
   input:
     contract: {$from: steps.design.payload.contract}
     contract_sha256: {$from: steps.design.decision.artifact.digests.contract}
@@ -903,7 +952,9 @@ construct and the reason — never discovered mid-run:
 | non-empty `gate.guards` | not in the runner subset |
 | any unknown top-level or step key | the vocabulary is closed |
 | any unknown `$`-operator | the mapping vocabulary is closed |
-| any `schema:` but `openteams/op-manifest [0.1]` | the schema it must be |
+| any `schema:` but `openteams/op-manifest [0.2]` or `[0.1]` | the schemas it may be |
+| in `[0.2]`: `name` on the Op or a step; a non-string `id`, `version`, `title`, `description`, step `title` or `expected_outcome`; a non-boolean `inputs[].required`; `track.records` that is not a list of strings | `title` is the human-readable name; the types, by name |
+| in `[0.2]`: a `cog` with no `version`; `repositories`; an `action` other than `read`/`write`; an operator key beside other keys; a literal `$path` beginning with `~`; `authority: {}` beside a `cycle` | the rule, by its profile rule id |
 | a `depends_on` cycle | acyclic |
 | reading a step you do not depend on | add it to depends_on |
 

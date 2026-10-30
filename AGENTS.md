@@ -34,7 +34,10 @@ the single source of the machinery every created Cog carries.
   per-Op Python at all. `op new` also writes `OP.md`, the Op Spec entry
   file, named after the last segment of op.yaml's `id`; `op check` warns
   when it is missing, invalid or differently named, and errors only when its
-  `version` differs from op.yaml's.
+  `version` differs from op.yaml's. op.yaml declares the published profile
+  `openteams/op-manifest [0.2]` (`title`, stricter load and run rules) or
+  `[0.1]` (runs unchanged; `op check` warns). `op_spec.SCHEMA_STRING` stays
+  `[0.1]` for existing callers; new documents use `SCHEMA_STRING_0_2`.
 - Card: `pixi run card -- <path> [--json | --envelope]`
 - `--envelope` emits envelope v1 for Op consumption:
   binding null (deterministic tooling cog), findings in `problems`,

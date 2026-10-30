@@ -1663,3 +1663,51 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   `resume` recovers durable work. `resume`'s own up-front refusals (a changed package,
   machinery, request, limits or ledger) leave the state as it was, so
   restoring what changed lets the cycle continue.
+
+## Op machinery 0.11.0 — `openteams/op-manifest [0.2]`
+
+A MINOR bump: the machinery runs the published execution profile
+`openteams/op-manifest [0.2]` beside `[0.1]`. A document's `schema` picks the
+rules, and a `[0.1]` document loads and runs exactly as under 0.10.0. Every
+master's hash changes (`op_spec.py`, `op_runner.py`); Op packages pick the
+change up by re-copying. `op_spec.SCHEMA_STRING` keeps meaning `[0.1]` for
+callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
+`SCHEMA_STRINGS` are new, and `OpSpec` gains `schema`, `profile`, `title`
+(`name` stays, as the same value) and `change_target_key`.
+
+- **Load-time tightenings, `[0.2]` only** (profile "Tightenings"): `title`
+  on the Op and every step, cycle preparation steps included, and `name`
+  refused by name; string `id`, `version`, `title`, `description`, step
+  `title` and `expected_outcome`; boolean `inputs[].required`; `track.records`
+  a list of strings; a `cog` with no `version` refused; `repositories`
+  refused (`targets` only); an `action` other than `read`/`write` refused; an
+  object holding an operator key beside any other key refused (exact key
+  sets: a `$default` needs its `$from`); a literal `$path` (or
+  `{$literal: ...}`) beginning with `~` refused; and `authority: {}` beside
+  a `cycle` refused. The new refusals name the profile's rule id. The
+  `$run_dir` and foreach-changes-Gate rules of 0.10.0 apply to both.
+- **Run-time rules, `[0.2]` only.** `declaration_problems` refuses a run
+  whose named Cog is not present, or is at another version than the step
+  states (`cog_step_findings` takes the profile: an error for `[0.2]`, a
+  warning for `[0.1]`; an absent Cog stays a warning for `op check`). The
+  run context carries the profile, and a `$path` that evaluates to a value
+  beginning with `~` fails the step as an evaluation failure. `invoke_cog`
+  takes `expected_cog_id`: a well-formed envelope whose `cog.id` is not the
+  step's is a failed invocation (`invocation-failed`, naming the step's Cog,
+  the other envelope kept as `error.evidence.envelope`), retried by
+  `retry-once` like any other. The seam is passed it only for a `[0.2]`
+  step, so a `[0.1]` Cog is invoked exactly as before.
+- **A change names its `target`.** Under `[0.2]` the field of a proposed
+  change that names what it changes is `target`: write admission requires
+  every approved change's `target` to be a write target the admission lists,
+  `granted_change` carries `target`, and an edit may not change it
+  (`apply_decision(..., change_target_key=)`, `edited_change_problems(...,
+  target_key=)`). Under `[0.1]` it stays `repository`, the default, so
+  `smith op decide` and existing callers are unchanged.
+- **Smith.** `op new` writes the spec as declared — it never rewrites a
+  `[0.1]` spec, whose Cogs' changes name `repository` — and OP.md's
+  `manifest_schema` is op.yaml's `schema`. `op check` accepts either profile
+  in OP.md, warns when it differs from op.yaml's, and warns
+  (`opspec-profile`, profile layer) on a `[0.1]` spec with what moving to
+  `[0.2]` takes. The code-cog machinery is unchanged: it never reads a
+  granted change's target field.
