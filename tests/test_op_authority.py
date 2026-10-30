@@ -376,7 +376,8 @@ class AuthorityTests(AuthorityCase):
 
     def test_a_run_dir_expression_cannot_reach_a_control_directory(self):
         for subpath in ("grants", "pending/compose.json", "decisions",
-                        "journal", "track.json", "run.lock"):
+                        "journal", "track.json", "run.lock", "requests",
+                        "envelopes/compose.json", "input-request.json"):
             doc = spec_doc()
             doc["steps"][1]["input"] = {"out": {"$run_dir": subpath}}
             with self.assertRaises(op_spec.OpSpecError) as caught:
@@ -452,6 +453,23 @@ class WriteGrantTests(AuthorityCase):
         self.assertEqual(grant["issued_by"]["step"], "compose")
         self.assertEqual(grant["issued_by"]["decision_sha256"],
                          op_runner.sha256_file(grant["issued_by"]["decision"]))
+
+    def test_every_entry_a_run_writes_is_reserved(self):
+        """Machinery 0.10.0: the reserved set is the run directory's whole
+        layout. A run that reads under a grant, pauses at a human Gate,
+        resumes with a decision and writes under a second grant leaves only
+        entries no `$run_dir` may name."""
+        code, output, track = self.approve_and_continue(
+            {"c-a": "approve", "c-b": "reject"})
+        self.assertEqual(code, 0, output)
+        entries = {p.name for p in Path(output["run_dir"]).iterdir()}
+        self.assertTrue({"grants", "pending", "decisions", "journal",
+                         "requests", "envelopes", "track.json", "run.lock",
+                         "input-request.json"} <= entries, entries)
+        for name in entries:
+            self.assertEqual(op_spec.reserved_run_subpath(name), name, name)
+            with self.assertRaises(op_spec.OpSpecError):
+                op_spec.run_dir_path(name, output["run_dir"])
 
     def test_the_grant_lists_only_the_approved_changes(self):
         # "A step requiring B is denied" is two tests further down.

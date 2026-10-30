@@ -139,9 +139,17 @@ REFUSED_PATH_ROOTS = {
 #: The run directory's CONTROL entries: the runner owns them, and no mapping
 #: expression may name one. `$run_dir` makes a place for a Cog's OUTPUT; a
 #: Cog handed `runs/<id>/grants` as an output directory could overwrite the
-#: very documents that authorize it.
+#: very documents that authorize it. Since 0.10.0 the list is the run
+#: directory's whole layout: the step requests a later step's request is
+#: built beside, the envelopes that are the run's evidence, and the copy of
+#: the input request a resume reads back are the runner's too.
 RESERVED_RUN_SUBPATHS = ("grants", "pending", "decisions", "journal",
-                         "run.lock", "track.json")
+                         "run.lock", "track.json", "requests", "envelopes",
+                         "input-request.json")
+#: The reserved FILES, whose atomic rewrites go through a temporary sibling
+#: named `<file>.<pid>.tmp`: a directory in that place would make the next
+#: rewrite of the Track fail, so `<file>.` names the file too.
+RESERVED_RUN_FILES = ("run.lock", "track.json", "input-request.json")
 
 # A Cog's conventional lifecycle tasks, for steps whose interface declares no
 # audience. Kept here (not imported from cog-smith) because this module is
@@ -233,7 +241,20 @@ def reserved_run_subpath(subpath):
     parts = [p for p in Path(normalized).parts if p not in (".", "/")]
     if parts and parts[0] in RESERVED_RUN_SUBPATHS:
         return parts[0]
+    for name in RESERVED_RUN_FILES:
+        if parts and parts[0].startswith(name + "."):
+            return name
     return None
+
+
+def names_run_root(subpath):
+    """True when SUBPATH, normalised, names the run directory ITSELF — `""`,
+    `"."`, `"out/.."` (machinery 0.10.0). The run root holds every control
+    entry, so handing it to a Cog as an output directory hands it all of
+    them."""
+    parts = [p for p in Path(normalized_subpath(subpath)).parts
+             if p not in (".", "/")]
+    return not parts
 
 
 def run_dir_path(subpath, run_dir):
@@ -242,11 +263,18 @@ def run_dir_path(subpath, run_dir):
     `$run_dir` makes a directory INSIDE this run, so an absolute operand, a
     `..` escape, and a symlink out of the run are all refused BEFORE
     anything is created."""
-    if subpath is None:
-        subpath = ""
     if not isinstance(subpath, str):
         raise OpSpecError(f"$run_dir takes a relative subpath string, got "
                           f"{subpath!r}.")
+    if Path(subpath).is_absolute():
+        raise OpSpecError(f"$run_dir subpath {subpath!r} is absolute; "
+                          f"$run_dir names a directory inside this run.")
+    if names_run_root(subpath):
+        # Machinery 0.10.0: an empty, `.` or null operand used to hand the
+        # Cog the run root itself, and every control entry with it.
+        raise OpSpecError(f"$run_dir subpath {subpath!r} names the run "
+                          f"directory itself, which the runner owns; "
+                          f"$run_dir names a directory inside this run.")
     reserved = reserved_run_subpath(subpath)
     if reserved:
         raise OpSpecError(f"$run_dir subpath {subpath!r} names the run's "
@@ -254,9 +282,6 @@ def run_dir_path(subpath, run_dir):
                           f"{list(RESERVED_RUN_SUBPATHS)} are reserved.")
     candidate = Path(normalized_subpath(subpath))
     base = Path(run_dir).resolve()
-    if Path(subpath).is_absolute():
-        raise OpSpecError(f"$run_dir subpath {subpath!r} is absolute; "
-                          f"$run_dir names a directory inside this run.")
     target = (base / candidate).resolve()
     if target != base and base not in target.parents:
         raise OpSpecError(f"$run_dir subpath {subpath!r} resolves outside the "
@@ -380,22 +405,10 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
                                    step_ids, dep_ids, loop_vars, problems,
                                    human_steps)
                 return
-            if "$run_dir" in keys and isinstance(expr["$run_dir"], str):
-                subpath = expr["$run_dir"]
-                if (Path(subpath).is_absolute()
-                        or ".." in Path(subpath).parts):
-                    problems.append(
-                        f"{where} asks $run_dir for {subpath!r}; $run_dir "
-                        f"names a directory inside this run, so the subpath "
-                        f"is relative and never leaves the run directory.")
-                    return
-                reserved = reserved_run_subpath(subpath)
-                if reserved:
-                    problems.append(
-                        f"{where} asks $run_dir for {subpath!r}, which names "
-                        f"the run's {reserved!r}; "
-                        f"{list(RESERVED_RUN_SUBPATHS)} are the runner's own "
-                        f"control entries and no step writes into them.")
+            if "$run_dir" in keys:
+                problem = _literal_run_dir_problem(expr["$run_dir"], where)
+                if problem:
+                    problems.append(problem)
                     return
             for key in ("$path", "$run_dir", "$stem", "$sha256"):
                 if key in keys:
@@ -420,6 +433,39 @@ def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
         for index, item in enumerate(expr):
             _expr_problems(item, f"{where}[{index}]", input_names, step_ids,
                            dep_ids, loop_vars, problems, human_steps)
+
+
+def _literal_run_dir_problem(operand, where):
+    """Why a `$run_dir` operand is refused AT LOAD, or None. Only what the
+    operand's text already settles is checked here — a string, or a
+    `$literal` of one; an expression operand is checked when it is evaluated
+    (`run_dir_path`). An operand that can never evaluate to a string (null,
+    a number, a list, a plain object) is refused here too (0.10.0)."""
+    if isinstance(operand, dict) and frozenset(operand) == frozenset({"$literal"}):
+        operand = operand["$literal"]
+    elif isinstance(operand, dict) and frozenset(operand) in OPERATORS:
+        return None                      # evaluated, then checked
+    if isinstance(operand, dict) and unknown_dollar_keys(operand):
+        return None                      # refused by name by the walk
+    if not isinstance(operand, str):
+        return (f"{where} asks $run_dir for {operand!r}; $run_dir takes a "
+                f"relative subpath string naming a directory inside this "
+                f"run.")
+    if Path(operand).is_absolute() or ".." in Path(operand).parts:
+        return (f"{where} asks $run_dir for {operand!r}; $run_dir names a "
+                f"directory inside this run, so the subpath is relative and "
+                f"never leaves the run directory.")
+    if names_run_root(operand):
+        return (f"{where} asks $run_dir for {operand!r}, which names the run "
+                f"directory itself; $run_dir names a directory inside this "
+                f"run, never the run root that holds the runner's own control "
+                f"entries.")
+    reserved = reserved_run_subpath(operand)
+    if reserved:
+        return (f"{where} asks $run_dir for {operand!r}, which names the "
+                f"run's {reserved!r}; {list(RESERVED_RUN_SUBPATHS)} are the "
+                f"runner's own control entries and no step writes into them.")
+    return None
 
 
 def _path_problems(path, where, input_names, step_ids, dep_ids, loop_vars,

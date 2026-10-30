@@ -1599,3 +1599,13 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   for `terminal_errors` from `error.evidence.envelope`. A cycle started under
   0.9.x is refused on resume by its machinery digest, so no Track mixes the two
   locations.
+- **`$run_dir` never hands a Cog the run root or the run's evidence.** An
+  empty, `.` or null operand — or one that normalises to the run root — named
+  the run directory itself, and with it every control entry; it is refused.
+  `requests`, `envelopes` and `input-request.json` join the reserved set
+  (the run directory's whole layout), and `<file>.` names a reserved file too,
+  because its atomic rewrite goes through `<file>.<pid>.tmp`. A literal
+  operand is checked at load — including `{$literal: ...}` and operands that
+  can never be strings (null, numbers, lists, plain objects) — and an
+  expression operand at evaluation. A spec that wrote into one of these names
+  used to load and now does not.

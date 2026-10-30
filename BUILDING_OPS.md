@@ -838,9 +838,15 @@ a durable Track never sits in a directory whose own entry a power loss could
 lose.
 
 The run's own control entries — `grants/`, `pending/`, `decisions/`,
-`journal/`, `run.lock` and `track.json` — are RESERVED: `$run_dir` refuses
-them (and anything under them) at load, so no step can be handed the
-directory that holds its own authority as an output path. The subpath is
+`journal/`, `requests/`, `envelopes/`, `input-request.json`, `run.lock` and
+`track.json` (and the `<file>.<pid>.tmp` siblings their atomic rewrites use)
+— are RESERVED: `$run_dir` refuses them (and anything under them) at load
+when the operand is a literal and at evaluation otherwise, so no step can be
+handed the directory that holds its own authority, or the run's evidence, as
+an output path. So is the run directory ITSELF: an empty, `.` or null operand
+(or one that normalises to the run root) is refused, because the root holds
+every control entry. A literal operand that can never be a string — null, a
+number, a list, a plain object — is refused at load. The subpath is
 NORMALISED before that check, so `outputs/../grants` is refused however it
 is spelled, and no component of it may be a symlink: an alias inside the run
 is how a step would otherwise be handed the control entries under another
@@ -868,7 +874,8 @@ construct and the phase that adds it — never discovered mid-run:
 | `repeat.mode` that is not `all` or `until-required` | the two modes, by name |
 | a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
 | two write requirements reading different human gates | one gate per writing step |
-| `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `run.lock` or `track.json` | the runner's control entries are reserved |
+| `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `requests`, `envelopes`, `input-request.json`, `run.lock` or `track.json` | the runner's control entries are reserved |
+| `$run_dir` naming the run directory itself (`""`, `.`, null) | `$run_dir` names a directory inside the run |
 | `authority` on a step whose Cog is not `kind: code` | the runner supports authority on code Cogs only |
 | a requirement outside the Cog's declared `reaches` | the Cog does not declare it |
 | a step that names a reaching Cog and requires nothing | a reaching Cog runs only under a grant |

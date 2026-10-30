@@ -365,6 +365,68 @@ class ReviewRegressionTests(unittest.TestCase):
         step["input"] = {"out": {"$run_dir": "../escaped"}}
         self.assertIn("inside this run", one(fx.spec_doc([step])))
 
+    # ------------------------------------------- machinery 0.10.0, $run_dir --
+
+    def run_dir_problems(self, operand):
+        step = fx.cog_step("first")
+        step["input"] = {"out": {"$run_dir": operand}}
+        return one(fx.spec_doc([step]))
+
+    def test_a_literal_run_root_is_refused_at_load(self):
+        """`{$run_dir: ""}` and `"."` used to hand the Cog the run root —
+        and every control entry in it."""
+        # (A literal `out/..` is refused at load as well, by the `..` rule.)
+        for operand in ("", ".", "./", {"$literal": "."}):
+            with self.subTest(operand=operand):
+                self.assertIn("the run directory itself",
+                              self.run_dir_problems(operand))
+
+    def test_a_literal_operand_that_is_not_a_string_is_refused_at_load(self):
+        for operand in (None, 3, True, ["out"], {"dir": "out"},
+                        {"$literal": None}):
+            with self.subTest(operand=operand):
+                self.assertIn("relative subpath string",
+                              self.run_dir_problems(operand))
+
+    def test_every_run_directory_entry_is_reserved_at_load(self):
+        for operand in ("requests", "requests/first", "envelopes",
+                        "./envelopes/first", "input-request.json",
+                        "track.json.123.tmp"):
+            with self.subTest(operand=operand):
+                problems_text = self.run_dir_problems(operand)
+                self.assertIn("control entries", problems_text)
+
+    def test_ordinary_output_directories_still_load(self):
+        for operand in ("out", "requests-copy", "envelope", "track.jsonl",
+                        "out/requests", {"$from": "inputs.note"}):
+            with self.subTest(operand=operand):
+                self.assertEqual(self.run_dir_problems(operand), "")
+
+    def test_the_run_root_is_refused_at_evaluation_and_nothing_is_created(self):
+        """An expression operand is checked when it is evaluated."""
+        before = sorted(self.run_dir.iterdir())
+        for value in ("", ".", "out/..", None):
+            with self.subTest(value=value):
+                ctx = dict(self.ctx, inputs={"dest": value})
+                with self.assertRaises(op_spec.OpSpecError) as caught:
+                    op_spec.evaluate({"$run_dir": {"$from": "inputs.dest",
+                                                   "$default": None}}, ctx)
+                self.assertTrue(any(
+                    "run directory itself" in p or "subpath string" in p
+                    for p in caught.exception.problems))
+        self.assertEqual(sorted(self.run_dir.iterdir()), before)
+
+    def test_every_run_directory_entry_is_reserved_at_evaluation(self):
+        for value in ("requests", "envelopes/first", "input-request.json",
+                      "track.json.99.tmp"):
+            with self.subTest(value=value):
+                ctx = dict(self.ctx, inputs={"dest": value})
+                with self.assertRaises(op_spec.OpSpecError) as caught:
+                    op_spec.evaluate({"$run_dir": {"$from": "inputs.dest"}},
+                                     ctx)
+                self.assertIn("reserved", str(caught.exception))
+        self.assertEqual(list(self.run_dir.iterdir()), [])
+
     # ---------------------------------------------------------- finding 7 --
 
     def test_an_explicit_null_satisfies_a_required_nullable_input(self):
