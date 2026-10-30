@@ -185,6 +185,8 @@ def drive(package, directory, state, phases, decision=None):
             if child['status'] == 'failed':
                 track = read(Path(child['run_dir']) / 'track.json')
                 failed = next((row for row in track['steps'] if row['status'] == 'failed'), None)
+                if track.get('reason'):
+                    state['reason'] = track['reason']  # e.g. outputs that could not be evaluated
                 if failed:
                     state['reason'] = '; '.join((failed.get('gate') or {}).get('reasons') or ['Step failed: ' + failed['id']])
                     envelope = read(failed['envelope']) if failed.get('envelope') else {}

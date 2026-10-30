@@ -1801,6 +1801,132 @@ class UnavailableResultTests(RunnerCase):
             [Path(output["track"])])
 
 
+class EvaluationFailureTests(RunnerCase):
+    """Machinery 0.10.0 (Op Spec core principle 7: an interrupted run still
+    says what was attempted). A mapping that cannot be evaluated at run time
+    used to raise out of the run: the Track stayed `running` with the step
+    `running` and no reason, or `completed-with-problems` with
+    `outputs: null`, while the CLI exited 2 `invalid-input`. It is now a
+    failed step and a failed run, with the reason, and exit 1."""
+
+    def linear(self, second_input, **extra):
+        first = fx.cog_step("first", task="ask")
+        second = fx.cog_step("second", task="summarize", depends_on=["first"])
+        second["input"] = second_input
+        third = fx.cog_step("third", task="report", depends_on=["second"])
+        return fx.spec_doc([first, second, third], **extra)
+
+    def answers(self):
+        return {"ask": fx.envelope(payload={"text": "a"}),
+                "summarize": fx.envelope(payload={"text": "b"}),
+                "report": fx.envelope(payload={"text": "c"}),
+                "classify": fx.envelope(payload={"label": "x"})}
+
+    def assert_failed_at(self, code, output, track, sid, needle):
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertEqual(output["failed_step"], sid)
+        self.assertIn(needle, output["reason"])
+        self.assertEqual(track["status"], "failed")
+        self.assertEqual(track["failed_step"], sid)
+        self.assertIn(needle, track["reason"])
+        self.assertTrue(track["ended_at"])
+        record = self.step(track, sid)
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["gate"]["status"], "fail")
+        self.assertEqual(record["gate"]["policy"], "evaluation")
+        self.assertTrue(any(needle in r for r in record["gate"]["reasons"]))
+        self.assertNotIn("running", [s["status"] for s in track["steps"]])
+        return record
+
+    def test_a_from_path_missing_at_evaluation_fails_the_step(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.missing"}})
+        code, output, track, fake = self.go(doc, answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not available in this run")
+        self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
+                         [("first", "passed"), ("second", "failed"),
+                          ("third", "not-reached")])
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_foreach_items_that_are_not_a_list_fail_the_step(self):
+        step = fx.cog_step("classify", task="classify")
+        step["foreach"] = {"items": {"$from": "inputs.items"}, "as": "item"}
+        step["input"] = {"title": {"$from": "item.title"}}
+        doc = fx.spec_doc([step], inputs=[{"name": "items"}])
+        code, output, track, fake = self.go(
+            doc, request={"items": {"title": "not a list"}},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "classify", "not a list")
+        self.assertEqual(fake.calls, [])
+
+    def test_a_foreach_element_that_cannot_be_built_keeps_earlier_elements(self):
+        step = fx.cog_step("classify", task="classify")
+        step["foreach"] = {"items": {"$from": "inputs.items"}, "as": "item"}
+        step["input"] = {"title": {"$from": "item.title"}}
+        doc = fx.spec_doc([step], inputs=[{"name": "items"}])
+        code, output, track, fake = self.go(
+            doc, request={"items": [{"title": "one"}, {"name": "no title"}]},
+            answers=self.answers())
+        record = self.assert_failed_at(code, output, track, "classify",
+                                       "not available in this run")
+        # The element that ran is still on the record: a resume reuses it.
+        self.assertEqual([e["status"] for e in record["elements"]],
+                         ["passed"])
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_outputs_that_cannot_be_evaluated_fail_the_run(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}},
+                          outputs={"x": {"$from": "steps.third.payload.nope"}})
+        code, output, track, fake = self.go(doc, answers=self.answers())
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertIsNone(output["failed_step"])
+        self.assertIn("outputs could not be evaluated", output["reason"])
+        self.assertEqual(track["status"], "failed")
+        self.assertIsNone(track["failed_step"])
+        self.assertIsNone(track["outputs"])
+        self.assertIn("not available in this run", track["reason"])
+        self.assertEqual([s["status"] for s in track["steps"]],
+                         ["passed", "passed", "passed"])
+
+    def test_resuming_an_evaluation_failure_reruns_only_that_step(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.missing"}})
+        code, output, _, fake = self.go(doc, answers=self.answers())
+        self.assertEqual(code, 1)
+        code, again = op_runner.resume(self.package, output["run_dir"])
+        track = json.loads(Path(again["track"]).read_text())
+        self.assert_failed_at(code, again, track, "second",
+                              "not available in this run")
+        self.assertEqual(len(track["resumes"]), 1)
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_a_completed_run_records_no_reason(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
+        code, _, track, _ = self.go(doc, answers=self.answers())
+        self.assertEqual(code, 0)
+        self.assertIsNone(track["reason"])
+
+    def test_the_cli_exits_one_and_prints_the_reason(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.missing"}})
+        fx.write_package(self.package, doc)
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog(self.answers())
+        real_root, op_runner.ROOT = op_runner.ROOT, self.package
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                code = op_runner.main(["--request", str(path)])
+        finally:
+            op_runner.ROOT = real_root
+        self.assertEqual(code, 1)
+        printed = json.loads(stdout.getvalue())
+        self.assertEqual(printed["status"], "failed")
+        self.assertEqual(printed["failed_step"], "second")
+        self.assertTrue(any("not available in this run" in p
+                            for p in printed["problems"]))
+
+
 class ProcessBoundaryTests(unittest.TestCase):
     """Findings 9 and 10: what comes back from the process itself."""
 

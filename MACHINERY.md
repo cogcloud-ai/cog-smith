@@ -1609,3 +1609,19 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
   can never be strings (null, numbers, lists, plain objects) — and an
   expression operand at evaluation. A spec that wrote into one of these names
   used to load and now does not.
+- **A run that cannot evaluate a mapping leaves a true Track.** A `$from` path
+  missing at evaluation, a `foreach.items` that is not a list, a `$run_dir`
+  operand refused at evaluation, a grant requirement or `outputs` that cannot
+  be evaluated used to raise out of `_execute`: `main` exited 2
+  `invalid-input`, and the Track stayed `running` with the step `running` and
+  no reason (or `completed-with-problems` with `outputs: null`). The step is
+  now recorded `failed` with `gate: {policy: evaluation, status: fail,
+  reasons}`, keeping what it had finished; the later steps `not-reached`; and
+  the run `failed` with a new top-level Track field `reason` (null otherwise).
+  Outputs are evaluated before the run is called complete; a failure there is
+  a failed run with `failed_step: null`. Exit 1, the documented code of a
+  failed run; a resume re-runs the failed step only. Proposals a changes Gate
+  cannot put to a person (no `changes`, duplicate ids, missing or misstated
+  hashes) are a failed human Gate with the reasons, as an unstateable
+  artifact already was — `on_fail` applies and no pending document is
+  written. `op_cycle` reports the Track's `reason` for a failed child.

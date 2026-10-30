@@ -896,6 +896,22 @@ paused for a human. Stdout is one
 JSON object. Exit `1` is not the end of the run: the Track says which step
 stopped it, and `--resume` starts again there.
 
+A mapping that cannot be evaluated once the run has started — a `$from` path
+that is not available and declares no `$default`, a `foreach.items` that is
+not a list, a `$run_dir` operand refused at evaluation, a grant requirement
+whose targets cannot be read, or `outputs` — is a FAILED run, exit `1`, not an
+invalid request (since 0.10.0). The step is recorded `failed` with a Gate of
+`policy: evaluation` carrying the reasons (everything it finished first, such
+as a `foreach`'s earlier elements, stays on its record), the steps after it are
+`not-reached`, and the Track's `reason` says what could not be evaluated. For
+`outputs`, every step keeps its status, `outputs` is null, `failed_step` is
+null and `reason` names the outputs. Stdout carries `failed_step`, `reason` and
+`problems`. Exit `2` stays for what is refused before a run directory exists.
+Proposals a human Gate over changes cannot put to a person — no `changes` list,
+a duplicate id, a missing or misstated hash — are a failed Gate on that step,
+as an artifact the Gate cannot state is: no pending document is written, and
+`on_fail` applies.
+
 ## 8. Changing an Op
 
 Edit `op.yaml`, run `pixi run test`, and check the package. Never edit

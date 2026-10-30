@@ -121,6 +121,28 @@ class AuthorityCase(unittest.TestCase):
     def pending(self, output):
         return json.loads(Path(output["pending"]).read_text())
 
+    def refused_pause(self, answers):
+        """Proposals a human Gate cannot put to a person are a FAILED Gate
+        (machinery 0.10.0): the run fails at the gated step with the reasons
+        on its record, and no pending document is written. Before 0.10.0
+        this raised out of the run and left the Track `running`. Returns
+        the reasons, joined."""
+        code, output, track = self.start(answers=answers)
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertEqual(output["failed_step"], "compose")
+        self.assertEqual(track["status"], "failed")
+        record = self.step(track, "compose")
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["gate"]["policy"], "human")
+        self.assertEqual(record["gate"]["status"], "fail")
+        self.assertEqual(record["gate"]["envelope_status"], "pass")
+        self.assertTrue(record["envelope"])
+        self.assertEqual(self.step(track, "example-writer")["status"],
+                         "not-reached")
+        self.assertFalse(any(Path(output["run_dir"]).rglob("pending")))
+        return "\n".join(record["gate"]["reasons"])
+
     def decide(self, output, verdicts, **overrides):
         pending = self.pending(output)
         doc = fx.decision_doc(pending["run_id"], pending["step"],
@@ -385,6 +407,26 @@ class AuthorityTests(AuthorityCase):
             self.assertIn("control entries",
                           "\n".join(caught.exception.problems), subpath)
 
+    def test_a_requirement_that_cannot_be_evaluated_fails_the_step(self):
+        """Machinery 0.10.0: a grant requirement whose targets cannot be
+        evaluated fails the step BEFORE any grant is issued or Cog invoked,
+        and the Track says so, instead of raising out of the run."""
+        doc = spec_doc()
+        doc["inputs"] = [{"name": "repositories", "required": False}]
+        doc["steps"][0]["input"] = {}
+        code, output, track = self.start(doc=doc, request={})
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["failed_step"], "example-reader")
+        record = self.step(track, "example-reader")
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("not available in this run",
+                      " ".join(record["gate"]["reasons"]))
+        self.assertIsNone(record["grant"])
+        self.assertEqual(track["grants"], [])
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual([s["status"] for s in track["steps"]],
+                         ["failed", "not-reached", "not-reached"])
+
     def test_run_dir_refuses_a_control_directory_at_evaluation_too(self):
         with self.assertRaises(op_spec.OpSpecError) as caught:
             op_spec.run_dir_path("grants", str(self.root))
@@ -514,9 +556,8 @@ class WriteGrantTests(AuthorityCase):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [naked]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("never repaired", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("never repaired", reasons)
 
     def test_a_recorded_change_without_a_target_hash_is_denied(self):
         # The issuance check stands behind the pause check: a Track edited
@@ -603,9 +644,8 @@ class WriteGrantTests(AuthorityCase):
                            fx.envelope(payload={"changes": [
                                fx.change("c-a", target_sha256="yes")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("not a sha256", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("not a sha256", reasons)
 
     def test_a_target_hash_with_a_trailing_newline_refuses_the_pause(self):
         # An internal review, finding 1, reproduced: `re.match` with `$` accepted
@@ -614,9 +654,8 @@ class WriteGrantTests(AuthorityCase):
                            fx.envelope(payload={"changes": [fx.change(
                                "c-a", target_sha256="1" * 64 + "\n")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("not a sha256", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("not a sha256", reasons)
         self.assertIsNone(op_runner.hex64_problem("a" * 64, "content_sha256",
                                                   "change 'c'"))
         self.assertIn("not a sha256", op_runner.hex64_problem(
@@ -732,10 +771,9 @@ class HumanGateTests(AuthorityCase):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"nothing": True}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
+        reasons = self.refused_pause(answers)
         self.assertIn("must carry a `changes` list",
-                      "\n".join(caught.exception.problems))
+                      reasons)
 
     def test_resume_with_a_mismatched_payload_sha256_is_refused(self):
         code, output, _ = self.start()
@@ -1171,10 +1209,9 @@ class PendingAndDecisionTests(AuthorityCase):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [naked]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
+        reasons = self.refused_pause(answers)
         self.assertIn("no content_sha256",
-                      "\n".join(caught.exception.problems))
+                      reasons)
 
     def test_a_placeholder_content_hash_refuses_the_pause(self):
         # An internal review, finding 1, reproduced: a proposal carrying
@@ -1185,9 +1222,7 @@ class PendingAndDecisionTests(AuthorityCase):
                            fx.envelope(payload={"changes": [fx.change(
                                "c-a", content_sha256="placeholder")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        problems = "\n".join(caught.exception.problems)
+        problems = self.refused_pause(answers)
         self.assertIn("never repaired", problems)
         self.assertIn("not a sha256", problems)
         self.assertFalse((self.package / "runs").exists()
@@ -1200,10 +1235,9 @@ class PendingAndDecisionTests(AuthorityCase):
                            fx.envelope(payload={"changes": [fx.change(
                                "c-a", content_sha256="b" * 64)]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
+        reasons = self.refused_pause(answers)
         self.assertIn("its content hashes to",
-                      "\n".join(caught.exception.problems))
+                      reasons)
 
     def test_approval_preserves_the_supplied_digest_and_only_edits_rehash(self):
         # An internal review, finding 1: an approval or a rejection carries the digest
@@ -1275,9 +1309,8 @@ class PendingAndDecisionTests(AuthorityCase):
                                fx.change("c-a"),
                                fx.change("c-a", summary="something else")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("more than once", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("more than once", reasons)
 
     def test_a_decision_without_who_and_when_is_refused(self):
         for field in ("decided_by", "decided_at"):

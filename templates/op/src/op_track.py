@@ -205,6 +205,10 @@ def new_track(spec, run_id, input_request, status="running"):
         # The step a stopping verdict ended the run at — the resume point of
         # a failed run. `None` while the run is live.
         "failed_step": None,
+        # Why a run that could not evaluate a mapping stopped (0.10.0): a
+        # step's request, `foreach.items`, a grant requirement, or the
+        # `outputs`. `None` otherwise; a Gate's reasons stay on its step.
+        "reason": None,
         "steps": [],
     }
 

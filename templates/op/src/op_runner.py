@@ -2635,7 +2635,76 @@ def _paused_output(run_dir, track, sid, pending_path, track_path):
 
 def _execute(spec, track, context, run_dir, package_root, authority, run_id,
              done=None, decisions=None, previous=None, cycle_policy=None):
-    """The step loop, shared by a fresh run and a resume.
+    """The step loop, shared by a fresh run and a resume, with the run's
+    record kept true when a mapping cannot be evaluated (machinery 0.10.0).
+
+    A `$from` path that is not available, a `foreach.items` that is not a
+    list, a `$run_dir` operand refused at evaluation, a grant requirement or
+    an `outputs` mapping that cannot be evaluated: each used to raise out of
+    the loop, leaving the Track `running` with the step `running` and no
+    reason (or `completed-with-problems` with `outputs: null`) while the
+    process exited 2. Now the step is recorded `failed` with the reasons,
+    the steps after it `not-reached`, the run `failed` with a `reason` —
+    or, for `outputs`, the run `failed` with no failed step — and the exit
+    code is 1, the code of a failed run: a run directory and a Track exist,
+    and the Track says what was attempted (Op Spec core principle 7)."""
+    at = {}
+    try:
+        return _execute_steps(spec, track, context, run_dir, package_root,
+                              authority, run_id, done, decisions, previous,
+                              cycle_policy, at)
+    except op_spec.OpSpecError as exc:
+        if not at:
+            raise
+        return _evaluation_failed(spec, track, run_dir, at, exc.problems)
+
+
+def _evaluation_failed(spec, track, run_dir, at, problems):
+    """Record a run that stopped because a mapping could not be evaluated:
+    the step `at` names (or the outputs) and the reasons, durably."""
+    now = op_track.utc_now()
+    if at.get("outputs"):
+        reason = ("the Op's outputs could not be evaluated: "
+                  + " ".join(problems))
+        track["outputs"] = None
+        failed_step = None
+    else:
+        step, position = at["step"], at["position"]
+        sid = step["id"]
+        reason = (f"step {sid!r} could not be evaluated: "
+                  + " ".join(problems))
+        gate = {"policy": "evaluation", "status": "fail",
+                "reasons": list(problems), "decided_at": now, "guards": []}
+        index = at.get("record")
+        if index is not None:
+            # The step was already recorded `running`, with whatever it had
+            # finished (a foreach's earlier elements, a reserved attempt):
+            # that record is kept and told why it stopped.
+            record = track["steps"][index]
+            record["status"] = "failed"
+            record["gate"] = gate
+            del track["steps"][index + 1:]
+        else:
+            track["steps"].append(op_track.step_record(step, "failed",
+                                                       gate=gate))
+        for later in spec.ordered[position + 1:]:
+            track["steps"].append(op_track.step_record(later, "not-reached"))
+        failed_step = sid
+    track["status"] = "failed"
+    track["failed_step"] = failed_step
+    track["reason"] = reason
+    track["ended_at"] = now
+    track_path = op_track.save(track, run_dir)
+    return 1, {"ok": False, "status": "failed", "failed_step": failed_step,
+               "reason": reason, "problems": list(problems),
+               "run_dir": str(run_dir), "track": track_path}
+
+
+def _execute_steps(spec, track, context, run_dir, package_root, authority,
+                   run_id, done, decisions, previous, cycle_policy, at):
+    """The step loop itself. AT names where the loop is — the step and its
+    position, the index of its `running` record once it has one, or
+    `outputs` — so `_execute` can record an evaluation failure there.
 
     `done` holds the records of steps this run already finished — they are
     never re-run. A step recorded `running` (a crash mid-step) is absent
@@ -2650,11 +2719,14 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
     blocked = set()
     track["steps"] = []
     # This attempt has not stopped anywhere yet. `failed_step` names the step
-    # a `stop` ended the run at, so a resume knows where to pick it up again.
+    # a `stop` ended the run at, so a resume knows where to pick it up again,
+    # and `reason` why a run that could not evaluate a mapping stopped.
     track["failed_step"] = None
+    track["reason"] = None
 
     for position, step in enumerate(spec.ordered):
         sid = step["id"]
+        at.clear()
         prior = done.get(sid)
         if prior is not None:
             track["steps"].append(prior)
@@ -2679,6 +2751,10 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             context["steps"][sid] = {"payload": None, "envelope": None}
             op_track.save(track, run_dir)
             continue
+
+        # From here on a mapping that cannot be evaluated is recorded against
+        # THIS step (0.10.0).
+        at.update(step=step, position=position, record=None)
 
         # ---- authority: the grant is issued HERE, immediately before the
         # invocation, and only after every step it depends on has passed.
@@ -2751,6 +2827,7 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
             step, "running", repeat=repeat_spec,
             grant=str(Path(grant_path).resolve()) if grant_path else None,
             journal=str(journal_path) if journal_path else None, **carried))
+        at["record"] = position_in_track
         op_track.save(track, run_dir)
 
         def checkpoint(partial, _at=position_in_track):
@@ -2825,6 +2902,23 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
                     "reasons": artifact_problems + list(gate["reasons"]),
                     "decided_at": op_track.utc_now(), "guards": []}
         if (op_spec.gate_policy(step) == op_spec.HUMAN_GATE_POLICY
+                and gate["status"] != "fail"
+                and artifact is None):
+            # Proposals the Gate cannot put to a person — no `changes` list,
+            # duplicate ids, a missing or misstated hash — are a FAILED Gate
+            # with the reasons named (0.10.0), exactly as an artifact the
+            # Gate cannot state is: the step ran, but produced nothing a
+            # person can decide about. It used to raise out of the run.
+            try:
+                pending_changes(payload, sid)
+            except op_spec.OpSpecError as exc:
+                gate = fields["gate"] = {
+                    "policy": op_spec.HUMAN_GATE_POLICY, "status": "fail",
+                    "decides": op_spec.DECIDES_CHANGES,
+                    "envelope_status": gate["status"],
+                    "reasons": list(exc.problems) + list(gate["reasons"]),
+                    "decided_at": op_track.utc_now(), "guards": []}
+        if (op_spec.gate_policy(step) == op_spec.HUMAN_GATE_POLICY
                 and gate["status"] != "fail"):
             pending, pending_path, _ = write_pending(run_dir, run_id, sid,
                                                      payload, artifact)
@@ -2883,15 +2977,16 @@ def _execute(spec, track, context, run_dir, package_root, authority, run_id,
     problematic = any(s["status"] in ("passed-with-problems", "skipped",
                                       "blocked", "denied")
                       for s in track["steps"])
+    if spec.outputs:
+        # Evaluated BEFORE the run is called complete: outputs that cannot be
+        # stated are a failed run, never a completed one with null outputs
+        # (0.10.0).
+        at.clear()
+        at["outputs"] = True
+        track["outputs"] = op_spec.evaluate(spec.outputs, context)
+        at.clear()
     track["status"] = "completed-with-problems" if problematic else "completed"
     track["ended_at"] = op_track.utc_now()
-    if spec.outputs:
-        try:
-            track["outputs"] = op_spec.evaluate(spec.outputs, context)
-        except op_spec.OpSpecError:
-            track["outputs"] = None      # the Track stays readable and final
-            op_track.save(track, run_dir)
-            raise
     track_path = op_track.save(track, run_dir)
     output = {"ok": True, "status": track["status"],
               "run_dir": str(run_dir), "track": track_path}
