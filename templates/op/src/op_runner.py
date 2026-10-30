@@ -139,8 +139,10 @@ the resume, save → issue the grant, create the journal, record the step
 `running`, save → invoke.
 
 Exit codes: 0 completed (or completed-with-problems, or a planned dry run),
-1 failed, 2 an invalid spec, request or authority document (and a run another
-process holds), 3 paused for a human. Stdout is one JSON object.
+1 failed — including a started run that could not evaluate a mapping, which
+the Track records as a failed step (or failed outputs) with a `reason`
+(0.10.0) — 2 an invalid spec, request or authority document (and a run
+another process holds), 3 paused for a human. Stdout is one JSON object.
 
 A run validates every step's Cog declaration before it creates anything (so
 a refused declaration leaves no run directory and no half-open Track), and a
