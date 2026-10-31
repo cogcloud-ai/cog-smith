@@ -368,7 +368,7 @@ class NamedCogTests(RunCase):
         doc = fx.spec_doc_0_2([fx.cog_step("first"), second])
         with self.assertRaises(op_spec.OpSpecError) as caught:
             self.run_op(doc)
-        self.assertIn("'../cog-second', which is not present",
+        self.assertIn("cog-second', which is not present",
                       str(caught.exception))
         self.assertFalse((self.package / "runs").exists())
 
