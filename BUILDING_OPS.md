@@ -996,7 +996,9 @@ as a `foreach`'s earlier elements, stays on its record), the steps after it are
 `not-reached`, and the Track's `reason` says what could not be evaluated. For
 `outputs`, every step keeps its status, `outputs` is null, `failed_step` is
 null and `reason` names the outputs. Stdout carries `failed_step`, `reason` and
-`problems`. Exit `2` stays for what is refused before a run directory exists.
+`problems`. Exit `2` stays for a refusal before execution or resumption
+proceeds — which may concern a run directory that already exists, as an
+invalid decision or a run another process holds does on `--resume`.
 A `$path` or `$run_dir` value no filesystem can name — an embedded NUL from a
 request, a `~user` with no home under `[0.1]`, a name too long, a symlink
 loop an earlier step left — is an evaluation failure too, under either
