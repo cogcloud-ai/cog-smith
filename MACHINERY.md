@@ -1750,3 +1750,18 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   envelope), and `_attempt` skips the retry only for that type on a step
   that was given `expected_cog_id`; a Cog's own error, whatever its code, is
   retried as before.
+- **A present key is typed (`[0.2]`).** `validate` read several optional
+  keys with `doc.get(key) or default` or an `is None` test, so a `[0.2]`
+  document the schema refuses still loaded: `inputs: {}` or `null` as no
+  inputs, `outputs: []` as none, `track: null`, `authority: null`,
+  `authority: {ttl_minutes: null}` as the default 60, and a step's
+  `depends_on`, `foreach`, `gate`, `authority` or `repeat` of `null` as
+  absent, and `gate.guards` of `false`, `null`, `0`, `""` or `{}` as none.
+  For `[0.2]` each check now notices whether the key is present, and a
+  present key of the wrong type is refused with the same finding a wrongly
+  typed truthy value always got (`guards` names rule `no-guards`). These
+  are every gap a sweep of `op-manifest-0.2.schema.json` found: each key it
+  types, given each JSON type it refuses, over the corpus's conforming
+  cases. `[0.1]` is unchanged. Under both profiles a list or object among a
+  step's `depends_on` beside `authority` is refused by name rather than
+  raising `TypeError` from validation.

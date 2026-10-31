@@ -555,7 +555,13 @@ error. A `[0.2]` document is held to the profile's tightenings at LOAD:
   `repositories`, and an `action` is `read` or `write`;
 - an object holding an operator key has exactly that operator's keys, and a
   literal `$path` never begins with `~`;
-- a cycle Op declares no top-level `authority`, not even `{}`.
+- a cycle Op declares no top-level `authority`, not even `{}`;
+- a key that is present has the type the profile's schema gives it, so
+  `inputs: {}`, `outputs: []`, `track: null`, `authority: null`,
+  `authority: {ttl_minutes: null}` (which `[0.1]` reads as the default 60),
+  a step's `depends_on`, `foreach`, `gate`, `authority` or `repeat` of
+  `null`, and `gate: {guards: false}` are refused, where `[0.1]` reads each
+  as the key's absence.
 
 And at RUN time: every named Cog must be present when the run starts, at the
 version the step states (a validator, `op check`, still warns on a Cog that is

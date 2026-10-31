@@ -161,6 +161,113 @@ class TypeTighteningTests(unittest.TestCase):
         self.assertEqual(problems(legacy), [])
 
 
+class PresentKeyTypeTests(unittest.TestCase):
+    """[0.2] (0.11.0, rule present-key-typed): a key that is PRESENT has the
+    type op-manifest-0.2.schema.json gives it. [0.1] read a falsy value —
+    `inputs: {}`, `outputs: []`, `track: null`, `ttl_minutes: null` (then
+    60), `gate: {guards: false}` — as the key's absence; it keeps doing so.
+
+    Each row is one key the schema types, the wrong-typed values the
+    reference used to accept there, and text the refusal contains. Together
+    they are every type gap a sweep of the schema found."""
+
+    @staticmethod
+    def top(key):
+        def put(doc, value):
+            doc[key] = value
+        return put
+
+    @staticmethod
+    def on_step(key):
+        def put(doc, value):
+            doc["steps"][0][key] = value
+        return put
+
+    @staticmethod
+    def ttl(doc, value):
+        doc["authority"] = {"ttl_minutes": value}
+
+    @staticmethod
+    def guards(doc, value):
+        doc["steps"][0]["gate"]["guards"] = value
+
+    def rows(self):
+        falsy = (None, {}, [], "", 0, False)
+        return (
+            ("inputs", self.top("inputs"), (None, {}, "", 0, False),
+             "inputs must be an ordered list"),
+            ("outputs", self.top("outputs"), (None, [], "", 0, False),
+             "outputs must be an object"),
+            ("track", self.top("track"), (None,), "track must be an object"),
+            ("authority", self.top("authority"), (None,),
+             "authority must be an object"),
+            ("authority.ttl_minutes", self.ttl, (None,),
+             "positive number of minutes"),
+            ("depends_on", self.on_step("depends_on"), (None,),
+             "depends_on is a list of step ids"),
+            ("foreach", self.on_step("foreach"), (None,),
+             "foreach must be an object"),
+            ("gate", self.on_step("gate"), (None,),
+             "gate must be an object"),
+            ("gate.guards", self.guards, tuple(v for v in falsy if v != []),
+             "rule no-guards"),
+            ("authority (step)", self.on_step("authority"), (None,),
+             "authority must be an object"),
+            ("repeat", self.on_step("repeat"), (None,),
+             "a repeat is an object"),
+        )
+
+    def test_0_2_refuses_a_present_key_of_the_wrong_type(self):
+        for where, put, values, needle in self.rows():
+            for value in values:
+                with self.subTest(key=where, value=value):
+                    doc = fx.spec_doc_0_2(inputs=[])
+                    doc["steps"][0]["input"] = {"note": "literal"}
+                    put(doc, value)
+                    self.assertIn(needle, one(doc))
+
+    def test_0_1_keeps_reading_them_as_absent(self):
+        for where, put, values, _ in self.rows():
+            for value in values:
+                with self.subTest(key=where, value=value):
+                    doc = fx.spec_doc(inputs=[])
+                    doc["steps"][0]["input"] = {"note": "literal"}
+                    put(doc, value)
+                    self.assertEqual(problems(doc), [])
+        legacy = fx.spec_doc(authority={"ttl_minutes": None})
+        self.assertEqual(op_spec.OpSpec(legacy).ttl_minutes, 60)
+
+    def test_0_2_accepts_the_empty_values_the_schema_allows(self):
+        doc = fx.spec_doc_0_2(inputs=[], outputs={}, track={},
+                              authority={})
+        doc["steps"][0]["input"] = {"note": "literal"}
+        doc["steps"][0]["depends_on"] = []
+        doc["steps"][0]["gate"] = {}
+        self.assertEqual(problems(doc), [])
+        doc["steps"][0]["gate"] = {"guards": []}
+        self.assertEqual(problems(doc), [])
+
+    def test_a_cycle_replacement_cannot_null_depends_on(self):
+        doc = fx.as_0_2(cycle_doc())
+        doc["cycle"]["transitions"]["revise"]["replace"] = {
+            "draft": {"depends_on": None}}
+        self.assertIn("depends_on is a list of step ids", one(doc))
+
+    def test_a_list_among_depends_on_is_refused_not_a_crash(self):
+        """Either profile: an unhashable entry beside `authority` used to
+        raise TypeError out of validation."""
+        for build in (fx.spec_doc, fx.spec_doc_0_2):
+            with self.subTest(build=build.__name__):
+                first = fx.cog_step("first")
+                second = fx.cog_step("second", depends_on=["first"])
+                second["depends_on"].append(["first"])
+                second["authority"] = {"requires": [
+                    {"resource": "github", "action": "read",
+                     "targets": ["x"]}]}
+                self.assertIn("which is not a step id",
+                              one(build([first, second])))
+
+
 class CogVersionTests(unittest.TestCase):
     def test_0_2_refuses_a_step_whose_cog_states_no_version(self):
         for missing in (None, ""):

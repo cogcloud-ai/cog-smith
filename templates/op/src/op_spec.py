@@ -693,13 +693,15 @@ def gate_artifact(step):
     return (step.get("gate") or {}).get("artifact")
 
 
-def _gate_problems(step, sid, problems):
+def _gate_problems(step, sid, problems, strict=False):
     """Every problem with one step's `gate:` block. `decides` and
     `artifact` belong to a human Gate (0.7.0): an artifact Gate DECLARES the
     artifact it asks about, as a closed mapping over `kind`, `digests`, and
-    the optional `id`, `summary` and `detail`; a changes Gate declares none."""
+    the optional `id`, `summary` and `detail`; a changes Gate declares none.
+    STRICT is a `[0.2]` document (0.11.0): a `gate:` that is present is an
+    object, and `guards`, when present, a list (accepted only empty)."""
     gate = step.get("gate")
-    if gate is None:
+    if gate is None and not (strict and "gate" in step):
         return
     if not isinstance(gate, dict):
         problems.append(f"Op step {sid!r}'s gate must be an object "
@@ -714,7 +716,12 @@ def _gate_problems(step, sid, problems):
         problems.append(f"Op step {sid!r} declares gate.policy "
                         f"{policy!r}; the Gate policies are "
                         f"{list(GATE_POLICIES)}.")
-    if gate.get("guards"):
+    if strict and "guards" in gate and not isinstance(gate["guards"], list):
+        # [0.1] read a falsy `guards` (false, null, {}) as none at all.
+        problems.append(f"Op step {sid!r} declares gate.guards "
+                        f"{gate['guards']!r}; gate.guards is deprecated and "
+                        f"accepted only as an empty list (rule no-guards).")
+    elif gate.get("guards"):
         problems.append(f"Op step {sid!r} declares gate.guards, "
                         f"which are not in the runner subset; "
                         f"Guards are system-side verifiers a "
@@ -795,15 +802,16 @@ def repeat_spec(step):
     return {"count": count, "require": require, "mode": mode}
 
 
-def _repeat_problems(step, sid, problems):
+def _repeat_problems(step, sid, problems, strict=False):
     """Every problem with one step's `repeat:` block.
 
     Repetition is for steps that only READ and only propose: a step that
     carries `authority`, or whose Gate is a human one, is refused here, and a
     step whose COG declares `reaches` is refused by `cog_step_findings`,
-    where the manifest is readable."""
+    where the manifest is readable. STRICT is a `[0.2]` document (0.11.0):
+    `repeat: null` is a malformed declaration, not a step that runs once."""
     declared = step.get("repeat")
-    if declared is None:
+    if declared is None and not (strict and "repeat" in step):
         return
     if not isinstance(declared, dict):
         problems.append(f"Op step {sid!r} declares repeat {declared!r}; a "
@@ -910,7 +918,8 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
     (0.11.0): `repositories` is refused, and an action is `read` or
     `write`."""
     authority = step.get("authority")
-    if authority is None:
+    if authority is None and not (strict and "authority" in step):
+        # [0.2] (0.11.0): `authority: null` is present, and refused below.
         return
     if not isinstance(authority, dict):
         problems.append(f"Op step {sid!r}'s authority must be an object with "
@@ -937,7 +946,9 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
             f"Op step {sid!r} declares authority and on_fail: retry-once; a "
             f"step that reaches outside the run is never re-invoked on a "
             f"failure — it recovers by resume and journal reconciliation.")
-    direct = set(_deps(step))
+    # Only the string entries: a list or object among them is refused by
+    # `validate`, and is not hashable.
+    direct = {dep for dep in _deps(step) if isinstance(dep, str)}
     gates = set()
     for index, requirement in enumerate(declared):
         where = f"Op step {sid!r} authority.requires[{index}]"
@@ -1197,6 +1208,11 @@ def validate(doc):
                                 f"{field!r}.")
 
     inputs = doc.get("inputs") or []
+    if strict and "inputs" in doc:
+        # [0.2] (0.11.0): a key that is present has its type. `inputs: {}`,
+        # `null` or `""` used to read as no inputs at all (rule
+        # present-key-typed); the same holds for every optional key below.
+        inputs = doc["inputs"]
     input_names = set()
     if not isinstance(inputs, list):
         problems.append("the Op spec's inputs must be an ordered list of "
@@ -1220,7 +1236,7 @@ def validate(doc):
                                             declared["name"]))
 
     authority = doc.get("authority")
-    if authority is not None:
+    if authority is not None or (strict and "authority" in doc):
         if not isinstance(authority, dict):
             problems.append("the Op spec's authority must be an object with "
                             "ttl_minutes.")
@@ -1231,7 +1247,9 @@ def validate(doc):
                                 f"authority:; the authority vocabulary is "
                                 f"closed.")
             ttl = authority.get("ttl_minutes")
-            if ttl is not None and (isinstance(ttl, bool)
+            # [0.2]: `ttl_minutes: null` is refused, never the default 60.
+            if (ttl is not None or (strict and "ttl_minutes" in authority)) \
+                    and (isinstance(ttl, bool)
                                     or not isinstance(ttl, (int, float))
                                     or ttl <= 0):
                 problems.append(f"the Op spec declares authority.ttl_minutes "
@@ -1239,7 +1257,7 @@ def validate(doc):
                                 f"number of minutes.")
 
     track = doc.get("track")
-    if track is not None:
+    if track is not None or (strict and "track" in doc):
         if not isinstance(track, dict):
             problems.append("the Op spec's track must be an object with a "
                             "records list.")
@@ -1290,7 +1308,8 @@ def validate(doc):
             problems.append(f"unknown key {key!r} on Op step {sid!r}; the step "
                             f"vocabulary is closed.")
         declared_deps = step.get("depends_on")
-        if declared_deps is not None and not isinstance(declared_deps, list):
+        if (declared_deps is not None or (strict and "depends_on" in step)) \
+                and not isinstance(declared_deps, list):
             problems.append(f"Op step {sid!r} declares depends_on "
                             f"{declared_deps!r}; depends_on is a list of step "
                             f"ids.")
@@ -1328,12 +1347,12 @@ def validate(doc):
                                     f"{cog[field]!r}; cog.{field} is a "
                                     f"string.")
 
-        _gate_problems(step, sid, problems)
+        _gate_problems(step, sid, problems, strict=strict)
 
         _authority_problems(step, sid, step_ids, human_gate_steps(steps),
                             problems, artifact_gate_steps(steps),
                             strict=strict)
-        _repeat_problems(step, sid, problems)
+        _repeat_problems(step, sid, problems, strict=strict)
 
         on_fail = step.get("on_fail", "stop")
         if on_fail not in ON_FAIL:
@@ -1354,7 +1373,7 @@ def validate(doc):
                             f"step's payload is the list of its element "
                             f"payloads. Gate a later step that gathers the "
                             f"proposals instead.")
-        if foreach is not None:
+        if foreach is not None or (strict and "foreach" in step):
             if not isinstance(foreach, dict):
                 problems.append(f"Op step {sid!r}'s foreach must be an object "
                                 f"with items and as.")
@@ -1432,6 +1451,8 @@ def validate(doc):
                         human_steps, strict)
 
     outputs = doc.get("outputs") or {}
+    if strict and "outputs" in doc:
+        outputs = doc["outputs"]        # [0.2]: `outputs: []` is refused
     if not isinstance(outputs, dict):
         problems.append("the Op spec's outputs must be an object of mapping "
                         "expressions.")
