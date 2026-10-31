@@ -398,6 +398,16 @@ class SharedRulesTests(unittest.TestCase):
                     step["input"] = {"out": {"$run_dir": operand}}
                     self.assertTrue(problems(build([step])))
 
+    def test_reserved_entries_compare_caselessly_in_both_profiles(self):
+        """Review round 2, finding 1: it closes a safety hole, and no
+        published Op names such a directory, so `[0.1]` gets it too."""
+        for operand in ("Requests", "GRANTS/x", "Track.json.1.tmp"):
+            for build in (fx.spec_doc, fx.spec_doc_0_2):
+                with self.subTest(operand=operand, build=build.__name__):
+                    step = fx.cog_step("first")
+                    step["input"] = {"out": {"$run_dir": operand}}
+                    self.assertIn("control entries", one(build([step])))
+
     def test_foreach_with_a_human_gate_over_changes(self):
         for build in (fx.spec_doc, fx.spec_doc_0_2):
             with self.subTest(build=build.__name__):
@@ -788,6 +798,34 @@ class PathHomeAtRunTimeTests(RunCase):
         self.assertEqual(self.fake.calls[0]["request"]["source"],
                          str((self.root / "texts.json").resolve()))
 
+
+
+class ReservedCaseAtRunTimeTests(RunCase):
+    """Review round 2, finding 1, as reproduced: a step handed `Requests` on
+    a case-folding filesystem got the runner's real `requests` directory,
+    the request files in it included."""
+
+    def doc(self, build):
+        first = fx.cog_step("first")
+        second = fx.cog_step("second", depends_on=["first"])
+        second["cog"] = dict(first["cog"])
+        second["input"] = {"out": {"$run_dir": {"$from": "inputs.note"}}}
+        return build([first, second])
+
+    def test_a_computed_alias_fails_the_step_in_both_profiles(self):
+        for build in (fx.spec_doc, fx.spec_doc_0_2):
+            with self.subTest(build=build.__name__):
+                code, output = self.run_op(self.doc(build),
+                                           request={"note": "Requests"})
+                self.assertEqual(code, 1, output)
+                self.assertEqual(output["failed_step"], "second")
+                self.assertIn("names the run's 'requests'", output["reason"])
+                self.assertEqual([c["task"] for c in self.fake.calls],
+                                 ["ask"])
+                run_dir = Path(output["run_dir"])
+                self.assertEqual(
+                    sorted(p.name for p in (run_dir / "requests").iterdir()),
+                    ["first.json"])
 
 
 class ForeachArtifactRunTests(RunCase):

@@ -7,6 +7,7 @@ reason — never discovered mid-run.
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import op_fixtures as fx
 from op_fixtures import op_spec
@@ -455,6 +456,77 @@ class ReviewRegressionTests(unittest.TestCase):
                                      ctx)
                 self.assertIn("reserved", str(caught.exception))
         self.assertEqual(list(self.run_dir.iterdir()), [])
+
+    # ------------------------------------- machinery 0.11.0, any spelling --
+
+    #: Spellings of reserved entries a case-folding filesystem (APFS, NTFS)
+    #: opens as the entry itself, and a canonical equivalent (a Kelvin sign).
+    CASE_ALIASES = ("Requests", "GRANTS", "Envelopes/first", "Pending/x",
+                    "Track.json", "TRACK.JSON.99.tmp", "Input-Request.json",
+                    "Run.Lock", "trac\u212a.json")
+
+    def test_a_reserved_entry_in_another_case_is_refused_at_load(self):
+        """Review round 2, finding 1: names compared case-sensitively let
+        `$run_dir: Requests` hand a Cog the runner's `requests` on this
+        Mac. They compare caselessly, so the verdict is the same on every
+        filesystem."""
+        for operand in self.CASE_ALIASES:
+            with self.subTest(operand=operand):
+                self.assertIn("control entries",
+                              self.run_dir_problems(operand))
+
+    def test_a_reserved_entry_in_another_case_is_refused_at_evaluation(self):
+        (self.run_dir / "requests").mkdir()
+        (self.run_dir / "requests" / "first.json").write_text("{}")
+        for value in self.CASE_ALIASES:
+            with self.subTest(value=value):
+                ctx = dict(self.ctx, inputs={"dest": value})
+                with self.assertRaises(op_spec.OpSpecError) as caught:
+                    op_spec.evaluate({"$run_dir": {"$from": "inputs.dest"}},
+                                     ctx)
+                self.assertIn("reserved", str(caught.exception))
+        self.assertEqual([p.name for p in self.run_dir.iterdir()],
+                         ["requests"])
+        self.assertEqual([p.name for p in
+                          (self.run_dir / "requests").iterdir()],
+                         ["first.json"])
+
+    def test_names_that_only_resemble_a_reserved_entry_still_load(self):
+        for operand in ("Requests-copy", "out/Requests", "Track.jsonl",
+                        "GRANTS_archive"):
+            with self.subTest(operand=operand):
+                self.assertEqual(self.run_dir_problems(operand), "")
+
+    def test_an_existing_alias_of_a_control_entry_is_refused(self):
+        """What the name rule cannot list — here a hard link to the Track —
+        is refused by what it IS, before anything is created."""
+        (self.run_dir / "track.json").write_text("{}")
+        (self.run_dir / "evidence").hardlink_to(self.run_dir / "track.json")
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.evaluate({"$run_dir": "evidence/out"}, self.ctx)
+        self.assertIn("reaches the run's 'track.json' under another name",
+                      str(caught.exception))
+        self.assertEqual(sorted(p.name for p in self.run_dir.iterdir()),
+                         ["evidence", "track.json"])
+
+    def test_an_existing_alias_of_the_run_root_is_refused(self):
+        """A directory that IS the run root holds every control entry. No
+        portable call makes one without a link, so the identity is faked."""
+        (self.run_dir / "mirror").mkdir()
+        root = self.run_dir.resolve()
+        real = op_spec.reserved_identities
+
+        def identities(run_dir):
+            found = real(run_dir)
+            info = (root / "mirror").stat()
+            found[(info.st_dev, info.st_ino)] = "."
+            return found
+        with mock.patch.object(op_spec, "reserved_identities", identities), \
+                self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.evaluate({"$run_dir": "mirror/out"}, self.ctx)
+        self.assertIn("run directory itself under another name",
+                      str(caught.exception))
+        self.assertFalse((self.run_dir / "mirror" / "out").exists())
 
     # ---------------------------------------------------------- finding 7 --
 

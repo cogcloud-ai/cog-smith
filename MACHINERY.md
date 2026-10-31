@@ -1668,7 +1668,8 @@ up by re-copying. A run started under 0.9.x is resumed by its own runtime.
 
 A MINOR bump: the machinery runs the published execution profile
 `openteams/op-manifest [0.2]` beside `[0.1]`. A document's `schema` picks the
-rules, and a `[0.1]` document loads and runs exactly as under 0.10.0. Every
+rules, and a `[0.1]` document loads and runs exactly as under 0.10.0,
+except where a fix below closes a safety hole both profiles share. Every
 master's hash changes (`op_spec.py`, `op_runner.py`); Op packages pick the
 change up by re-copying. `op_spec.SCHEMA_STRING` keeps meaning `[0.1]` for
 callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
@@ -1785,3 +1786,19 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   included, and any `$run_dir` or `$path` (which read a run or request
   directory), is refused (rule `cycle-limits-read-inputs`). `[0.1]` keeps
   loading them: there `{$from: run.dir, $default: 2}` takes its default.
+- **Reserved entries compare caselessly, and by identity.**
+  `reserved_run_subpath` compared a `$run_dir` subpath's first component
+  with the control entries case-sensitively, so on a filesystem that folds
+  case (APFS, NTFS) a step handed `Requests` got the runner's real
+  `requests/`, its request files included, and `GRANTS` or `ENVELOPES`
+  could overwrite control documents. The component is now compared under
+  Unicode canonical caseless matching (`caseless`: NFD, case folding, NFD),
+  at load and at evaluation, `<file>.<pid>.tmp` included, so the verdict
+  does not depend on the filesystem. `run_dir_path` also refuses an
+  existing component that is the run directory or a control entry by
+  device and inode (`reserved_identities`), before anything is created:
+  that catches an alias no name rule lists, such as a hard link to the
+  Track or a filesystem's compatibility folding. Links were already
+  refused. This closes a safety hole that applies equally to both
+  profiles, and no published Op names a directory these rules newly
+  refuse, so it applies to `[0.1]` too.

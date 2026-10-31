@@ -21,7 +21,10 @@ present key of the type the profile's schema gives it, no `foreach` artifact
 Gate that reads its loop variable, and cycle limits that read inputs only. At
 run time it also requires the named Cogs to be present at their stated
 versions and every envelope to name the step's Cog, and a proposed change
-names what it changes as `target`. A `[0.1]` document keeps the 0.10.0 behaviour.
+names what it changes as `target`. A `[0.1]` document keeps the 0.10.0
+behaviour, except for the safety fixes both profiles share: a reserved
+`$run_dir` entry is refused in any case, and a path no filesystem can name
+fails the step.
 """
 from __future__ import annotations
 
@@ -31,6 +34,8 @@ import errno
 import json
 import os
 import re
+import stat
+import unicodedata
 from pathlib import Path
 
 import yaml
@@ -293,17 +298,56 @@ def normalized_subpath(subpath):
     return os.path.normpath(str(subpath or "."))
 
 
+def caseless(name):
+    """NAME as a reserved entry is compared (0.11.0): Unicode canonical
+    caseless matching (D145) — NFD, full case folding, NFD again.
+
+    A filesystem that folds case (APFS and NTFS by default) opens the
+    runner's `requests` for a step handed `Requests`, so a case-sensitive
+    comparison let `$run_dir: Requests` — or `GRANTS`, or `Track.json.1.tmp`
+    — give a Cog the very control entries the rule reserves. Folding here
+    makes the verdict the same on every filesystem, whether or not it folds:
+    the reserved names are lowercase ASCII, so each is its own caseless form,
+    and a spelling such as `trac\u212a.json` (a Kelvin sign, which folds to
+    `k`) is caught too."""
+    return unicodedata.normalize(
+        "NFD", unicodedata.normalize("NFD", str(name)).casefold())
+
+
 def reserved_run_subpath(subpath):
     """The control entry SUBPATH names or lives under, or None. The subpath
-    is NORMALISED first, so no spelling of a reserved name gets through."""
+    is NORMALISED first, and its first component compared CASELESSLY
+    (`caseless`, 0.11.0), so no spelling of a reserved name gets through —
+    and everything under one is reserved with it."""
     normalized = normalized_subpath(subpath)
     parts = [p for p in Path(normalized).parts if p not in (".", "/")]
-    if parts and parts[0] in RESERVED_RUN_SUBPATHS:
-        return parts[0]
+    if not parts:
+        return None
+    first = caseless(parts[0])
+    if first in RESERVED_RUN_SUBPATHS:
+        return first
     for name in RESERVED_RUN_FILES:
-        if parts and parts[0].startswith(name + "."):
+        if first.startswith(name + "."):
             return name
     return None
+
+
+def reserved_identities(run_dir):
+    """{(st_dev, st_ino): name} for the run directory and each control entry
+    present in it (0.11.0). What `run_dir_path` compares an existing
+    component with: a filesystem may alias an entry under a spelling no
+    rule lists — Unicode compatibility folding (ZFS `normalization=formKC`),
+    a hard link to a control file — and the IDENTITY of the entry is what a
+    Cog would be handed. The run directory itself is listed because a
+    directory that is the run root holds every entry."""
+    found = {}
+    for name in (".",) + RESERVED_RUN_SUBPATHS:
+        try:
+            info = os.lstat(Path(run_dir) / name)
+        except OSError:
+            continue                     # not created yet: the name rule holds
+        found[(info.st_dev, info.st_ino)] = name
+    return found
 
 
 def names_run_root(subpath):
@@ -354,15 +398,35 @@ def run_dir_path(subpath, run_dir):
                           f"this run.")
     # No component may be a link, even one pointing back inside the run: an
     # alias is how a step would be handed the runner's own control entries
-    # under another name.
+    # under another name. Nor may an existing component BE one of them, or
+    # the run root, under a name the caseless rule does not list (0.11.0):
+    # with links refused, only the filesystem itself can alias an entry
+    # (`reserved_identities`), and comparing what each component IS closes
+    # that whatever the filesystem folds.
+    identities = reserved_identities(base)
     current = base
     for part in candidate.parts:
         current = current / part
-        if current.is_symlink():
+        try:
+            info = os.lstat(current)
+        except (FileNotFoundError, NotADirectoryError):
+            break                        # nothing exists below here
+        if stat.S_ISLNK(info.st_mode):
             raise OpSpecError(
                 f"$run_dir subpath {subpath!r} passes through {part!r}, "
                 f"which is a symlink; $run_dir names a real directory "
                 f"inside this run.")
+        alias = identities.get((info.st_dev, info.st_ino))
+        if alias == ".":
+            raise OpSpecError(
+                f"$run_dir subpath {subpath!r} reaches the run directory "
+                f"itself under another name, and the runner owns it; "
+                f"$run_dir names a directory inside this run.")
+        if alias:
+            raise OpSpecError(
+                f"$run_dir subpath {subpath!r} reaches the run's {alias!r} "
+                f"under another name, and the runner owns it; "
+                f"{list(RESERVED_RUN_SUBPATHS)} are reserved.")
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:

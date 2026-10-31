@@ -927,9 +927,14 @@ an output path. So is the run directory ITSELF: an empty, `.` or null operand
 every control entry. A literal operand that can never be a string — null, a
 number, a list, a plain object — is refused at load. The subpath is
 NORMALISED before that check, so `outputs/../grants` is refused however it
-is spelled, and no component of it may be a symlink: an alias inside the run
-is how a step would otherwise be handed the control entries under another
-name. The runner's own writes hold to the same rule — every control file
+is spelled, and its first component is compared CASELESSLY (0.11.0, both
+profiles): a filesystem that folds case opens `requests/` for `Requests`, so
+`Requests`, `GRANTS` and `Track.json.1.tmp` are refused on every machine,
+whether or not its filesystem folds. No component of it may be a symlink: an
+alias inside the run is how a step would otherwise be handed the control
+entries under another name. Nor may an existing component BE the run
+directory or a control entry by identity (device and inode), which catches
+an alias the name rule cannot list, such as a hard link to the Track. The runner's own writes hold to the same rule — every control file
 must resolve inside the run directory, reached through no link at all.
 
 ## 7. Refused by name
@@ -953,7 +958,7 @@ construct and the reason — never discovered mid-run:
 | `repeat.mode` that is not `all` or `until-required` | the two modes, by name |
 | a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
 | two write requirements reading different human gates | one gate per writing step |
-| `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `requests`, `envelopes`, `input-request.json`, `run.lock` or `track.json` | the runner's control entries are reserved |
+| `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `requests`, `envelopes`, `input-request.json`, `run.lock` or `track.json`, in any case | the runner's control entries are reserved |
 | `$run_dir` naming the run directory itself (`""`, `.`, null) | `$run_dir` names a directory inside the run |
 | a `foreach` step with a human Gate over changes | the Gate reads one `changes` list; a foreach payload is a list of element payloads |
 | a `[0.2]` `foreach` step whose human artifact Gate reads the loop variable | each element has its own envelope Gate, but the artifact Gate is one decision over the whole step, after the loop (rule `artifact-not-per-element`) |
