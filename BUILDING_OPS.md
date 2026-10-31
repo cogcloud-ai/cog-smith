@@ -979,6 +979,11 @@ as a `foreach`'s earlier elements, stays on its record), the steps after it are
 `outputs`, every step keeps its status, `outputs` is null, `failed_step` is
 null and `reason` names the outputs. Stdout carries `failed_step`, `reason` and
 `problems`. Exit `2` stays for what is refused before a run directory exists.
+A `$path` or `$run_dir` value no filesystem can name — an embedded NUL from a
+request, a `~user` with no home under `[0.1]`, a name too long — is an
+evaluation failure too, under either profile (0.11.0); an I/O error that is
+the machine's, such as a full disk, is an interruption and leaves the run
+`running` for `--resume`, as a crash does.
 Proposals a human Gate over changes cannot put to a person — no `changes` list,
 a duplicate id, a missing or misstated hash — are a failed Gate on that step,
 as an artifact the Gate cannot state is: no pending document is written, and

@@ -10,6 +10,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import op_fixtures as fx
@@ -1889,6 +1890,74 @@ class EvaluationFailureTests(RunnerCase):
         self.assertIn("not available in this run", track["reason"])
         self.assertEqual([s["status"] for s in track["steps"]],
                          ["passed", "passed", "passed"])
+
+    # ---- machinery 0.11.0: a value no filesystem can name ---------------
+
+    def nul_doc(self, second_input, **extra):
+        doc = self.linear(second_input, **extra)
+        doc["inputs"] = [{"name": "note"}, {"name": "source"}]
+        return doc
+
+    def test_a_path_with_an_embedded_nul_fails_the_step(self):
+        """A request is valid JSON with "\\u0000" in a string, and `$path`
+        resolving it raised ValueError out of the run: exit 2, with the run
+        and the step left `running`. It is an evaluation failure."""
+        doc = self.nul_doc({"source": {"$path": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "texts\u0000.json"},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not a path this machine can name")
+        self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
+                         [("first", "passed"), ("second", "failed"),
+                          ("third", "not-reached")])
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_a_run_dir_with_an_embedded_nul_fails_the_step(self):
+        doc = self.nul_doc({"out": {"$run_dir": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "out\u0000put"},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not a path this machine can name")
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_outputs_with_an_embedded_nul_path_fail_the_run(self):
+        doc = self.nul_doc({"text": {"$from": "steps.first.payload.text"}},
+                           outputs={"file": {"$path": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "a\u0000b"},
+            answers=self.answers())
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertIsNone(output["failed_step"])
+        self.assertIn("outputs could not be evaluated", output["reason"])
+        self.assertIn("not a path this machine can name", track["reason"])
+        self.assertEqual(track["status"], "failed")
+        self.assertIsNone(track["outputs"])
+        self.assertEqual([s["status"] for s in track["steps"]],
+                         ["passed", "passed", "passed"])
+
+    def test_a_full_disk_under_run_dir_is_still_an_interruption(self):
+        """Only a NAME the filesystem refuses is the operand's fault. An
+        OSError that is the machine's — a full disk — still raises, leaving
+        the `running` Track a resume picks up, as a crash does."""
+        import errno as errno_codes
+        doc = self.nul_doc({"out": {"$run_dir": "work"}})
+        real_mkdir = Path.mkdir
+
+        def full(path, *args, **kwargs):
+            if path.name == "work":
+                raise OSError(errno_codes.ENOSPC, "No space left on device")
+            return real_mkdir(path, *args, **kwargs)
+        with mock.patch.object(Path, "mkdir", full), \
+                self.assertRaises(OSError):
+            self.go(doc, request={"note": "hi", "source": "x"},
+                    answers=self.answers())
+        track = json.loads(next((self.package / "runs").glob(
+            "*/track.json")).read_text())
+        self.assertEqual(track["status"], "running")
+        self.assertEqual(self.step(track, "second")["status"], "running")
 
     def test_resuming_an_evaluation_failure_reruns_only_that_step(self):
         doc = self.linear({"text": {"$from": "steps.first.payload.missing"}})

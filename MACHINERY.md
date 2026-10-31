@@ -1722,3 +1722,17 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   it. `drive` now recovers `paused` from the paused child before invoking
   anything, so the refusal leaves a true state: it is raised (exit 2, as for
   a single run), and the cycle stays `paused` for a corrected decision.
+- **A path no filesystem can name is an evaluation failure.** The
+  evaluation-failure handler of 0.10.0 catches `OpSpecError`, and resolving
+  a `$path` that held an embedded NUL (valid JSON, `"\u0000"`) raised
+  `ValueError`: the CLI exited 2 with the run and the step left `running`.
+  `evaluate` now turns the `ValueError`, `OSError` and `RuntimeError` (a
+  `~user` with no home) of building and resolving a `$path`, and those of
+  resolving a `$run_dir` operand, into an `OpSpecError`, so the step fails
+  with the reason, later steps are `not-reached` and the run is `failed`,
+  exit 1, for step inputs and `outputs` alike. Creating a `$run_dir`
+  directory converts only the errors that say the NAME is impossible
+  (`ENAMETOOLONG`, `EINVAL`, `EILSEQ`): a full disk or a lost permission is
+  the machine's, an interruption that is raised and leaves the resumable
+  `running` Track. This is the 0.10.0 rule kept, so it applies to both
+  profiles.

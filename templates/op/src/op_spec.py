@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import copy
+import errno
 import json
 import os
 import re
@@ -338,7 +339,13 @@ def run_dir_path(subpath, run_dir):
                           f"{list(RESERVED_RUN_SUBPATHS)} are reserved.")
     candidate = Path(normalized_subpath(subpath))
     base = Path(run_dir).resolve()
-    target = (base / candidate).resolve()
+    try:
+        target = (base / candidate).resolve()
+    except (ValueError, OSError) as exc:
+        # An operand no filesystem can name (an embedded NUL, a link loop):
+        # the operand's fault, so an evaluation failure (0.11.0).
+        raise OpSpecError(invalid_path_problem(
+            "$run_dir", subpath, subpath, exc)) from exc
     if target != base and base not in target.parents:
         raise OpSpecError(f"$run_dir subpath {subpath!r} resolves outside the "
                           f"run directory; $run_dir names a directory inside "
@@ -354,8 +361,33 @@ def run_dir_path(subpath, run_dir):
                 f"$run_dir subpath {subpath!r} passes through {part!r}, "
                 f"which is a symlink; $run_dir names a real directory "
                 f"inside this run.")
-    target.mkdir(parents=True, exist_ok=True)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # A name the filesystem refuses (too long, not representable) is the
+        # operand's fault and an evaluation failure (0.11.0). Anything else —
+        # a full disk, a permission the machine took away — is the machine's,
+        # an interruption like a crash: raised, and the `running` Track a
+        # resume picks up stays true.
+        if exc.errno not in INVALID_NAME_ERRNOS:
+            raise
+        raise OpSpecError(invalid_path_problem(
+            "$run_dir", subpath, subpath, exc)) from exc
     return str(target)
+
+
+#: The errors that say a NAME is impossible rather than that the machine
+#: failed (0.11.0): the operand of `$run_dir` is at fault, not the run.
+INVALID_NAME_ERRNOS = frozenset(
+    code for code in (getattr(errno, name, None)
+                      for name in ("ENAMETOOLONG", "EINVAL", "EILSEQ"))
+    if code is not None)
+
+
+def invalid_path_problem(operator, operand, value, exc):
+    """The reason an operator's value names no path, in a full sentence."""
+    return (f"{operator} of {operand!r} evaluates to {value!r}, which is not "
+            f"a path this machine can name ({type(exc).__name__}: {exc}).")
 
 
 def evaluate(expr, ctx):
@@ -390,10 +422,22 @@ def evaluate(expr, ctx):
                         f"{value!r}, which begins with ~; an Op's paths "
                         f"never depend on whose machine runs it (rule "
                         f"path-no-home).")
-                path = Path(str(value)).expanduser()
-                if not path.is_absolute():
-                    path = Path(ctx["request"]["dir"]) / path
-                return str(path.resolve())
+                try:
+                    path = Path(str(value)).expanduser()
+                    if not path.is_absolute():
+                        path = Path(ctx["request"]["dir"]) / path
+                    return str(path.resolve())
+                except (ValueError, OSError, RuntimeError) as exc:
+                    # A value no filesystem can name — an embedded NUL, a
+                    # `~user` with no home (RuntimeError), a name too long
+                    # or a link loop (OSError) — is the VALUE's fault and
+                    # recurs on every resume: an evaluation failure, which
+                    # fails the step with the reason (0.11.0), never an
+                    # exception that leaves the Track `running`. A resolve
+                    # that is not `strict` tolerates a missing or unreadable
+                    # file, so what reaches here is about the value.
+                    raise OpSpecError(invalid_path_problem(
+                        "$path", expr["$path"], value, exc)) from exc
             if "$run_dir" in keys:
                 value = evaluate(expr["$run_dir"], ctx)
                 return run_dir_path(value, ctx["run"]["dir"])

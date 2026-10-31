@@ -503,6 +503,17 @@ class PathHomeAtRunTimeTests(RunCase):
         self.assertEqual(self.fake.calls[0]["request"]["source"],
                          str((Path.home() / "texts.json").resolve()))
 
+    def test_0_2_fails_the_step_when_a_computed_path_holds_a_nul(self):
+        """Either profile (0.11.0): a value no filesystem can name is an
+        evaluation failure, never a run left `running` (test_op_runner)."""
+        code, output = self.run_op(self.doc(fx.spec_doc_0_2),
+                                   request={"note": "texts\u0000.json"})
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["failed_step"], "first")
+        self.assertIn("not a path this machine can name", output["reason"])
+        self.assertEqual(self.track(output)["status"], "failed")
+        self.assertEqual(self.fake.calls, [])
+
     def test_0_2_resolves_other_paths(self):
         code, output = self.run_op(self.doc(fx.spec_doc_0_2),
                                    request={"note": "texts.json"})
