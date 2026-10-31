@@ -99,7 +99,9 @@ feature to build on.
    missing or invalid `OP.md` as a warning, so an Op created before `op new`
    wrote one keeps passing, and warns when its `name` is not the id's last
    segment or its `manifest_schema` is not op.yaml's `schema`; an OP.md
-   `version` other than op.yaml's is an error. A `[0.1]` op.yaml is a
+   `version` that is not a string, or is a string other than op.yaml's
+   version, is an error (`version: null` never agrees with `"None"`). A
+   `[0.1]` op.yaml is a
    warning (`opspec-profile`) naming what moving to `[0.2]` takes.
 4. **Run.**
 

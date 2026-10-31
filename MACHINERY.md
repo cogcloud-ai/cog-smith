@@ -1824,3 +1824,8 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   check` resolved OP.md's `manifest` bare, so `manifest: "bad\0path"`
   raised `ValueError`, and a link loop `RuntimeError`, out of the check
   instead of the warning an invalid OP.md gets. Both are now that warning.
+- **Smith: OP.md's version agrees only as a string.** `op check` compared
+  `str()` of OP.md's `version` with op.yaml's, so an unquoted `version:
+  null` agreed with an op.yaml version `"None"`, and `false` with
+  `"False"`. A stated OP.md version that is not a string is now an error,
+  and a string must equal op.yaml's version exactly.

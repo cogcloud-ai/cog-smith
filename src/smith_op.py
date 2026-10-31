@@ -443,8 +443,9 @@ def op_md_findings(root, spec):
     Every entry-file problem `op_md_problems` names is a WARNING — a missing
     OP.md included, so a package created before `op new` wrote one keeps
     passing — and so is a `name` that is not the last segment of op.yaml's
-    `id`. A `version` that differs from op.yaml's is an ERROR: OP.md would
-    then describe a different revision of the Op than the one that runs."""
+    `id`. A `version` that is not a string, or differs from op.yaml's, is an
+    ERROR: OP.md would then describe a different revision of the Op than the
+    one that runs."""
     findings = [("warn", detail) for detail in op_md_problems(root)]
     meta = op_md_frontmatter(root)
     if not isinstance(meta, dict):
@@ -462,10 +463,22 @@ def op_md_findings(root, spec):
                                  f"{schema!r}, but op.yaml declares "
                                  f"{spec.schema!r}; the entry file names the "
                                  f"profile that runs."))
-    if "version" in meta and str(meta["version"]) != spec.version:
-        findings.append(("error", f"{OP_MD} declares version "
-                                  f"{meta['version']!r}, but op.yaml is "
-                                  f"version {spec.version!r}; the entry file "
+    # Compared as written, never through str(): coercing both sides made an
+    # unquoted `version: null` agree with an op.yaml version "None", and
+    # `false` with "False". A stated version is a string, and only an equal
+    # string agrees (`spec.version` is op.yaml's version, as the runner
+    # records it).
+    version = meta.get("version")
+    if "version" in meta and not isinstance(version, str):
+        findings.append(("error", f"{OP_MD} declares version {version!r}, "
+                                  f"which is not a string, so it cannot "
+                                  f"agree with op.yaml's version "
+                                  f"{spec.version!r}; the entry file "
+                                  f"describes the revision that runs."))
+    elif "version" in meta and version != spec.version:
+        findings.append(("error", f"{OP_MD} declares version {version!r}, "
+                                  f"but op.yaml is version "
+                                  f"{spec.version!r}; the entry file "
                                   f"describes the revision that runs."))
     return findings
 

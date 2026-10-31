@@ -3,6 +3,7 @@ hashes, and step declarations checked against the Cogs they name.
 
 """
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -634,6 +635,28 @@ class OpMdTests(SmithOpCase):
                                   str(self.dest)], capture_output=True,
                                  text=True)
         self.assertEqual(checked.returncode, 1, checked.stdout)
+
+    def test_a_version_that_is_not_a_string_never_agrees(self):
+        """Review round 2 (op-spec finding 2): str() on both sides made
+        `version: null` agree with an op.yaml version "None", and `false`
+        with "False"."""
+        for unquoted, written in (("null", "None"), ("false", "False"),
+                                  ("1.0", "1.0")):
+            with self.subTest(unquoted=unquoted):
+                doc = self.spec_doc()
+                doc["version"] = written
+                self.spec_path.write_text(yaml.safe_dump(doc, sort_keys=False))
+                if self.dest.exists():
+                    shutil.rmtree(self.dest)
+                smith_op.create(self.spec_path, self.dest)
+                text = (self.dest / "OP.md").read_text()
+                self.assertIn(f'version: "{written}"', text)
+                (self.dest / "OP.md").write_text(text.replace(
+                    f'version: "{written}"', f"version: {unquoted}"))
+                errors = [f for f in self.errors(smith_op.check(self.dest))
+                          if f["check"] == "opmd"]
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("not a string", errors[0]["detail"])
 
     def test_an_absent_version_is_not_compared(self):
         """`version` is recommended, not required: only a stated one that
