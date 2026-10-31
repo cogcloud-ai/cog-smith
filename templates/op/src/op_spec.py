@@ -1195,6 +1195,29 @@ def _artifact_loop_problems(step, sid, loop_vars):
             if kind == "$from" and path_root(path) in loop_vars]
 
 
+def _cycle_limit_problems(expr, where):
+    """Why a cycle limit is refused for reading something other than an
+    input (`[0.2]`, 0.11.0; rule cycle-limits-read-inputs). The limits are
+    evaluated once, when the cycle starts and before any run exists, from
+    the request's inputs alone: `run.*`, `request.dir`, `$run_dir` and
+    `$path` would read a run or a request directory — nested in a `$default`
+    as much as at the top. A step or an undeclared root is refused by
+    `_expr_problems` already."""
+    problems = []
+    for kind, value in expression_reads(expr):
+        if kind == "$from" and path_root(value) in ("run", "request"):
+            problems.append(f"{where} reads {value!r}; a cycle's limits read "
+                            f"inputs only, evaluated once when the cycle "
+                            f"starts, before any run exists (rule "
+                            f"cycle-limits-read-inputs).")
+        elif kind in ("$run_dir", "$path"):
+            problems.append(f"{where} uses {kind}, which reads a run or "
+                            f"request directory; a cycle's limits read "
+                            f"inputs only, evaluated once when the cycle "
+                            f"starts (rule cycle-limits-read-inputs).")
+    return problems
+
+
 def _strict_step_problems(step, sid):
     """The step tightenings a `[0.2]` document is held to (0.11.0): `title`,
     never `name`; typed `title` and `expected_outcome`; a stated
@@ -1580,6 +1603,8 @@ def cycle_phases(doc):
     for key in ('max_attempts', 'max_cost_units'):
         problems = []
         _expr_problems(cycle[key], 'cycle.' + key, {value['name'] for value in base.get('inputs', [])}, set(), set(), set(), problems, set(), profile_of(doc) == PROFILE_0_2)
+        if profile_of(doc) == PROFILE_0_2:
+            problems.extend(_cycle_limit_problems(cycle[key], 'cycle.' + key))
         if problems:
             raise OpSpecError(problems)
     return phases

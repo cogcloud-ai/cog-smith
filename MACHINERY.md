@@ -1775,3 +1775,12 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   of element payloads, instead. `[0.1]` keeps loading it: there the read
   fails the Gate with its reasons, or takes a `$default`, as under 0.10.0.
   `expression_reads` lists an expression's reads for this check.
+- **A cycle's limits read inputs only (`[0.2]`).** `max_attempts` and
+  `max_cost_units` are evaluated once, when the cycle starts and before any
+  run exists, from the request's inputs. `cycle_phases` refused a step or an
+  undeclared root there but accepted `{$from: run.dir}` and
+  `{$from: request.dir}`. Under `[0.2]` every `run.*` or `request.dir` read
+  in a limit, nested in a `$default` or another operator's operand
+  included, and any `$run_dir` or `$path` (which read a run or request
+  directory), is refused (rule `cycle-limits-read-inputs`). `[0.1]` keeps
+  loading them: there `{$from: run.dir, $default: 2}` takes its default.

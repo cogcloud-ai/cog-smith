@@ -1044,7 +1044,10 @@ process before using deferred verdicts; older runtimes refuse them.
 
 A pure Op may declare `cycle` with `outcome_step`, `outcome_field`,
 `max_attempts`, `max_cost_units`, `costs` and `transitions`. Limits may be input
-mappings; they resolve once and remain fixed. Costs are nonnegative integer
+mappings; they resolve once and remain fixed. They read inputs only: under
+`[0.2]` a limit that reads `run.*` or `request.dir`, even inside a `$default`,
+or that uses `$run_dir` or `$path`, is refused at load (rule
+`cycle-limits-read-inputs`, 0.11.0). Costs are nonnegative integer
 reservation units for every initial/preparation step. Count model turns as one
 unit, for example, and deterministic work as zero. These units bound declared
 invocations; they do not measure invoices, prices or token usage. If a caller

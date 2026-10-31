@@ -446,6 +446,49 @@ class ArtifactPerElementTests(unittest.TestCase):
         self.assertEqual(problems(fx.spec_doc([self.step(digest)])), [])
 
 
+class CycleLimitReadTests(unittest.TestCase):
+    """[0.2] (0.11.0, rule cycle-limits-read-inputs): the limits are
+    evaluated once, when the cycle starts, from inputs alone."""
+
+    def doc(self, limit, build=fx.as_0_2):
+        doc = cycle_doc(max_attempts=limit)
+        doc["inputs"].append({"name": "attempts", "required": False,
+                              "default": 2})
+        return build(doc)
+
+    def test_0_2_refuses_every_non_input_read(self):
+        for limit, needle in (
+                ({"$from": "run.dir"}, "reads 'run.dir'"),
+                ({"$from": "run.id"}, "reads 'run.id'"),
+                ({"$from": "request.dir"}, "reads 'request.dir'"),
+                ({"$from": "inputs.attempts", "$default": {"$from": "run.dir"}},
+                 "reads 'run.dir'"),
+                ({"$from": "inputs.attempts",
+                  "$default": {"$from": "inputs.attempts",
+                               "$default": {"$from": "request.dir"}}},
+                 "reads 'request.dir'"),
+                ({"$stem": {"$from": "request.dir"}}, "reads 'request.dir'"),
+                ({"$run_dir": "limits"}, "uses $run_dir"),
+                ({"$path": "limits.json"}, "uses $path")):
+            with self.subTest(limit=limit):
+                text = one(self.doc(limit))
+                self.assertIn(needle, text)
+                self.assertIn("rule cycle-limits-read-inputs", text)
+
+    def test_0_2_accepts_inputs_and_literals(self):
+        for limit in (3, {"$from": "inputs.attempts"},
+                      {"$from": "inputs.attempts", "$default": 2},
+                      {"$literal": {"$from": "run.dir"}}):
+            with self.subTest(limit=limit):
+                self.assertEqual(problems(self.doc(limit)), [])
+
+    def test_0_1_keeps_loading_them(self):
+        """[0.1] keeps 0.10.0, where `{$from: run.dir, $default: 2}` takes
+        its default when the cycle starts."""
+        limit = {"$from": "run.dir", "$default": 2}
+        self.assertEqual(problems(self.doc(limit, build=lambda d: d)), [])
+
+
 # ------------------------------------------------------------ run time --
 
 class RunCase(unittest.TestCase):
