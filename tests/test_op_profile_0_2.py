@@ -224,7 +224,10 @@ class PresentKeyTypeTests(unittest.TestCase):
                     doc = fx.spec_doc_0_2(inputs=[])
                     doc["steps"][0]["input"] = {"note": "literal"}
                     put(doc, value)
-                    self.assertIn(needle, one(doc))
+                    text = one(doc)
+                    self.assertIn(needle, text)
+                    self.assertRegex(text, r"\(rule (present-key-typed|"
+                                           r"ttl-positive|no-guards)\)")
 
     def test_0_1_keeps_reading_them_as_absent(self):
         for where, put, values, _ in self.rows():

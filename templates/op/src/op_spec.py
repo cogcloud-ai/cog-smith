@@ -726,6 +726,13 @@ def gate_artifact(step):
     return (step.get("gate") or {}).get("artifact")
 
 
+def _typed(message, strict, rule="present-key-typed"):
+    """MESSAGE, naming the profile's RULE when STRICT (a `[0.2]` document,
+    0.11.0): a present key of the wrong type is refused there by rule, as
+    the profile's other tightenings are. `[0.1]` messages are unchanged."""
+    return message[:-1] + f" (rule {rule})." if strict else message
+
+
 def _gate_problems(step, sid, problems, strict=False):
     """Every problem with one step's `gate:` block. `decides` and
     `artifact` belong to a human Gate (0.7.0): an artifact Gate DECLARES the
@@ -737,8 +744,8 @@ def _gate_problems(step, sid, problems, strict=False):
     if gate is None and not (strict and "gate" in step):
         return
     if not isinstance(gate, dict):
-        problems.append(f"Op step {sid!r}'s gate must be an object "
-                        f"with a policy.")
+        problems.append(_typed(f"Op step {sid!r}'s gate must be an object "
+                               f"with a policy.", strict))
         return
     for key in sorted(str(k) for k in set(gate) - GATE_KEYS):
         problems.append(f"unknown key {key!r} under Op step "
@@ -847,8 +854,9 @@ def _repeat_problems(step, sid, problems, strict=False):
     if declared is None and not (strict and "repeat" in step):
         return
     if not isinstance(declared, dict):
-        problems.append(f"Op step {sid!r} declares repeat {declared!r}; a "
-                        f"repeat is an object with count and require.")
+        problems.append(_typed(f"Op step {sid!r} declares repeat "
+                               f"{declared!r}; a repeat is an object with "
+                               f"count and require.", strict))
         return
     for key in sorted(str(k) for k in set(declared) - REPEAT_KEYS):
         problems.append(f"unknown key {key!r} under Op step {sid!r}'s "
@@ -955,8 +963,8 @@ def _authority_problems(step, sid, step_ids, human_steps, problems,
         # [0.2] (0.11.0): `authority: null` is present, and refused below.
         return
     if not isinstance(authority, dict):
-        problems.append(f"Op step {sid!r}'s authority must be an object with "
-                        f"a requires list.")
+        problems.append(_typed(f"Op step {sid!r}'s authority must be an "
+                               f"object with a requires list.", strict))
         return
     for key in sorted(str(k) for k in set(authority) - STEP_AUTHORITY_KEYS):
         problems.append(f"unknown key {key!r} under Op step {sid!r}'s "
@@ -1287,8 +1295,8 @@ def validate(doc):
         inputs = doc["inputs"]
     input_names = set()
     if not isinstance(inputs, list):
-        problems.append("the Op spec's inputs must be an ordered list of "
-                        "input declarations.")
+        problems.append(_typed("the Op spec's inputs must be an ordered list "
+                               "of input declarations.", strict))
         inputs = []
     for index, declared in enumerate(inputs):
         if not isinstance(declared, dict) or not isinstance(
@@ -1310,8 +1318,8 @@ def validate(doc):
     authority = doc.get("authority")
     if authority is not None or (strict and "authority" in doc):
         if not isinstance(authority, dict):
-            problems.append("the Op spec's authority must be an object with "
-                            "ttl_minutes.")
+            problems.append(_typed("the Op spec's authority must be an "
+                                   "object with ttl_minutes.", strict))
         else:
             for key in sorted(str(k) for k in set(authority)
                               - AUTHORITY_TOP_KEYS):
@@ -1320,19 +1328,19 @@ def validate(doc):
                                 f"closed.")
             ttl = authority.get("ttl_minutes")
             # [0.2]: `ttl_minutes: null` is refused, never the default 60.
-            if (ttl is not None or (strict and "ttl_minutes" in authority)) \
+            if ((ttl is not None or (strict and "ttl_minutes" in authority))
                     and (isinstance(ttl, bool)
-                                    or not isinstance(ttl, (int, float))
-                                    or ttl <= 0):
-                problems.append(f"the Op spec declares authority.ttl_minutes "
-                                f"{ttl!r}; a grant's life is a positive "
-                                f"number of minutes.")
+                         or not isinstance(ttl, (int, float)) or ttl <= 0)):
+                problems.append(_typed(
+                    f"the Op spec declares authority.ttl_minutes {ttl!r}; a "
+                    f"grant's life is a positive number of minutes.",
+                    strict, "ttl-positive"))
 
     track = doc.get("track")
     if track is not None or (strict and "track" in doc):
         if not isinstance(track, dict):
-            problems.append("the Op spec's track must be an object with a "
-                            "records list.")
+            problems.append(_typed("the Op spec's track must be an object "
+                                   "with a records list.", strict))
         else:
             for key in sorted(str(k) for k in set(track) - TRACK_KEYS):
                 problems.append(f"unknown key {key!r} under track:; the Track "
@@ -1382,9 +1390,9 @@ def validate(doc):
         declared_deps = step.get("depends_on")
         if (declared_deps is not None or (strict and "depends_on" in step)) \
                 and not isinstance(declared_deps, list):
-            problems.append(f"Op step {sid!r} declares depends_on "
-                            f"{declared_deps!r}; depends_on is a list of step "
-                            f"ids.")
+            problems.append(_typed(f"Op step {sid!r} declares depends_on "
+                                   f"{declared_deps!r}; depends_on is a list "
+                                   f"of step ids.", strict))
             declared_deps = []
         for dep in declared_deps or []:
             if not isinstance(dep, str):
@@ -1447,8 +1455,9 @@ def validate(doc):
                             f"proposals instead.")
         if foreach is not None or (strict and "foreach" in step):
             if not isinstance(foreach, dict):
-                problems.append(f"Op step {sid!r}'s foreach must be an object "
-                                f"with items and as.")
+                problems.append(_typed(f"Op step {sid!r}'s foreach must be "
+                                       f"an object with items and as.",
+                                       strict))
             else:
                 for key in sorted(str(k) for k in set(foreach) - FOREACH_KEYS):
                     problems.append(f"unknown key {key!r} under Op step "
@@ -1528,8 +1537,8 @@ def validate(doc):
     if strict and "outputs" in doc:
         outputs = doc["outputs"]        # [0.2]: `outputs: []` is refused
     if not isinstance(outputs, dict):
-        problems.append("the Op spec's outputs must be an object of mapping "
-                        "expressions.")
+        problems.append(_typed("the Op spec's outputs must be an object of "
+                               "mapping expressions.", strict))
     else:
         _expr_problems(outputs, "the Op spec's outputs", input_names, step_ids,
                        step_ids, set(), problems, human_steps, strict)

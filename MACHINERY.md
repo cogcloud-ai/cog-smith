@@ -1758,8 +1758,9 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   `depends_on`, `foreach`, `gate`, `authority` or `repeat` of `null` as
   absent, and `gate.guards` of `false`, `null`, `0`, `""` or `{}` as none.
   For `[0.2]` each check now notices whether the key is present, and a
-  present key of the wrong type is refused with the same finding a wrongly
-  typed truthy value always got (`guards` names rule `no-guards`). These
+  present key of the wrong type is refused with the finding a wrongly
+  typed truthy value always got, naming the profile's rule under `[0.2]`
+  (`present-key-typed`; `ttl-positive` and `no-guards` for those keys). These
   are every gap a sweep of `op-manifest-0.2.schema.json` found: each key it
   types, given each JSON type it refuses, over the corpus's conforming
   cases. `[0.1]` is unchanged. Under both profiles a list or object among a
