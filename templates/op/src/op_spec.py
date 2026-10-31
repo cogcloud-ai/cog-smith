@@ -480,6 +480,19 @@ def invalid_path_problem(operator, operand, value, exc):
             f"a path this machine can name ({type(exc).__name__}: {exc}).")
 
 
+def step_input(step, context):
+    """The mapping expression a step's request is evaluated from.
+
+    `[0.2]` reads `input` as written whenever it is present: `false`, `0`,
+    `""`, `null`, and `[]` are requests a Cog may be sent, exactly as their
+    `$literal` forms are, and only an omitted `input` means `{}` (0.11.0).
+    `[0.1]` keeps the 0.10.0 reading, where any falsy `input` became `{}`."""
+    if isinstance(context, dict) and \
+            context.get(PROFILE_CONTEXT_KEY) == PROFILE_0_2:
+        return step.get("input", {})
+    return step.get("input") or {}
+
+
 def evaluate(expr, ctx):
     """Resolve a mapping expression against a run context
     {inputs, steps, run, request, <loop variables>}."""

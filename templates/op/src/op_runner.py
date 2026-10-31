@@ -2344,12 +2344,13 @@ def _plan(spec, track, run_dir, context):
     the inputs; list the rest with request: null."""
     for step in spec.ordered:
         request_path = None
-        expressions = [step.get("input") or {}]
+        expressions = [op_spec.step_input(step, context)]
         if step.get("foreach") is not None:
             expressions.append((step["foreach"] or {}).get("items"))
         if (step.get("foreach") is None
                 and not any(op_spec.reads_steps(e) for e in expressions)):
-            request = op_spec.evaluate(step.get("input") or {}, context)
+            request = op_spec.evaluate(op_spec.step_input(step, context),
+                                       context)
             path = Path(run_dir) / "requests" / f"{step['id']}.json"
             op_track.write_json(path, request)
             request_path = str(path.resolve())
@@ -2427,7 +2428,8 @@ def _run_foreach(spec, step, cog_dir, run_dir, context,
             continue
         element_context = dict(context)
         element_context[foreach["as"]] = item
-        request = op_spec.evaluate(step.get("input") or {}, element_context)
+        request = op_spec.evaluate(op_spec.step_input(step, context),
+                                   element_context)
         request_sha256 = canonical_sha256(request)
         request_path = Path(run_dir) / "requests" / step["id"] / f"{index}.json"
         op_track.write_json(request_path, request)
@@ -2554,7 +2556,7 @@ def _run_single(step, cog_dir, run_dir, context, seam=None,
     repeats each carry their own and the step names the last, and a step that
     runs once carries the digest of the attempt whose envelope it kept."""
     task = step["cog"]["task"]
-    request = op_spec.evaluate(step.get("input") or {}, context)
+    request = op_spec.evaluate(op_spec.step_input(step, context), context)
     request_path = Path(run_dir) / "requests" / f"{step['id']}.json"
     op_track.write_json(request_path, request)
     envelope_path = Path(run_dir) / "envelopes" / f"{step['id']}.json"

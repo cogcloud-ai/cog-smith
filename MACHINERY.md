@@ -1829,3 +1829,9 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   null` agreed with an op.yaml version `"None"`, and `false` with
   `"False"`. A stated OP.md version that is not a string is now an error,
   and a string must equal op.yaml's version exactly.
+- **A `[0.2]` step's `input` is read as written.** The runner evaluated
+  `step.get("input") or {}`, so `input: false`, `0`, `""`, `null` or `[]`
+  sent the Cog `{}` while the same value under `$literal` was sent as
+  written. `op_spec.step_input` now defaults only an omitted `input` for a
+  `[0.2]` document, in a run, a `foreach`, and a dry run's plan; `[0.1]`
+  keeps the 0.10.0 reading.

@@ -757,6 +757,57 @@ class EnvelopeIdentityTests(RunCase):
         self.assertEqual(self.fake.calls[0]["seam"], {})
 
 
+class StepInputTests(RunCase):
+    """A [0.2] `input` is read as written whenever it is present; only an
+    omitted one means `{}`. [0.1] keeps turning any falsy `input` into
+    `{}`."""
+
+    FALSY = (False, 0, "", None, [])
+
+    def doc(self, build, value, **step_keys):
+        step = fx.cog_step("first", **step_keys)
+        step["input"] = value
+        return build([step])
+
+    def test_0_2_sends_a_falsy_literal_input_as_written(self):
+        for value in self.FALSY:
+            with self.subTest(value=value):
+                code, output = self.run_op(self.doc(fx.spec_doc_0_2, value))
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.fake.calls[0]["request"], value)
+
+    def test_0_2_sends_an_empty_object_when_input_is_omitted(self):
+        step = fx.cog_step("first")
+        step.pop("input", None)
+        code, output = self.run_op(fx.spec_doc_0_2([step]))
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.fake.calls[0]["request"], {})
+
+    def test_0_1_still_sends_an_empty_object_for_a_falsy_input(self):
+        for value in self.FALSY:
+            with self.subTest(value=value):
+                code, output = self.run_op(self.doc(fx.spec_doc, value),
+                                           answers={"ask": fx.envelope()})
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.fake.calls[0]["request"], {})
+
+    def test_0_2_sends_a_falsy_input_to_every_foreach_element(self):
+        doc = self.doc(fx.spec_doc_0_2, 0,
+                       foreach={"items": {"$literal": ["a", "b"]},
+                                "as": "item"})
+        code, output = self.run_op(doc)
+        self.assertEqual(code, 0, output)
+        self.assertEqual([c["request"] for c in self.fake.calls], [0, 0])
+
+    def test_0_2_plans_a_falsy_input_as_written(self):
+        fx.write_package(self.package, self.doc(fx.spec_doc_0_2, False))
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        code, output = op_runner.run(self.package, path, dry_run=True)
+        self.assertEqual(code, 0, output)
+        record = self.record(output)
+        self.assertIs(json.loads(Path(record["request"]).read_text()), False)
+
+
 class PathHomeAtRunTimeTests(RunCase):
     def doc(self, build):
         step = fx.cog_step("first")
