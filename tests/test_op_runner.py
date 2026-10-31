@@ -1959,18 +1959,26 @@ class EvaluationFailureTests(RunnerCase):
             (run_dir / "work").mkdir()
             (run_dir / "work" / "loop").symlink_to("loop")
         doc = self.nul_doc({"out": {"$run_dir": "work/loop/sub"}})
-        code, output, track, fake = self.go(
+        with fx.resolve_like_python_3_12("loop"):
+            code, output, track, fake = self.go(
+                doc, request={"note": "hi", "source": "x"},
+                answers=self.answers(), watcher=self.plant(loop))
+            record = self.assert_failed_at(code, output, track, "second",
+                                           "not a path this machine can name")
+            self.assertEqual(record["gate"]["policy"], "evaluation")
+            self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
+                             [("first", "passed"), ("second", "failed"),
+                              ("third", "not-reached")])
+            code, again = op_runner.resume(self.package, output["run_dir"])
+            track = json.loads(Path(again["track"]).read_text())
+            self.assert_failed_at(code, again, track, "second",
+                                  "not a path this machine can name")
+        # Without the patch — Python 3.13 and later, where resolve returns
+        # the looping path — the walk refuses the link instead.
+        code, output, track, _ = self.go(
             doc, request={"note": "hi", "source": "x"},
             answers=self.answers(), watcher=self.plant(loop))
-        record = self.assert_failed_at(code, output, track, "second",
-                                       "work/loop/sub")
-        self.assertEqual(record["gate"]["policy"], "evaluation")
-        self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
-                         [("first", "passed"), ("second", "failed"),
-                          ("third", "not-reached")])
-        code, again = op_runner.resume(self.package, output["run_dir"])
-        track = json.loads(Path(again["track"]).read_text())
-        self.assert_failed_at(code, again, track, "second", "work/loop/sub")
+        self.assert_failed_at(code, output, track, "second", "work/loop/sub")
         self.assertEqual([c["task"] for c in fake.calls], ["ask"])
 
     def test_a_run_dir_component_too_long_to_name_fails_the_step(self):
@@ -1999,13 +2007,15 @@ class EvaluationFailureTests(RunnerCase):
 
     def test_a_cog_source_through_a_symlink_loop_is_refused_before_the_run(self):
         """The run start's declaration check resolved each source and raised
-        RuntimeError past the CLI's handlers. It is a refusal by name."""
+        RuntimeError (Python 3.12) past the CLI's handlers. It is a refusal
+        by name."""
         doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
         doc["steps"][1]["cog"]["source"] = "../looped/inner"
         fx.write_package(self.package, doc)
         (self.root / "looped").symlink_to("looped")
         path = fx.write_request(self.root / "request.json", {"note": "hi"})
-        with self.assertRaises(op_spec.OpSpecError) as caught:
+        with fx.resolve_like_python_3_12("looped"), \
+                self.assertRaises(op_spec.OpSpecError) as caught:
             op_runner.run(self.package, path)
         self.assertIn("not a path this machine can name",
                       " ".join(caught.exception.problems))
@@ -2016,10 +2026,11 @@ class EvaluationFailureTests(RunnerCase):
         made after the run started fails that step, never the process."""
         doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
         doc["steps"][2]["cog"]["source"] = "../looped/inner"
-        code, output, track, fake = self.go(
-            doc, answers=self.answers(),
-            watcher=self.plant(lambda _run_dir: (self.root / "looped")
-                               .symlink_to("looped")))
+        with fx.resolve_like_python_3_12("looped"):
+            code, output, track, fake = self.go(
+                doc, answers=self.answers(),
+                watcher=self.plant(lambda _run_dir: (self.root / "looped")
+                                   .symlink_to("looped")))
         self.assert_failed_at(code, output, track, "third",
                               "not a path this machine can name")
         self.assertEqual([c["task"] for c in fake.calls], ["ask", "summarize"])

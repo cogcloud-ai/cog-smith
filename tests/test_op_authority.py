@@ -1674,10 +1674,15 @@ class ControlFileTests(unittest.TestCase):
         # Review round 2, finding 2: resolving a loop raised RuntimeError,
         # which no caller of `write_json` handles; it is refused as a link.
         (self.run_dir / "envelopes").symlink_to("envelopes")
-        with self.assertRaises(ValueError) as caught:
+        with fx.resolve_like_python_3_12("envelopes"), \
+                self.assertRaises(ValueError) as caught:
             op_track.write_json(self.run_dir / "envelopes" / "first.json",
                                 {"smuggled": True}, base=self.run_dir)
         self.assertIn("symlink loop", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:  # 3.13+: a link
+            op_track.write_json(self.run_dir / "envelopes" / "first.json",
+                                {"smuggled": True}, base=self.run_dir)
+        self.assertIn("symlink", str(caught.exception))
 
     def test_run_dir_refuses_a_symlinked_component_inside_the_run(self):
         (self.run_dir / "grants").mkdir()

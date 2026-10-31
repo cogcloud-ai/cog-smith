@@ -21,6 +21,25 @@ SCHEMA = op_spec.SCHEMA_STRING
 SCHEMA_0_2 = op_spec.SCHEMA_STRING_0_2
 
 
+def resolve_like_python_3_12(name):
+    """A patch making `Path.resolve` raise RuntimeError for a path through
+    a SYMLINK called NAME, as Python 3.12 does when that link is a loop.
+
+    Python 3.13 and later return such a path unresolved instead, so a test
+    of the RuntimeError handling would pass vacuously under the Pixi
+    environment's newer Python; this makes it exercise the handling on
+    every version."""
+    from unittest import mock
+    real = Path.resolve
+
+    def resolve(self, strict=False):
+        for here in (self, *self.parents):
+            if here.name == name and here.is_symlink():
+                raise RuntimeError(f"Symlink loop from {str(self)!r}")
+        return real(self, strict=strict)
+    return mock.patch.object(Path, "resolve", resolve)
+
+
 def spec_doc(steps=None, inputs=None, **extra):
     doc = {
         "schema": SCHEMA,

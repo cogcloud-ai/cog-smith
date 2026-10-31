@@ -598,7 +598,8 @@ class OpMdTests(SmithOpCase):
             with self.subTest(manifest=manifest):
                 (self.dest / "OP.md").write_text(good.replace(
                     "manifest: op.yaml", f"manifest: {manifest}"))
-                findings = smith_op.check(self.dest)
+                with fx.resolve_like_python_3_12("looped.yaml"):
+                    findings = smith_op.check(self.dest)
                 self.assertEqual(self.errors(findings), [])
                 opmd = [f for f in findings if f["check"] == "opmd"]
                 self.assertEqual([f["level"] for f in opmd], ["warn"])
