@@ -16,10 +16,12 @@ mid-run.
 A `[0.2]` document is held to the profile's tightenings (machinery 0.11.0):
 `title` where `[0.1]` says `name`, typed identity fields, a stated
 `cog.version`, `targets` only, `read`/`write` actions only, operator objects
-with exactly their operator's keys, and no `$path` beginning with `~`. At run
-time it also requires the named Cogs to be present at their stated versions
-and every envelope to name the step's Cog, and a proposed change names what
-it changes as `target`. A `[0.1]` document keeps the 0.10.0 behaviour.
+with exactly their operator's keys, no `$path` beginning with `~`, every
+present key of the type the profile's schema gives it, no `foreach` artifact
+Gate that reads its loop variable, and cycle limits that read inputs only. At
+run time it also requires the named Cogs to be present at their stated
+versions and every envelope to name the step's Cog, and a proposed change
+names what it changes as `target`. A `[0.1]` document keeps the 0.10.0 behaviour.
 """
 from __future__ import annotations
 
