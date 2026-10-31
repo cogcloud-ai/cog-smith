@@ -1736,3 +1736,17 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   the machine's, an interruption that is raised and leaves the resumable
   `running` Track. This is the 0.10.0 rule kept, so it applies to both
   profiles.
+- **The identity mismatch wins, and only the runner's own is final.** A
+  malformed envelope naming another Cog became an ordinary
+  `invocation-failed` before its identity was checked, so `retry-once`
+  invoked the step twice. On a `[0.2]` step, `invoke_cog` now checks
+  identity first whenever the result's `cog.id` can be read (a string): a
+  differing one is `cog-identity-mismatch`, with the malformed envelope kept
+  as `error.evidence.envelope` and its shape problems named in the detail.
+  The no-retry rule compared the error code under every profile, so a
+  `[0.1]` Cog reporting `cog-identity-mismatch` as its own `error.code`
+  lost the retry 0.10.0 gave it. `invoke_cog` now returns the mismatch it
+  detected as an `IdentityMismatch` (a `dict`, written and read like any
+  envelope), and `_attempt` skips the retry only for that type on a step
+  that was given `expected_cog_id`; a Cog's own error, whatever its code, is
+  retried as before.

@@ -561,7 +561,11 @@ And at RUN time: every named Cog must be present when the run starts, at the
 version the step states (a validator, `op check`, still warns on a Cog that is
 absent and errors on one at another version); an envelope whose `cog.id` is
 not the step's `cog.id` is a failed invocation (`cog-identity-mismatch`),
-with the envelope kept as evidence, and `retry-once` does not retry it; a
+with the envelope kept as evidence, and `retry-once` does not retry it —
+when that `cog.id` can be read, this holds even if the envelope is also
+malformed, whose shape problems are then named in the detail (a Cog that
+reports `cog-identity-mismatch` as its own `error.code` is retried like any
+other failure, under either profile); a
 computed `$path` beginning with `~` fails the step; and a proposed change
 names what it changes as `target` — the write target the admission must
 list, which an edit may not change and the grant carries. A change with no

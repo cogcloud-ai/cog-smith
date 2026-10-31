@@ -466,6 +466,80 @@ class EnvelopeIdentityTests(RunCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(len(self.processes), 2)
 
+    def malformed(self, cog_id):
+        answer = fx.envelope(payload={"text": "x"}, cog_id=cog_id)
+        answer["problems"] = "not a list"
+        return answer
+
+    def test_a_malformed_envelope_naming_another_cog_is_a_mismatch(self):
+        """The identity mismatch wins over the shape (0.11.0): a malformed
+        result whose cog.id can be read and differs is the other Cog's, and
+        `retry-once` would only ask it again."""
+        self.answer_with(self.malformed("openteams/cog-other"),
+                         fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-first"))
+        doc = fx.spec_doc_0_2([fx.cog_step("first", on_fail="retry-once")])
+        code, output = self.run_real(doc)
+        self.assertEqual(code, 1, output)
+        self.assertEqual(len(self.processes), 1)
+        envelope = json.loads(Path(self.record(output)["envelope"]).read_text())
+        error = envelope["error"]
+        self.assertEqual(error["code"], "cog-identity-mismatch")
+        self.assertIn("names cog id 'openteams/cog-other'", error["detail"])
+        self.assertIn("also not envelope v1", error["detail"])
+        self.assertEqual(error["evidence"]["envelope"]["problems"], "not a list")
+        self.assertEqual(envelope["cog"]["id"], "openteams/cog-first")
+        self.assertEqual(fx.envelope_1_violations(envelope), [])
+
+    def test_a_malformed_envelope_naming_the_steps_cog_is_still_retried(self):
+        self.answer_with(self.malformed("openteams/cog-first"),
+                         fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-first"))
+        doc = fx.spec_doc_0_2([fx.cog_step("first", on_fail="retry-once")])
+        code, output = self.run_real(doc)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.processes), 2)
+
+    def test_a_malformed_envelope_with_no_readable_cog_is_an_invocation_failure(self):
+        answer = self.malformed("openteams/cog-other")
+        answer["cog"] = {"id": 7}
+        self.answer_with(answer, fx.envelope(payload={"text": "x"},
+                                             cog_id="openteams/cog-first"))
+        doc = fx.spec_doc_0_2([fx.cog_step("first", on_fail="retry-once")])
+        code, output = self.run_real(doc)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.processes), 2)
+
+    def own_mismatch_code(self, cog_id):
+        """A Cog that reports `cog-identity-mismatch` as its OWN error."""
+        failed = fx.envelope(cog_id=cog_id)
+        failed.update(ok=False, payload=None,
+                      error={"code": "cog-identity-mismatch",
+                             "detail": "the Cog's own upstream check"})
+        return failed
+
+    def test_0_1_retries_a_cogs_own_identity_mismatch_code(self):
+        """[0.1] keeps 0.10.0: the runner checks no identity, so an error the
+        Cog itself reports, whatever its code, is retried."""
+        self.answer_with(self.own_mismatch_code("openteams/cog-first"),
+                         fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-first"))
+        doc = fx.spec_doc([fx.cog_step("first", on_fail="retry-once")])
+        code, output = self.run_real(doc)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.processes), 2)
+
+    def test_0_2_retries_a_cogs_own_identity_mismatch_code(self):
+        """Only a mismatch the RUNNER found is left alone: a [0.2] Cog that
+        names itself and reports the code as its own error is retried."""
+        self.answer_with(self.own_mismatch_code("openteams/cog-first"),
+                         fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-first"))
+        doc = fx.spec_doc_0_2([fx.cog_step("first", on_fail="retry-once")])
+        code, output = self.run_real(doc)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.processes), 2)
+
     def test_0_1_keeps_an_envelope_naming_another_cog(self):
         self.answer_with(fx.envelope(payload={"text": "x"},
                                      cog_id="openteams/cog-other"))

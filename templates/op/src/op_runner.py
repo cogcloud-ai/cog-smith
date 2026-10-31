@@ -413,9 +413,10 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
     launched, a nonzero exit (even after printing an envelope — a process
     that dies at 139 has not succeeded), output with no envelope, and a
     malformed envelope all arrive the same way. So does, when
-    EXPECTED_COG_ID is given (a `[0.2]` step, 0.11.0), a well-formed
-    envelope whose `cog.id` is not that id: the failure names the step's Cog
-    and keeps the other envelope as evidence.
+    EXPECTED_COG_ID is given (a `[0.2]` step, 0.11.0), an envelope whose
+    `cog.id` is not that id: the failure names the step's Cog, keeps the
+    other envelope as evidence, and is an `IdentityMismatch`. When that
+    `cog.id` can be read, the mismatch wins even over a malformed envelope.
 
     The run lock's descriptor is passed to the child (`pass_fds`): while a
     Cog is running, the run stays locked even if this runner dies."""
@@ -460,17 +461,27 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
         return failed_envelope(cog_dir, task, detail, raw=stdout,
                                evidence=evidence)
     malformed = envelope_problems(envelope)
-    if malformed:
-        return failed_envelope(cog_dir, task, " ".join(malformed),
-                               evidence=evidence, emitted=envelope)
-    if expected_cog_id is not None:
+    if expected_cog_id is not None and (
+            not malformed or stated_cog_id(envelope) is not None):
+        # Checked BEFORE the envelope's shape (0.11.0): a result that names
+        # another Cog is that Cog's, whatever else is wrong with it, so a
+        # malformed envelope whose `cog.id` can be read and differs is an
+        # identity mismatch — never retried — and not an ordinary malformed
+        # result that `retry-once` would invoke again. Its shape problems
+        # stay in the detail, and the envelope itself in the evidence.
         impostor = identity_problem(envelope, expected_cog_id)
         if impostor:
-            return failed_envelope(
+            if malformed:
+                impostor += (" The result is also not envelope v1: "
+                             + " ".join(malformed))
+            return IdentityMismatch(failed_envelope(
                 cog_dir, task, impostor,
                 carried={"cog": {"id": expected_cog_id, "version": None}},
                 evidence=evidence, emitted=envelope,
-                code=IDENTITY_MISMATCH)
+                code=IDENTITY_MISMATCH))
+    if malformed:
+        return failed_envelope(cog_dir, task, " ".join(malformed),
+                               evidence=evidence, emitted=envelope)
     if completed.returncode != 0:
         detail = (f"the Cog command for task {task!r} exited "
                   f"{completed.returncode}")
@@ -486,11 +497,28 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
 IDENTITY_MISMATCH = "cog-identity-mismatch"
 
 
+class IdentityMismatch(dict):
+    """The synthesized envelope for a mismatch the RUNNER detected on a
+    `[0.2]` step (0.11.0): an ordinary envelope dict, written and read like
+    any other, whose type tells `_attempt` not to retry it. The error code
+    alone cannot say so — a Cog may report `cog-identity-mismatch` as its own
+    `error.code`, and under `[0.1]` such a failure is retried as before — and
+    nothing parsed from a Cog's output is ever of this type."""
+
+
+def stated_cog_id(envelope):
+    """The `cog.id` a result states, when it can be read (a string), else
+    None."""
+    cog = envelope.get("cog") if isinstance(envelope, dict) else None
+    stated = cog.get("id") if isinstance(cog, dict) else None
+    return stated if isinstance(stated, str) else None
+
+
 def identity_problem(envelope, expected_cog_id):
-    """Why a well-formed ENVELOPE is not the step's Cog's result, or None
-    (machinery 0.11.0, `[0.2]` documents only): its `cog.id` must equal the
-    step's `cog.id`, and an envelope naming another Cog — or none — is a
-    failed invocation."""
+    """Why ENVELOPE is not the step's Cog's result, or None (machinery
+    0.11.0, `[0.2]` documents only): its `cog.id` must equal the step's
+    `cog.id`, and an envelope naming another Cog — or none — is a failed
+    invocation."""
     cog = envelope.get("cog")
     stated = cog.get("id") if isinstance(cog, dict) else None
     if stated == expected_cog_id:
@@ -1766,7 +1794,7 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
     """Invoke once, gate, and retry exactly once when the failure was a
     transport/model failure (ok:false) and the step asked for retry-once.
     An error-severity problem in an ok envelope is never retried, nor is an
-    envelope naming another Cog (0.11.0).
+    envelope the runner found naming another Cog on a `[0.2]` step (0.11.0).
 
     `seam` carries the invocation context a granted step gets: the grant
     path, the run id, and the journal. It is EMPTY for a step with no
@@ -1816,10 +1844,14 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
     gate = gate_envelope(envelope)
     attempts.append(_attempt_entry(number, path, request_sha256, digest,
                                    ANSWERED))
+    # Only a mismatch the runner itself detected on a `[0.2]` step is left
+    # alone (0.11.0): a Cog that reports `cog-identity-mismatch` as its own
+    # error is retried like any other failed invocation, under either
+    # profile, as it was under 0.10.0.
+    detected_mismatch = (expected_cog_id is not None
+                         and isinstance(envelope, IdentityMismatch))
     if (gate["status"] == "fail" and on_fail == "retry-once"
-            and not envelope.get("ok")
-            and (envelope.get("error") or {}).get("code")
-            != IDENTITY_MISMATCH):
+            and not envelope.get("ok") and not detected_mismatch):
         number += 1
         digest = cog_package_sha256(cog_dir)
         path = Path(path_for(number))
