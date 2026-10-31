@@ -567,7 +567,15 @@ def _manifest_pointer_problems(root, manifest):
         return [f"{OP_MD} declares manifest {manifest!r}; the manifest path "
                 f"is relative and stays inside the Op directory."]
     base = root.resolve()
-    target = (root / pointer).resolve()
+    try:
+        target = (root / pointer).resolve()
+    except (ValueError, OSError, RuntimeError) as exc:
+        # A pointer no filesystem can name — an embedded NUL (ValueError), or
+        # a link loop (RuntimeError from Python 3.12's resolve) — is a
+        # problem with OP.md, so the promised warning, never an exception
+        # that aborts `op check`.
+        return [f"{OP_MD} declares manifest {manifest!r}, which is not a "
+                f"path this machine can name ({type(exc).__name__}: {exc})."]
     if target != base and base not in target.parents:
         return [f"{OP_MD} declares manifest {manifest!r}, which resolves "
                 f"outside the Op directory."]

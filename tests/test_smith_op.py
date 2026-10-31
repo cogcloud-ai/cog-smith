@@ -586,6 +586,29 @@ class OpMdTests(SmithOpCase):
         (self.dest / "OP.md").write_bytes(b"---\nname: \xff\n---\n")
         self.assertIn("UTF-8", " ".join(smith_op.op_md_problems(self.dest)))
 
+    def test_a_manifest_pointer_no_filesystem_can_name_is_a_warning(self):
+        """Review round 2, finding 3: resolving `bad\\0path` raised ValueError,
+        and a link loop RuntimeError, out of `op check` instead of the
+        warning an invalid OP.md gets."""
+        smith_op.create(self.spec_path, self.dest)
+        good = (self.dest / "OP.md").read_text()
+        (self.dest / "looped.yaml").symlink_to("looped.yaml")
+        for manifest in ('"bad\\0path"', "looped.yaml"):
+            with self.subTest(manifest=manifest):
+                (self.dest / "OP.md").write_text(good.replace(
+                    "manifest: op.yaml", f"manifest: {manifest}"))
+                findings = smith_op.check(self.dest)
+                self.assertEqual(self.errors(findings), [])
+                opmd = [f for f in findings if f["check"] == "opmd"]
+                self.assertEqual([f["level"] for f in opmd], ["warn"])
+                self.assertIn("not a path this machine can name",
+                              opmd[0]["detail"])
+                checked = subprocess.run([sys.executable, str(CLI), "op",
+                                          "check", str(self.dest)],
+                                         capture_output=True, text=True)
+                self.assertEqual(checked.returncode, 0,
+                                 checked.stdout + checked.stderr)
+
     def test_a_name_other_than_the_id_segment_is_a_warning(self):
         smith_op.create(self.spec_path, self.dest)
         text = (self.dest / "OP.md").read_text()

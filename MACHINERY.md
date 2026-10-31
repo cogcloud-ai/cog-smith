@@ -1820,3 +1820,7 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   run, a failed step during it). `op_track.checked_path` turns a loop in the
   runner's own record paths into the `ValueError` it gives for any link.
   Both profiles, as for the conversion above.
+- **Smith: an OP.md pointer no filesystem can name is a warning.** `op
+  check` resolved OP.md's `manifest` bare, so `manifest: "bad\0path"`
+  raised `ValueError`, and a link loop `RuntimeError`, out of the check
+  instead of the warning an invalid OP.md gets. Both are now that warning.
