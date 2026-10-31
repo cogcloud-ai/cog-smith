@@ -1765,3 +1765,13 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   cases. `[0.1]` is unchanged. Under both profiles a list or object among a
   step's `depends_on` beside `authority` is refused by name rather than
   raising `TypeError` from validation.
+- **An artifact Gate on a `foreach` step is one decision (`[0.2]`).** Each
+  element is gated by its own envelope Gate, and a human artifact Gate on
+  the step is evaluated once, after the loop, over the whole step — when no
+  element is current. `validate` let the artifact read the loop variable, so
+  such a Gate could only fail at run time. A `[0.2]` artifact that reads it,
+  anywhere in the expression (a `$default` included), is refused at load
+  (rule `artifact-not-per-element`); it reads `steps.<id>.payload`, the list
+  of element payloads, instead. `[0.1]` keeps loading it: there the read
+  fails the Gate with its reasons, or takes a `$default`, as under 0.10.0.
+  `expression_reads` lists an expression's reads for this check.

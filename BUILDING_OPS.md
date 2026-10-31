@@ -956,6 +956,7 @@ construct and the reason — never discovered mid-run:
 | `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `requests`, `envelopes`, `input-request.json`, `run.lock` or `track.json` | the runner's control entries are reserved |
 | `$run_dir` naming the run directory itself (`""`, `.`, null) | `$run_dir` names a directory inside the run |
 | a `foreach` step with a human Gate over changes | the Gate reads one `changes` list; a foreach payload is a list of element payloads |
+| a `[0.2]` `foreach` step whose human artifact Gate reads the loop variable | each element has its own envelope Gate, but the artifact Gate is one decision over the whole step, after the loop (rule `artifact-not-per-element`) |
 | `authority` on a step whose Cog is not `kind: code` | the runner supports authority on code Cogs only |
 | a requirement outside the Cog's declared `reaches` | the Cog does not declare it |
 | a step that names a reaching Cog and requires nothing | a reaching Cog runs only under a grant |

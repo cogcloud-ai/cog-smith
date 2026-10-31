@@ -405,6 +405,46 @@ class SharedRulesTests(unittest.TestCase):
                               "changes", one(build([step])))
 
 
+class ArtifactPerElementTests(unittest.TestCase):
+    """[0.2] (0.11.0, rule artifact-not-per-element): each element of a
+    `foreach` step has its own envelope Gate, but a human artifact Gate is
+    one decision over the whole step, after the loop, so its artifact may
+    not read the loop variable."""
+
+    @staticmethod
+    def step(digest):
+        step = fx.cog_step("review", gate={
+            "policy": "human", "decides": "artifact",
+            "artifact": {"kind": "review", "digests": {"all": digest}}})
+        step["foreach"] = {"items": {"$from": "inputs.note"}, "as": "item"}
+        step["input"] = {"text": {"$from": "item"}}
+        return step
+
+    def test_0_2_refuses_an_artifact_that_reads_the_loop_variable(self):
+        for digest in ({"$sha256": {"$from": "item"}},
+                       {"$sha256": {"$from": "item.text"}},
+                       {"$from": "inputs.note", "$default": {"$from": "item"}},
+                       {"$sha256": [{"$from": "steps.review.payload"},
+                                    {"$from": "item"}]}):
+            with self.subTest(digest=digest):
+                text = one(fx.spec_doc_0_2([self.step(digest)]))
+                self.assertIn("reads 'item", text)
+                self.assertIn("rule artifact-not-per-element", text)
+
+    def test_0_2_accepts_an_artifact_over_the_whole_step(self):
+        digest = {"$sha256": {"$from": "steps.review.payload"}}
+        self.assertEqual(problems(fx.spec_doc_0_2([self.step(digest)])), [])
+
+    def test_0_2_leaves_a_literal_naming_the_variable_alone(self):
+        digest = {"$sha256": {"$literal": {"$from": "item"}}}
+        self.assertEqual(problems(fx.spec_doc_0_2([self.step(digest)])), [])
+
+    def test_0_1_keeps_loading_it(self):
+        """[0.1] keeps 0.10.0: the read fails the Gate at run time, or takes
+        its `$default` there."""
+        digest = {"$sha256": {"$from": "item"}}
+        self.assertEqual(problems(fx.spec_doc([self.step(digest)])), [])
+
 
 # ------------------------------------------------------------ run time --
 
@@ -701,6 +741,32 @@ class PathHomeAtRunTimeTests(RunCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.fake.calls[0]["request"]["source"],
                          str((self.root / "texts.json").resolve()))
+
+
+
+class ForeachArtifactRunTests(RunCase):
+    def test_each_element_is_gated_and_one_artifact_is_put_to_a_person(self):
+        """Envelope Gates per element; ONE pending artifact decision, over
+        the list of element payloads, after the loop."""
+        step = ArtifactPerElementTests.step(
+            {"$sha256": {"$from": "steps.review.payload"}})
+        step["cog"] = dict(fx.cog_step("first")["cog"])
+        code, output = self.run_op(fx.spec_doc_0_2([step]),
+                                   request={"note": ["a", "b", "c"]})
+        self.assertEqual(code, op_runner.PAUSED_EXIT, output)
+        self.assertEqual(len(self.fake.calls), 3)
+        record = self.record(output, "review")
+        self.assertEqual(record["status"], "awaiting-decision")
+        self.assertEqual([e["status"] for e in record["elements"]],
+                         ["passed", "passed", "passed"])
+        pending = json.loads(Path(output["pending"]).read_text())
+        self.assertEqual(pending["decides"], "artifact")
+        payloads = [{"text": "done"}] * 3
+        self.assertEqual(pending["artifact"]["digests"]["all"],
+                         op_spec.canonical_sha256(payloads))
+        self.assertEqual([p.name for p in
+                          (Path(output["run_dir"]) / "pending").glob("*.json")],
+                         ["review.json"])
 
 
 

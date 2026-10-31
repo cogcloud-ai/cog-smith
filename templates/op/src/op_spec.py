@@ -497,6 +497,39 @@ def reads_steps(expr):
     return bool(found)
 
 
+def expression_reads(expr):
+    """Every read EXPR makes, in document order (0.11.0): `("$from", PATH)`
+    for each `$from` — one nested in a `$default` or another operator's
+    operand included — and `("$run_dir", OPERAND)` and `("$path", OPERAND)`
+    for the operators that read the run's or the request's directory. A
+    `$literal` is data and reads nothing."""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            keys = operator_keys(node)
+            if keys is not None and "$literal" in keys:
+                return
+            if keys is not None and "$from" in keys:
+                found.append(("$from", node["$from"]))
+            elif keys is not None:
+                found.extend((key, node[key]) for key in ("$run_dir", "$path")
+                             if key in keys)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(expr)
+    return found
+
+
+def path_root(path):
+    """The root segment of a mapping PATH, or None when it is not a string."""
+    return path.split(".")[0] if isinstance(path, str) else None
+
+
 # ------------------------------------------------------------ validation --
 
 def _expr_problems(expr, where, input_names, step_ids, dep_ids, loop_vars,
@@ -1146,6 +1179,22 @@ def _strict_problems(doc):
     return problems
 
 
+def _artifact_loop_problems(step, sid, loop_vars):
+    """Why a `foreach` step's artifact Gate is refused for reading its loop
+    variable (`[0.2]`, 0.11.0; rule artifact-not-per-element). Each element
+    has its own envelope Gate, but a human artifact Gate is ONE decision over
+    the whole step, evaluated after the loop, when no element is current: a
+    digest of `item.x` has nothing to read, so the Gate could only fail.
+    `[0.1]` keeps loading it — a read with a `$default` evaluates there."""
+    return [f"Op step {sid!r} gate.artifact reads {path!r}, the foreach "
+            f"variable; a human artifact Gate on a foreach step is one "
+            f"decision over the whole step, made after the loop, when no "
+            f"element is current. Read the step's payload, the list of "
+            f"element payloads, instead (rule artifact-not-per-element)."
+            for kind, path in expression_reads(gate_artifact(step))
+            if kind == "$from" and path_root(path) in loop_vars]
+
+
 def _strict_step_problems(step, sid):
     """The step tightenings a `[0.2]` document is held to (0.11.0): `title`,
     never `name`; typed `title` and `expected_outcome`; a stated
@@ -1439,6 +1488,8 @@ def validate(doc):
                            f"Op step {sid!r} gate.artifact", input_names,
                            step_ids, dep_ids | {sid}, loop_vars, problems,
                            human_steps - {sid}, strict)
+            if strict and loop_vars:
+                problems.extend(_artifact_loop_problems(step, sid, loop_vars))
         for index, requirement in enumerate(requirements(step)):
             if not isinstance(requirement, dict):
                 continue
