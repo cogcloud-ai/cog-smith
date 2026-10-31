@@ -387,9 +387,13 @@ def run_dir_path(subpath, run_dir):
     base = Path(run_dir).resolve()
     try:
         target = (base / candidate).resolve()
-    except (ValueError, OSError) as exc:
-        # An operand no filesystem can name (an embedded NUL, a link loop):
-        # the operand's fault, so an evaluation failure (0.11.0).
+    except (ValueError, OSError, RuntimeError) as exc:
+        # An operand no filesystem can name — an embedded NUL (ValueError),
+        # or a link loop, which Python 3.12's resolve raises as RuntimeError
+        # (3.13 returns the path, and the walk below refuses the link) — is
+        # the operand's fault and recurs on every resume: an evaluation
+        # failure (0.11.0), exactly as for `$path`, never an exception that
+        # leaves the run and the step `running`.
         raise OpSpecError(invalid_path_problem(
             "$run_dir", subpath, subpath, exc)) from exc
     if target != base and base not in target.parents:
@@ -411,6 +415,13 @@ def run_dir_path(subpath, run_dir):
             info = os.lstat(current)
         except (FileNotFoundError, NotADirectoryError):
             break                        # nothing exists below here
+        except OSError as exc:
+            # A component too long to name raised out of the walk before
+            # `mkdir` could classify it: the same rule as there applies.
+            if exc.errno not in INVALID_NAME_ERRNOS:
+                raise
+            raise OpSpecError(invalid_path_problem(
+                "$run_dir", subpath, subpath, exc)) from exc
         if stat.S_ISLNK(info.st_mode):
             raise OpSpecError(
                 f"$run_dir subpath {subpath!r} passes through {part!r}, "
@@ -431,10 +442,18 @@ def run_dir_path(subpath, run_dir):
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         # A name the filesystem refuses (too long, not representable) is the
-        # operand's fault and an evaluation failure (0.11.0). Anything else —
-        # a full disk, a permission the machine took away — is the machine's,
-        # an interruption like a crash: raised, and the `running` Track a
+        # operand's fault and an evaluation failure (0.11.0). So is a path
+        # the run already holds as something other than a directory — an
+        # earlier step's FILE at `work`, for `work` or `work/sub` — which
+        # would refuse every resume the same way. Anything else — a full
+        # disk, a permission the machine took away — is the machine's, an
+        # interruption like a crash: raised, and the `running` Track a
         # resume picks up stays true.
+        if exc.errno in NOT_A_DIRECTORY_ERRNOS:
+            raise OpSpecError(
+                f"$run_dir subpath {subpath!r} names a path this run already "
+                f"holds as something other than a directory; $run_dir names "
+                f"a directory inside this run.") from exc
         if exc.errno not in INVALID_NAME_ERRNOS:
             raise
         raise OpSpecError(invalid_path_problem(
@@ -448,6 +467,11 @@ INVALID_NAME_ERRNOS = frozenset(
     code for code in (getattr(errno, name, None)
                       for name in ("ENAMETOOLONG", "EINVAL", "EILSEQ"))
     if code is not None)
+
+
+#: The errors `mkdir` gives when a component already exists and is not a
+#: directory (0.11.0): the run's own contents refuse the operand.
+NOT_A_DIRECTORY_ERRNOS = frozenset({errno.EEXIST, errno.ENOTDIR})
 
 
 def invalid_path_problem(operator, operand, value, exc):
@@ -1964,6 +1988,26 @@ def cog_step_findings(step, source_dir, profile=PROFILE_0_1):
     return findings
 
 
+def cog_source_dir(package_root, step):
+    """The resolved directory STEP's `cog.source` names (0.11.0).
+
+    Every run-time reader of a source — the run start's and a resume's
+    declaration check, the step loop, a resume's changed-Cog record, a
+    cycle's preflight and phases — goes through this, so a source no
+    filesystem can name (an embedded NUL, or a link loop, which Python
+    3.12's resolve raises as RuntimeError) is an OpSpecError naming the
+    step: a refusal with its reason, or a failed step once the run has
+    started, never an exception past the runner's handlers."""
+    source = (step.get("cog") or {}).get("source")
+    try:
+        return (Path(package_root) / str(source)).resolve()
+    except (ValueError, OSError, RuntimeError) as exc:
+        raise OpSpecError(
+            f"Op step {step.get('id')!r} names cog source {source!r}, which "
+            f"is not a path this machine can name ({type(exc).__name__}: "
+            f"{exc}).") from exc
+
+
 def declaration_problems(spec, package_root):
     """Every ERROR a step's Cog declaration carries, across the whole spec —
     what the runner refuses before it invokes anything.
@@ -1974,8 +2018,11 @@ def declaration_problems(spec, package_root):
     problems = []
     profile = getattr(spec, "profile", PROFILE_0_1)
     for step in spec.ordered:
-        source = (Path(package_root)
-                  / str((step.get("cog") or {}).get("source"))).resolve()
+        try:
+            source = cog_source_dir(package_root, step)
+        except OpSpecError as exc:
+            problems.extend(exc.problems)
+            continue
         if profile == PROFILE_0_2 and not source.is_dir():
             problems.append(f"Op step {step.get('id')!r} names cog source "
                             f"{(step.get('cog') or {}).get('source')!r}, "

@@ -1802,3 +1802,21 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   refused. This closes a safety hole that applies equally to both
   profiles, and no published Op names a directory these rules newly
   refuse, so it applies to `[0.1]` too.
+- **Every path a run resolves fails with a reason.** The conversion above
+  of `$run_dir` resolution caught `ValueError` and `OSError`, but Python
+  3.12's `Path.resolve()` raises `RuntimeError` on a symlink loop: a first
+  step that left `work/loop -> loop` made `$run_dir: work/loop/sub` raise out
+  of the run, leaving the run and the second step `running`, and every
+  resume repeated it. `run_dir_path` now converts it as `$path` does. An
+  audit of every path the runner resolves during evaluation or a run-time
+  check found three more: the component walk's `lstat` raised a name too
+  long before `mkdir` could classify it (now the same `INVALID_NAME_ERRNOS`
+  rule); `mkdir` over a path the run holds as a file raised
+  `FileExistsError` or `NotADirectoryError` (now an evaluation failure, as
+  it recurs on every resume); and a `cog.source` was resolved bare at the
+  run start's and a resume's declaration check, in the step loop, in a
+  resume's changed-Cog record, and in a cycle's preflight and phases (now
+  `cog_source_dir`, an `OpSpecError` naming the step: a refusal before the
+  run, a failed step during it). `op_track.checked_path` turns a loop in the
+  runner's own record paths into the `ValueError` it gives for any link.
+  Both profiles, as for the conversion above.

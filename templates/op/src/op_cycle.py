@@ -74,7 +74,10 @@ def preflight(package, phases):
         spec = op_spec.OpSpec(phase)
         problems = op_spec.declaration_problems(spec, package)
         for step in spec.ordered:
-            source = (Path(package) / step['cog']['source']).resolve()
+            try:
+                source = op_spec.cog_source_dir(package, step)
+            except op_spec.OpSpecError:
+                continue  # declaration_problems has named it
             manifest, error = op_spec.read_cog_manifest(source)
             if error or manifest is None or manifest.get('reaches'):
                 problems.append('Cycles require installed pure Cog declarations: ' + step['id'])
@@ -101,7 +104,7 @@ def new_phase(package, directory, state, phases, outcome='initial', prior=None):
     op_track.ensure_dir(phase_package / 'src')
     doc = copy.deepcopy(phases[outcome])
     for step in doc['steps']:
-        source = (Path(package) / step['cog']['source']).resolve()
+        source = op_spec.cog_source_dir(package, step)
         step['cog']['source'] = os.path.relpath(source, phase_package)
     spec = op_spec.OpSpec(doc)
     op_track.write_json(phase_package / 'op.yaml', doc, base=directory)

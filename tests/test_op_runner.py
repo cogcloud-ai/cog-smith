@@ -1938,6 +1938,92 @@ class EvaluationFailureTests(RunnerCase):
         self.assertEqual([s["status"] for s in track["steps"]],
                          ["passed", "passed", "passed"])
 
+    # ---- review round 2, finding 2: every path error a run can meet ----
+
+    @staticmethod
+    def plant(make):
+        """A watcher that lets the FIRST invocation change the run directory,
+        as a Cog that writes into its run may."""
+        def watcher(fake, request_path):
+            if len(fake.calls) == 1:
+                make(Path(request_path).parent.parent)
+        return watcher
+
+    def test_a_run_dir_through_a_symlink_loop_fails_the_step_and_the_resume(self):
+        """A first step left `work/loop -> loop`; Python 3.12's resolve of
+        `work/loop/sub` raised RuntimeError, which escaped the handler and
+        left the run and the second step `running` — and a resume did it
+        again. The Track now records a failed step and a failed run, both
+        times."""
+        def loop(run_dir):
+            (run_dir / "work").mkdir()
+            (run_dir / "work" / "loop").symlink_to("loop")
+        doc = self.nul_doc({"out": {"$run_dir": "work/loop/sub"}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "x"},
+            answers=self.answers(), watcher=self.plant(loop))
+        record = self.assert_failed_at(code, output, track, "second",
+                                       "work/loop/sub")
+        self.assertEqual(record["gate"]["policy"], "evaluation")
+        self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
+                         [("first", "passed"), ("second", "failed"),
+                          ("third", "not-reached")])
+        code, again = op_runner.resume(self.package, output["run_dir"])
+        track = json.loads(Path(again["track"]).read_text())
+        self.assert_failed_at(code, again, track, "second", "work/loop/sub")
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_a_run_dir_component_too_long_to_name_fails_the_step(self):
+        """The symlink walk read each component before `mkdir` could
+        classify a name too long, and raised OSError out of the run."""
+        doc = self.nul_doc({"out": {"$run_dir": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "x" * 4096},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not a path this machine can name")
+
+    def test_a_run_dir_the_run_holds_as_a_file_fails_the_step(self):
+        """`mkdir` over an earlier step's FILE raised FileExistsError (or
+        NotADirectoryError below it), which every resume would repeat."""
+        for operand in ("work", "work/sub"):
+            with self.subTest(operand=operand):
+                doc = self.nul_doc({"out": {"$run_dir": operand}})
+                code, output, track, fake = self.go(
+                    doc, request={"note": "hi", "source": "x"},
+                    answers=self.answers(),
+                    watcher=self.plant(lambda run_dir:
+                                       (run_dir / "work").write_text("x")))
+                self.assert_failed_at(code, output, track, "second",
+                                      "other than a directory")
+
+    def test_a_cog_source_through_a_symlink_loop_is_refused_before_the_run(self):
+        """The run start's declaration check resolved each source and raised
+        RuntimeError past the CLI's handlers. It is a refusal by name."""
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
+        doc["steps"][1]["cog"]["source"] = "../looped/inner"
+        fx.write_package(self.package, doc)
+        (self.root / "looped").symlink_to("looped")
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.run(self.package, path)
+        self.assertIn("not a path this machine can name",
+                      " ".join(caught.exception.problems))
+        self.assertFalse((self.package / "runs").exists())
+
+    def test_a_cog_source_that_loops_once_the_run_started_fails_its_step(self):
+        """The step loop resolves the source again before it invokes: a loop
+        made after the run started fails that step, never the process."""
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
+        doc["steps"][2]["cog"]["source"] = "../looped/inner"
+        code, output, track, fake = self.go(
+            doc, answers=self.answers(),
+            watcher=self.plant(lambda _run_dir: (self.root / "looped")
+                               .symlink_to("looped")))
+        self.assert_failed_at(code, output, track, "third",
+                              "not a path this machine can name")
+        self.assertEqual([c["task"] for c in fake.calls], ["ask", "summarize"])
+
     def test_a_full_disk_under_run_dir_is_still_an_interruption(self):
         """Only a NAME the filesystem refuses is the operand's fault. An
         OSError that is the machine's — a full disk — still raises, leaving

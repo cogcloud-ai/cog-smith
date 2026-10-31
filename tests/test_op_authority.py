@@ -1670,6 +1670,15 @@ class ControlFileTests(unittest.TestCase):
         self.assertFalse((self.run_dir / "grants").exists())
         self.assertFalse((self.run_dir / "outputs").exists())
 
+    def test_a_control_file_is_never_written_through_a_symlink_loop(self):
+        # Review round 2, finding 2: resolving a loop raised RuntimeError,
+        # which no caller of `write_json` handles; it is refused as a link.
+        (self.run_dir / "envelopes").symlink_to("envelopes")
+        with self.assertRaises(ValueError) as caught:
+            op_track.write_json(self.run_dir / "envelopes" / "first.json",
+                                {"smuggled": True}, base=self.run_dir)
+        self.assertIn("symlink loop", str(caught.exception))
+
     def test_run_dir_refuses_a_symlinked_component_inside_the_run(self):
         (self.run_dir / "grants").mkdir()
         (self.run_dir / "outputs").symlink_to(self.run_dir / "grants")

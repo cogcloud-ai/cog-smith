@@ -2966,7 +2966,7 @@ def _execute_steps(spec, track, context, run_dir, package_root, authority,
                 record[key] = _kept_by_index(key, record.get(key), value)
             op_track.save(track, run_dir)
 
-        cog_dir = (package_root / step["cog"]["source"]).resolve()
+        cog_dir = op_spec.cog_source_dir(package_root, step)
         # The Cog as it is AT INVOCATION: what answers belongs to the version
         # that answered, and a resume reuses an answer only from the same one
         # (machinery 0.6.2). The digest is taken
@@ -3232,14 +3232,16 @@ def _changed_cogs(spec, package_root, done):
     the run already paid for, and a resume exists to finish a run, not to
     start a new one. What the Track owes its reader is the fact — that the
     Cog at that source is no longer the one whose answer is in evidence."""
-    declared = {step["id"]: (step.get("cog") or {}) for step in spec.ordered}
+    steps = {step["id"]: step for step in spec.ordered}
+    declared = {sid: (step.get("cog") or {}) for sid, step in steps.items()}
     changed = []
     for sid, record in done.items():
         was = record.get("cog_sha256")
         source = declared.get(sid, {}).get("source")
         if not was or not source:
             continue
-        now = cog_package_sha256((Path(package_root) / source).resolve())
+        now = cog_package_sha256(op_spec.cog_source_dir(package_root,
+                                                        steps[sid]))
         if now != was:
             # The SPEC's declared id: it names the Cog at that source, which
             # is what changed, whatever the envelope of the run happened to
