@@ -1714,3 +1714,11 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   (`opspec-profile`, profile layer) on a `[0.1]` spec with what moving to
   `[0.2]` takes. The code-cog machinery is unchanged: it never reads a
   granted change's target field.
+- **A refused decision never ends a resumable cycle.** A process stopped
+  after a phase's run paused durably but before the cycle recorded it left
+  the saved cycle `running`; resuming it with an invalid decision was then
+  classified as a refusal that would leave the state `running`, and made the
+  cycle a final `cycle-failed`, so a corrected decision could not continue
+  it. `drive` now recovers `paused` from the paused child before invoking
+  anything, so the refusal leaves a true state: it is raised (exit 2, as for
+  a single run), and the cycle stays `paused` for a corrected decision.

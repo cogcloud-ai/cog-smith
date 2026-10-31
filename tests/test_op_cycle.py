@@ -318,6 +318,47 @@ class CycleTests(unittest.TestCase):
         self.assertEqual(code, 3, output)
         self.assertEqual(output['step'], 'design')
 
+    def test_an_invalid_decision_after_an_interrupted_pause_leaves_the_cycle_resumable(self):
+        """Op machinery 0.11.0. The child paused durably and the process
+        stopped before the cycle recorded it, so the saved cycle still said
+        `running`. An invalid decision on resume was then classified against
+        that stale state and made the cycle a final `cycle-failed`; it is
+        refused (exit 2) and the cycle, paused, takes a corrected decision."""
+        original = op_cycle.save
+        def crash_once_paused(state, directory):
+            if state['phases'] and state['phases'][-1]['status'] == 'paused':
+                raise OSError('power loss before the cycle recorded the pause')
+            return original(state, directory)
+        with patch.object(op_cycle, 'save', side_effect=crash_once_paused), \
+                self.assertRaises(OSError):
+            op_cycle.start(self.package, self.request)
+        directory = next((self.package / 'cycles').iterdir())
+        self.assertEqual(json.loads((directory / 'cycle.json').read_text())['status'], 'running')
+        run_dir = next((directory / 'phases').glob('*/package/runs/*'))
+        self.assertEqual(json.loads((run_dir / 'track.json').read_text())['status'], 'paused')
+        good = self.decide({'pending': str(run_dir / 'pending' / 'design.json')})
+        bad = self.root / 'bad-decision.json'
+        doc = json.loads(good.read_text()); doc['payload_sha256'] = '0' * 64
+        bad.write_text(json.dumps(doc))
+        import io, contextlib, sys
+        stdout, argv = io.StringIO(), sys.argv
+        sys.argv = ['op_cycle.py', '--resume', str(directory), '--decision', str(bad)]
+        try:
+            with patch.object(op_cycle, 'ROOT', self.package), contextlib.redirect_stdout(stdout):
+                exit_code = op_cycle.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(exit_code, 2, stdout.getvalue())
+        state = json.loads((directory / 'cycle.json').read_text())
+        self.assertEqual(state['status'], 'paused')
+        self.assertNotIn('failure', state)
+        self.assertEqual(state['phases'][-1]['status'], 'paused')
+        code, output = op_cycle.resume(self.package, directory, good)
+        self.assertEqual(code, 3, output)
+        self.assertEqual(output['status'], 'paused')
+        self.assertEqual(output['step'], 'review')
+        self.assertEqual([r['operation'] for r in self.calls].count('design'), 1)
+
     def test_a_refused_first_phase_is_a_failed_cycle(self):
         with patch.object(op_cycle, 'new_phase', side_effect=op_spec.OpSpecError('cannot prepare')):
             code, output = op_cycle.start(self.package, self.request)

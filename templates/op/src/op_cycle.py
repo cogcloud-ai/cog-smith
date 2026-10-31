@@ -165,6 +165,16 @@ def drive(package, directory, state, phases, decision=None):
                     phase['run_dir'] = str(existing[0].parent)
                     save(state, directory)
             track = read(Path(phase['run_dir']) / 'track.json') if phase['run_dir'] else None
+            if track and track['status'] == 'paused' and state['status'] == 'running':
+                # The child paused durably and the process stopped before the
+                # cycle recorded it: the cycle IS paused, waiting on the same
+                # decision (0.11.0). Recovered here, before anything can
+                # fail, so a refused decision is classified against the true
+                # `paused` state — raised, exit 2, the cycle still resumable
+                # with a corrected decision — rather than against a stale
+                # `running` one, which would make it a final `cycle-failed`.
+                phase['status'] = state['status'] = 'paused'
+                save(state, directory)
             if track and track['status'] == 'cycle-transition':
                 phase['status'] = 'cycle-transition'
                 save(state, directory)
