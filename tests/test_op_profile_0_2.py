@@ -443,8 +443,22 @@ class EnvelopeIdentityTests(RunCase):
         self.assertIn("names cog id None",
                       " ".join(self.record(output)["gate"]["reasons"]))
 
-    def test_an_identity_failure_is_retried_like_any_failed_invocation(self):
+    def test_an_identity_failure_is_not_retried(self):
         self.answer_with(fx.envelope(cog_id="openteams/cog-other"),
+                         fx.envelope(payload={"text": "x"},
+                                     cog_id="openteams/cog-first"))
+        doc = fx.spec_doc_0_2([fx.cog_step("first", on_fail="retry-once")])
+        code, output = self.run_real(doc)
+        self.assertEqual(code, 1, output)
+        self.assertEqual(len(self.processes), 1)
+        envelope = json.loads(Path(self.record(output)["envelope"]).read_text())
+        self.assertEqual(envelope["error"]["code"], "cog-identity-mismatch")
+
+    def test_an_ordinary_failed_invocation_is_still_retried(self):
+        failed = fx.envelope(cog_id="openteams/cog-first")
+        failed.update(ok=False, payload=None,
+                      error={"code": "model-timeout", "detail": "slow"})
+        self.answer_with(failed,
                          fx.envelope(payload={"text": "x"},
                                      cog_id="openteams/cog-first"))
         doc = fx.spec_doc_0_2([fx.cog_step("first", on_fail="retry-once")])
@@ -550,13 +564,32 @@ class ChangeTargetTests(ta.AuthorityCase):
         self.assertIn(f"names target '{fx.REPO}#1'",
                       record["gate"]["reasons"][0])
 
-    def test_a_change_naming_no_target_is_denied(self):
-        change = fx.change_0_2("c-a")
+    def test_a_change_naming_no_target_fails_the_gate(self):
+        for target in (None, "", 7):
+            with self.subTest(target=target):
+                change = fx.change_0_2("c-a")
+                if target is None:
+                    del change["target"]
+                else:
+                    change["target"] = target
+                change["content_sha256"] = \
+                    op_runner.change_content_sha256(change)
+                code, output, track = self.start(
+                    doc=fx.as_0_2(ta.spec_doc()),
+                    answers=self.answers(change))
+                self.assertEqual(code, 1, output)
+                record = self.step(track, "compose")
+                self.assertEqual(record["gate"]["status"], "fail")
+                self.assertIn("with no target",
+                              " ".join(record["gate"]["reasons"]))
+
+    def test_a_0_1_change_naming_no_target_still_pauses(self):
+        change = fx.change("c-a")
         del change["target"]
         change["content_sha256"] = op_runner.change_content_sha256(change)
-        code, out, record = self.write_with({"c-a": "approve"}, change)
-        self.assertEqual(record["status"], "denied")
-        self.assertIn("names target None", record["gate"]["reasons"][0])
+        code, output, _ = self.start(doc=ta.spec_doc(),
+                                     answers=self.answers(change))
+        self.assertEqual(code, op_runner.PAUSED_EXIT, output)
 
     def test_an_edit_may_not_change_the_target(self):
         code, output, _ = self.start(doc=fx.as_0_2(ta.spec_doc()),

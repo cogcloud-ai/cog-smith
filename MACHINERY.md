@@ -1693,16 +1693,19 @@ callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
   run context carries the profile, and a `$path` that evaluates to a value
   beginning with `~` fails the step as an evaluation failure. `invoke_cog`
   takes `expected_cog_id`: a well-formed envelope whose `cog.id` is not the
-  step's is a failed invocation (`invocation-failed`, naming the step's Cog,
-  the other envelope kept as `error.evidence.envelope`), retried by
-  `retry-once` like any other. The seam is passed it only for a `[0.2]`
+  step's is a failed invocation (`cog-identity-mismatch`, naming the step's
+  Cog, the other envelope kept as `error.evidence.envelope`), which
+  `retry-once` does not retry: the same invocation would name the same Cog
+  again. The seam is passed it only for a `[0.2]`
   step, so a `[0.1]` Cog is invoked exactly as before.
 - **A change names its `target`.** Under `[0.2]` the field of a proposed
   change that names what it changes is `target`: write admission requires
   every approved change's `target` to be a write target the admission lists,
   `granted_change` carries `target`, and an edit may not change it
   (`apply_decision(..., change_target_key=)`, `edited_change_problems(...,
-  target_key=)`). Under `[0.1]` it stays `repository`, the default, so
+  target_key=)`). A `[0.2]` change whose `target` is missing or not a
+  non-empty string fails the changes Gate (`pending_changes(...,
+  require_target=)`). Under `[0.1]` it stays `repository`, the default, so
   `smith op decide` and existing callers are unchanged.
 - **Smith.** `op new` writes the spec as declared — it never rewrites a
   `[0.1]` spec, whose Cogs' changes name `repository` — and OP.md's

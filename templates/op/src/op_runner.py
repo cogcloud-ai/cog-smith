@@ -328,7 +328,7 @@ def problem_shape_problems(problem, index):
 
 
 def failed_envelope(cog_dir, task, detail, raw=None, carried=None,
-                    evidence=None, emitted=None):
+                    evidence=None, emitted=None, code="invocation-failed"):
     """A synthetic ok:false envelope for an invocation that never produced a
     usable result. When the Cog's output was a well-formed envelope, its
     identity, binding and problems are carried across rather than thrown
@@ -346,9 +346,11 @@ def failed_envelope(cog_dir, task, detail, raw=None, carried=None,
     nonzero — is kept whole as `error.evidence.envelope` (EMITTED); before
     0.10.0 it sat in `raw`, which envelope v1 types as a string. Only the
     carried fields envelope v1 can type are carried: an identity with a
-    non-empty string id, a binding object, and well-formed problems."""
+    non-empty string id, a binding object, and well-formed problems.
+    `code` is `invocation-failed` except for an envelope naming another Cog,
+    which is `cog-identity-mismatch` so `retry-once` can leave it alone."""
     carried = carried if isinstance(carried, dict) else {}
-    error = {"code": "invocation-failed", "detail": str(detail)}
+    error = {"code": code, "detail": str(detail)}
     if evidence is not None or emitted is not None:
         record = dict(evidence or {})
         if emitted is not None:
@@ -467,7 +469,8 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
             return failed_envelope(
                 cog_dir, task, impostor,
                 carried={"cog": {"id": expected_cog_id, "version": None}},
-                evidence=evidence, emitted=envelope)
+                evidence=evidence, emitted=envelope,
+                code=IDENTITY_MISMATCH)
     if completed.returncode != 0:
         detail = (f"the Cog command for task {task!r} exited "
                   f"{completed.returncode}")
@@ -476,6 +479,11 @@ def invoke_cog(cog_dir, task, request_path, grant_path=None, run_id=None,
         return failed_envelope(cog_dir, task, detail, carried=envelope,
                                evidence=evidence, emitted=envelope)
     return envelope
+
+
+#: The error code of an envelope that names another Cog (0.11.0). It is
+#: never retried: the same invocation would name the same Cog again.
+IDENTITY_MISMATCH = "cog-identity-mismatch"
 
 
 def identity_problem(envelope, expected_cog_id):
@@ -1197,7 +1205,7 @@ def grant_record(grant, path):
 
 # -------------------------------------------------------- the human gate --
 
-def pending_changes(payload, sid):
+def pending_changes(payload, sid, require_target=False):
     """The proposed changes in a human-gated step's payload.
 
     Change ids are unique STRINGS. Two proposals sharing an id would collapse
@@ -1210,7 +1218,11 @@ def pending_changes(payload, sid):
     and `target_sha256` must be 64 hex characters. A proposal carrying
     `"content_sha256": "placeholder"` used to pass the pause and be
     laundered into a valid digest at approval; now the pause is refused by
-    name."""
+    name.
+
+    REQUIRE_TARGET (a `[0.2]` document, 0.11.0): every change names its
+    `target` as a non-empty string, so a person is never asked to approve a
+    change no admission could let the run write."""
     changes = payload.get("changes") if isinstance(payload, dict) else None
     if not isinstance(changes, list) or any(
             not isinstance(c, dict) or not isinstance(c.get("change_id"), str)
@@ -1220,8 +1232,12 @@ def pending_changes(payload, sid):
             f"`changes` list of objects with a change_id (a string): that is "
             f"what the human decides about.")
     seen, duplicates, unhashed, misstated = set(), [], [], []
+    untargeted = []
     for change in changes:
         cid = change["change_id"]
+        if require_target and (not isinstance(change.get("target"), str)
+                               or not change["target"]):
+            untargeted.append(cid)
         if cid in seen and cid not in duplicates:
             duplicates.append(cid)
         seen.add(cid)
@@ -1249,6 +1265,11 @@ def pending_changes(payload, sid):
             f"Op step {sid!r} proposes change(s) {unhashed} with no "
             f"content_sha256; a proposed change states the hash of its own "
             f"content, and the runner never invents one for it.")
+    if untargeted:
+        raise op_spec.OpSpecError(
+            f"Op step {sid!r} proposes change(s) {untargeted} with no target "
+            f"(a non-empty string); a change names the target it changes, "
+            f"and the write admission is checked against it.")
     if duplicates:
         raise op_spec.OpSpecError(
             f"Op step {sid!r} proposes change id(s) {duplicates} more than "
@@ -1744,7 +1765,8 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
              request_sha256=None):
     """Invoke once, gate, and retry exactly once when the failure was a
     transport/model failure (ok:false) and the step asked for retry-once.
-    An error-severity problem in an ok envelope is never retried.
+    An error-severity problem in an ok envelope is never retried, nor is an
+    envelope naming another Cog (0.11.0).
 
     `seam` carries the invocation context a granted step gets: the grant
     path, the run id, and the journal. It is EMPTY for a step with no
@@ -1795,7 +1817,9 @@ def _attempt(cog_dir, task, request_path, envelope_path, on_fail, seam=None,
     attempts.append(_attempt_entry(number, path, request_sha256, digest,
                                    ANSWERED))
     if (gate["status"] == "fail" and on_fail == "retry-once"
-            and not envelope.get("ok")):
+            and not envelope.get("ok")
+            and (envelope.get("error") or {}).get("code")
+            != IDENTITY_MISMATCH):
         number += 1
         digest = cog_package_sha256(cog_dir)
         path = Path(path_for(number))
@@ -2973,7 +2997,9 @@ def _execute_steps(spec, track, context, run_dir, package_root, authority,
             # Gate cannot state is: the step ran, but produced nothing a
             # person can decide about. It used to raise out of the run.
             try:
-                pending_changes(payload, sid)
+                pending_changes(
+                    payload, sid,
+                    require_target=spec.profile == op_spec.PROFILE_0_2)
             except op_spec.OpSpecError as exc:
                 gate = fields["gate"] = {
                     "policy": op_spec.HUMAN_GATE_POLICY, "status": "fail",

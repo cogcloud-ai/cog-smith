@@ -560,10 +560,13 @@ error. A `[0.2]` document is held to the profile's tightenings at LOAD:
 And at RUN time: every named Cog must be present when the run starts, at the
 version the step states (a validator, `op check`, still warns on a Cog that is
 absent and errors on one at another version); an envelope whose `cog.id` is
-not the step's `cog.id` is a failed invocation, with the envelope kept as
-evidence; a computed `$path` beginning with `~` fails the step; and a
-proposed change names what it changes as `target` — the write target the
-admission must list, which an edit may not change and the grant carries.
+not the step's `cog.id` is a failed invocation (`cog-identity-mismatch`),
+with the envelope kept as evidence, and `retry-once` does not retry it; a
+computed `$path` beginning with `~` fails the step; and a proposed change
+names what it changes as `target` — the write target the admission must
+list, which an edit may not change and the grant carries. A change with no
+`target` (or one that is not a non-empty string) fails the changes Gate, so
+no one is asked to approve it. A dry run does not check the named Cogs.
 
 To move a `[0.1]` Op to `[0.2]`: rename `name` to `title`, state every
 `cog.version`, write `targets` for `repositories`, have every Cog that
