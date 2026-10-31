@@ -1008,7 +1008,10 @@ run `running` for `--resume`, as a crash does.
 Proposals a human Gate over changes cannot put to a person — no `changes` list,
 a duplicate id, a missing or misstated hash — are a failed Gate on that step,
 as an artifact the Gate cannot state is: no pending document is written, and
-`on_fail` applies.
+`on_fail` applies. That includes an artifact expression that cannot be
+evaluated, such as a `$from` that is not available: it is the one mapping
+whose evaluation failure is a failed Gate rather than a failed run, so
+`on_fail: skip` skips the step and the run continues.
 
 ## 8. Changing an Op
 
