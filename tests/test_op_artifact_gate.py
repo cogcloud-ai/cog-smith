@@ -180,6 +180,40 @@ class PauseTests(ArtifactGateCase):
         self.assertEqual(code, 3, out)
         self.assertEqual(len(self.fake.calls), 2)
 
+    def test_an_artifact_that_cannot_be_evaluated_follows_on_fail_skip(self):
+        """Op Spec profile, "Evaluation failures": an unavailable `$from`
+        fails the run and bypasses `on_fail` — EXCEPT in an artifact Gate's
+        expressions, whose evaluation failure is a failed Gate. So
+        `on_fail: skip` skips the step, blocks its dependants, and the run
+        continues to a `completed-with-problems` end."""
+        doc = artifact_spec(artifact={
+            "kind": "cog-contract",
+            "digests": {"contract": {
+                "$sha256": {"$from": "steps.design.payload.missing"}}}},
+            on_fail="skip")
+        del doc["outputs"]
+        designed = fx.envelope(payload={"contract": CONTRACT},
+                               cog_id="openteams/cog-design")
+        for build in (lambda d: d, fx.as_0_2):
+            with self.subTest(schema=build(doc)["schema"]):
+                code, output, track = self.start(
+                    build(doc), fake=fx.FakeCog({"ask": designed}))
+                self.assertEqual(code, 0, output)
+                self.assertEqual(track["status"], "completed-with-problems")
+                record = self.step(track, "design")
+                self.assertEqual(record["status"], "skipped")
+                self.assertEqual(record["gate"]["status"], "fail")
+                self.assertTrue(any("cannot be stated" in r and
+                                    "not available in this run" in r
+                                    for r in record["gate"]["reasons"]),
+                                record["gate"]["reasons"])
+                self.assertEqual(self.step(track, "build")["status"],
+                                 "blocked")
+                self.assertIsNone(track["failed_step"])
+                self.assertFalse(
+                    (Path(output["run_dir"]) / "pending").exists())
+                self.assertEqual(len(self.fake.calls), 1)
+
     def test_a_digest_that_is_not_a_sha256_is_refused_not_repaired(self):
         doc = artifact_spec(artifact={
             "kind": "cog-contract",

@@ -10,6 +10,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import op_fixtures as fx
@@ -45,10 +46,10 @@ class GateTests(unittest.TestCase):
     def test_three_legible_states(self):
         base = {"envelope": 1, "ok": True, "error": None, "problems": []}
         self.assertEqual(op_runner.gate_envelope(base)["status"], "pass")
-        warned = dict(base, problems=[{"severity": "warn", "detail": "look"}])
+        warned = dict(base, problems=[{"check": "contract", "severity": "warn", "detail": "look"}])
         self.assertEqual(op_runner.gate_envelope(warned)["status"],
                          "pass-with-problems")
-        errored = dict(base, problems=[{"severity": "error", "detail": "bad"}])
+        errored = dict(base, problems=[{"check": "contract", "severity": "error", "detail": "bad"}])
         self.assertEqual(op_runner.gate_envelope(errored)["status"], "fail")
         self.assertEqual(op_runner.gate_envelope(dict(base, ok=False))["status"],
                          "fail")
@@ -56,10 +57,40 @@ class GateTests(unittest.TestCase):
     def test_gate_records_policy_reasons_and_empty_guards(self):
         decision = op_runner.gate_envelope(
             {"envelope": 1, "ok": True,
-             "problems": [{"severity": "warn", "detail": "thin evidence"}]})
+             "problems": [{"check": "contract", "severity": "warn", "detail": "thin evidence"}]})
         self.assertEqual(decision["policy"], op_spec.GATE_POLICY)
         self.assertEqual(decision["guards"], [])
         self.assertEqual(decision["reasons"], ["thin evidence"])
+
+    def test_both_warning_spellings_pass_with_problems(self):
+        """`warn` is the deprecated spelling of `warning`; envelope 1 still
+        accepts it."""
+        for severity in ("warning", "warn"):
+            with self.subTest(severity=severity):
+                decision = op_runner.gate_envelope(
+                    {"envelope": 1, "ok": True, "problems": [
+                        {"check": "c", "detail": "d", "severity": severity}]})
+                self.assertEqual(decision["status"], "pass-with-problems")
+
+    def test_a_problem_without_a_known_severity_is_malformed_not_a_warning(self):
+        """Machinery 0.10.0: a problem whose severity is missing or not one
+        envelope v1 names used to read as a warning, so the step passed with
+        problems. It is malformed output now, and the Gate fails it."""
+        well = {"check": "grounding", "detail": "quote 3", "severity": "error"}
+        for bad in ({"check": "grounding", "detail": "quote 3"},
+                    dict(well, severity="fatal"),
+                    dict(well, severity="ERROR"),
+                    dict(well, severity=None),
+                    {"detail": "no check", "severity": "warning"},
+                    dict(well, check=""),
+                    dict(well, detail=None)):
+            with self.subTest(problem=bad):
+                envelope = {"envelope": 1, "ok": True, "problems": [bad]}
+                self.assertTrue(op_runner.envelope_problems(envelope))
+                decision = op_runner.gate_envelope(envelope)
+                self.assertEqual(decision["status"], "fail")
+                self.assertEqual(decision["reasons"][0],
+                                 "Cog result is not envelope v1.")
 
     def test_non_envelope_result_fails_the_gate(self):
         self.assertEqual(op_runner.gate_envelope({"ok": True})["status"], "fail")
@@ -120,10 +151,25 @@ class LinearRunTests(RunnerCase):
         self.assertEqual(output["outputs"], {"summary": "final"})
         self.assertEqual(track["outputs"], {"summary": "final"})
 
+    def test_an_unknown_problem_severity_fails_the_step(self):
+        """Machinery 0.10.0: this run used to complete with problems."""
+        answers = {"ask": fx.envelope(payload={"text": "a"},
+                                      problems=[{"check": "grounding",
+                                                 "detail": "unsure",
+                                                 "severity": "notice"}]),
+                   "summarize": fx.envelope(payload={"text": "b"})}
+        code, output, track, fake = self.go(self.doc(), answers=answers)
+        self.assertEqual(code, 1)
+        self.assertEqual(output["failed_step"], "first")
+        first = self.step(track, "first")
+        self.assertEqual(first["status"], "failed")
+        self.assertIn("'notice'", " ".join(first["gate"]["reasons"]))
+        self.assertEqual(len(fake.calls), 1)
+
     def test_track_shape(self):
         answers = {"ask": fx.envelope(payload={"text": "a"}),
                    "summarize": fx.envelope(payload={"text": "b"},
-                                            problems=[{"severity": "warn",
+                                            problems=[{"check": "contract", "severity": "warn",
                                                        "detail": "thin"}])}
         code, output, track, _ = self.go(self.doc(), answers=answers)
         self.assertEqual(code, 0)
@@ -275,7 +321,7 @@ class OnFailTests(RunnerCase):
 
     def test_retry_once_never_retries_an_error_problem(self):
         answers = {"ask": fx.envelope(payload={"text": "x"},
-                                      problems=[{"severity": "error",
+                                      problems=[{"check": "contract", "severity": "error",
                                                  "detail": "ungrounded"}]),
                    "summarize": fx.envelope(payload={})}
         code, output, track, fake = self.go(self.two_steps("retry-once"),
@@ -343,7 +389,7 @@ class ForeachTests(RunnerCase):
     def test_a_warning_element_makes_the_step_pass_with_problems(self):
         answers = {"classify": [fx.envelope(payload={"label": "a"}),
                                 fx.envelope(payload={"label": "b"},
-                                            problems=[{"severity": "warn",
+                                            problems=[{"check": "contract", "severity": "warn",
                                                        "detail": "unsure"}])]}
         code, _, track, _ = self.go(self.doc(), request=self.request(),
                                     answers=answers)
@@ -483,7 +529,7 @@ class RepeatTests(RunnerCase):
     def test_a_repeat_with_problems_makes_the_step_pass_with_problems(self):
         answers = {"draft": [fx.envelope(payload={"n": 1}),
                              fx.envelope(payload={"n": 2},
-                                         problems=[{"severity": "warn",
+                                         problems=[{"check": "contract", "severity": "warn",
                                                     "detail": "unsure"}])]}
         code, _, track, _ = self.go(self.doc(count=2, require=2),
                                     answers=answers)
@@ -1756,6 +1802,297 @@ class UnavailableResultTests(RunnerCase):
             [Path(output["track"])])
 
 
+class EvaluationFailureTests(RunnerCase):
+    """Machinery 0.10.0 (Op Spec core principle 7: an interrupted run still
+    says what was attempted). A mapping that cannot be evaluated at run time
+    used to raise out of the run: the Track stayed `running` with the step
+    `running` and no reason, or `completed-with-problems` with
+    `outputs: null`, while the CLI exited 2 `invalid-input`. It is now a
+    failed step and a failed run, with the reason, and exit 1."""
+
+    def linear(self, second_input, **extra):
+        first = fx.cog_step("first", task="ask")
+        second = fx.cog_step("second", task="summarize", depends_on=["first"])
+        second["input"] = second_input
+        third = fx.cog_step("third", task="report", depends_on=["second"])
+        return fx.spec_doc([first, second, third], **extra)
+
+    def answers(self):
+        return {"ask": fx.envelope(payload={"text": "a"}),
+                "summarize": fx.envelope(payload={"text": "b"}),
+                "report": fx.envelope(payload={"text": "c"}),
+                "classify": fx.envelope(payload={"label": "x"})}
+
+    def assert_failed_at(self, code, output, track, sid, needle):
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertEqual(output["failed_step"], sid)
+        self.assertIn(needle, output["reason"])
+        self.assertEqual(track["status"], "failed")
+        self.assertEqual(track["failed_step"], sid)
+        self.assertIn(needle, track["reason"])
+        self.assertTrue(track["ended_at"])
+        record = self.step(track, sid)
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["gate"]["status"], "fail")
+        self.assertEqual(record["gate"]["policy"], "evaluation")
+        self.assertTrue(any(needle in r for r in record["gate"]["reasons"]))
+        self.assertNotIn("running", [s["status"] for s in track["steps"]])
+        return record
+
+    def test_a_from_path_missing_at_evaluation_fails_the_step(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.missing"}})
+        code, output, track, fake = self.go(doc, answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not available in this run")
+        self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
+                         [("first", "passed"), ("second", "failed"),
+                          ("third", "not-reached")])
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_foreach_items_that_are_not_a_list_fail_the_step(self):
+        step = fx.cog_step("classify", task="classify")
+        step["foreach"] = {"items": {"$from": "inputs.items"}, "as": "item"}
+        step["input"] = {"title": {"$from": "item.title"}}
+        doc = fx.spec_doc([step], inputs=[{"name": "items"}])
+        code, output, track, fake = self.go(
+            doc, request={"items": {"title": "not a list"}},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "classify", "not a list")
+        self.assertEqual(fake.calls, [])
+
+    def test_a_foreach_element_that_cannot_be_built_keeps_earlier_elements(self):
+        step = fx.cog_step("classify", task="classify")
+        step["foreach"] = {"items": {"$from": "inputs.items"}, "as": "item"}
+        step["input"] = {"title": {"$from": "item.title"}}
+        doc = fx.spec_doc([step], inputs=[{"name": "items"}])
+        code, output, track, fake = self.go(
+            doc, request={"items": [{"title": "one"}, {"name": "no title"}]},
+            answers=self.answers())
+        record = self.assert_failed_at(code, output, track, "classify",
+                                       "not available in this run")
+        # The element that ran is still on the record: a resume reuses it.
+        self.assertEqual([e["status"] for e in record["elements"]],
+                         ["passed"])
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_outputs_that_cannot_be_evaluated_fail_the_run(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}},
+                          outputs={"x": {"$from": "steps.third.payload.nope"}})
+        code, output, track, fake = self.go(doc, answers=self.answers())
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertIsNone(output["failed_step"])
+        self.assertIn("outputs could not be evaluated", output["reason"])
+        self.assertEqual(track["status"], "failed")
+        self.assertIsNone(track["failed_step"])
+        self.assertIsNone(track["outputs"])
+        self.assertIn("not available in this run", track["reason"])
+        self.assertEqual([s["status"] for s in track["steps"]],
+                         ["passed", "passed", "passed"])
+
+    # ---- machinery 0.11.0: a value no filesystem can name ---------------
+
+    def nul_doc(self, second_input, **extra):
+        doc = self.linear(second_input, **extra)
+        doc["inputs"] = [{"name": "note"}, {"name": "source"}]
+        return doc
+
+    def test_a_path_with_an_embedded_nul_fails_the_step(self):
+        """A request is valid JSON with "\\u0000" in a string, and `$path`
+        resolving it raised ValueError out of the run: exit 2, with the run
+        and the step left `running`. It is an evaluation failure."""
+        doc = self.nul_doc({"source": {"$path": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "texts\u0000.json"},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not a path this machine can name")
+        self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
+                         [("first", "passed"), ("second", "failed"),
+                          ("third", "not-reached")])
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_a_run_dir_with_an_embedded_nul_fails_the_step(self):
+        doc = self.nul_doc({"out": {"$run_dir": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "out\u0000put"},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not a path this machine can name")
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_outputs_with_an_embedded_nul_path_fail_the_run(self):
+        doc = self.nul_doc({"text": {"$from": "steps.first.payload.text"}},
+                           outputs={"file": {"$path": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "a\u0000b"},
+            answers=self.answers())
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertIsNone(output["failed_step"])
+        self.assertIn("outputs could not be evaluated", output["reason"])
+        self.assertIn("not a path this machine can name", track["reason"])
+        self.assertEqual(track["status"], "failed")
+        self.assertIsNone(track["outputs"])
+        self.assertEqual([s["status"] for s in track["steps"]],
+                         ["passed", "passed", "passed"])
+
+    # ---- review round 2, finding 2: every path error a run can meet ----
+
+    @staticmethod
+    def plant(make):
+        """A watcher that lets the FIRST invocation change the run directory,
+        as a Cog that writes into its run may."""
+        def watcher(fake, request_path):
+            if len(fake.calls) == 1:
+                make(Path(request_path).parent.parent)
+        return watcher
+
+    def test_a_run_dir_through_a_symlink_loop_fails_the_step_and_the_resume(self):
+        """A first step left `work/loop -> loop`; Python 3.12's resolve of
+        `work/loop/sub` raised RuntimeError, which escaped the handler and
+        left the run and the second step `running` — and a resume did it
+        again. The Track now records a failed step and a failed run, both
+        times."""
+        def loop(run_dir):
+            (run_dir / "work").mkdir()
+            (run_dir / "work" / "loop").symlink_to("loop")
+        doc = self.nul_doc({"out": {"$run_dir": "work/loop/sub"}})
+        with fx.resolve_like_python_3_12("loop"):
+            code, output, track, fake = self.go(
+                doc, request={"note": "hi", "source": "x"},
+                answers=self.answers(), watcher=self.plant(loop))
+            record = self.assert_failed_at(code, output, track, "second",
+                                           "not a path this machine can name")
+            self.assertEqual(record["gate"]["policy"], "evaluation")
+            self.assertEqual([(s["id"], s["status"]) for s in track["steps"]],
+                             [("first", "passed"), ("second", "failed"),
+                              ("third", "not-reached")])
+            code, again = op_runner.resume(self.package, output["run_dir"])
+            track = json.loads(Path(again["track"]).read_text())
+            self.assert_failed_at(code, again, track, "second",
+                                  "not a path this machine can name")
+        # Without the patch — Python 3.13 and later, where resolve returns
+        # the looping path — the walk refuses the link instead.
+        code, output, track, _ = self.go(
+            doc, request={"note": "hi", "source": "x"},
+            answers=self.answers(), watcher=self.plant(loop))
+        self.assert_failed_at(code, output, track, "second", "work/loop/sub")
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_a_run_dir_component_too_long_to_name_fails_the_step(self):
+        """The symlink walk read each component before `mkdir` could
+        classify a name too long, and raised OSError out of the run."""
+        doc = self.nul_doc({"out": {"$run_dir": {"$from": "inputs.source"}}})
+        code, output, track, fake = self.go(
+            doc, request={"note": "hi", "source": "x" * 4096},
+            answers=self.answers())
+        self.assert_failed_at(code, output, track, "second",
+                              "not a path this machine can name")
+
+    def test_a_run_dir_the_run_holds_as_a_file_fails_the_step(self):
+        """`mkdir` over an earlier step's FILE raised FileExistsError (or
+        NotADirectoryError below it), which every resume would repeat."""
+        for operand in ("work", "work/sub"):
+            with self.subTest(operand=operand):
+                doc = self.nul_doc({"out": {"$run_dir": operand}})
+                code, output, track, fake = self.go(
+                    doc, request={"note": "hi", "source": "x"},
+                    answers=self.answers(),
+                    watcher=self.plant(lambda run_dir:
+                                       (run_dir / "work").write_text("x")))
+                self.assert_failed_at(code, output, track, "second",
+                                      "other than a directory")
+
+    def test_a_cog_source_through_a_symlink_loop_is_refused_before_the_run(self):
+        """The run start's declaration check resolved each source and raised
+        RuntimeError (Python 3.12) past the CLI's handlers. It is a refusal
+        by name."""
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
+        doc["steps"][1]["cog"]["source"] = "../looped/inner"
+        fx.write_package(self.package, doc)
+        (self.root / "looped").symlink_to("looped")
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        with fx.resolve_like_python_3_12("looped"), \
+                self.assertRaises(op_spec.OpSpecError) as caught:
+            op_runner.run(self.package, path)
+        self.assertIn("not a path this machine can name",
+                      " ".join(caught.exception.problems))
+        self.assertFalse((self.package / "runs").exists())
+
+    def test_a_cog_source_that_loops_once_the_run_started_fails_its_step(self):
+        """The step loop resolves the source again before it invokes: a loop
+        made after the run started fails that step, never the process."""
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
+        doc["steps"][2]["cog"]["source"] = "../looped/inner"
+        with fx.resolve_like_python_3_12("looped"):
+            code, output, track, fake = self.go(
+                doc, answers=self.answers(),
+                watcher=self.plant(lambda _run_dir: (self.root / "looped")
+                                   .symlink_to("looped")))
+        self.assert_failed_at(code, output, track, "third",
+                              "not a path this machine can name")
+        self.assertEqual([c["task"] for c in fake.calls], ["ask", "summarize"])
+
+    def test_a_full_disk_under_run_dir_is_still_an_interruption(self):
+        """Only a NAME the filesystem refuses is the operand's fault. An
+        OSError that is the machine's — a full disk — still raises, leaving
+        the `running` Track a resume picks up, as a crash does."""
+        import errno as errno_codes
+        doc = self.nul_doc({"out": {"$run_dir": "work"}})
+        real_mkdir = Path.mkdir
+
+        def full(path, *args, **kwargs):
+            if path.name == "work":
+                raise OSError(errno_codes.ENOSPC, "No space left on device")
+            return real_mkdir(path, *args, **kwargs)
+        with mock.patch.object(Path, "mkdir", full), \
+                self.assertRaises(OSError):
+            self.go(doc, request={"note": "hi", "source": "x"},
+                    answers=self.answers())
+        track = json.loads(next((self.package / "runs").glob(
+            "*/track.json")).read_text())
+        self.assertEqual(track["status"], "running")
+        self.assertEqual(self.step(track, "second")["status"], "running")
+
+    def test_resuming_an_evaluation_failure_reruns_only_that_step(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.missing"}})
+        code, output, _, fake = self.go(doc, answers=self.answers())
+        self.assertEqual(code, 1)
+        code, again = op_runner.resume(self.package, output["run_dir"])
+        track = json.loads(Path(again["track"]).read_text())
+        self.assert_failed_at(code, again, track, "second",
+                              "not available in this run")
+        self.assertEqual(len(track["resumes"]), 1)
+        self.assertEqual([c["task"] for c in fake.calls], ["ask"])
+
+    def test_a_completed_run_records_no_reason(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.text"}})
+        code, _, track, _ = self.go(doc, answers=self.answers())
+        self.assertEqual(code, 0)
+        self.assertIsNone(track["reason"])
+
+    def test_the_cli_exits_one_and_prints_the_reason(self):
+        doc = self.linear({"text": {"$from": "steps.first.payload.missing"}})
+        fx.write_package(self.package, doc)
+        path = fx.write_request(self.root / "request.json", {"note": "hi"})
+        op_runner.invoke_cog = fx.FakeCog(self.answers())
+        real_root, op_runner.ROOT = op_runner.ROOT, self.package
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                code = op_runner.main(["--request", str(path)])
+        finally:
+            op_runner.ROOT = real_root
+        self.assertEqual(code, 1)
+        printed = json.loads(stdout.getvalue())
+        self.assertEqual(printed["status"], "failed")
+        self.assertEqual(printed["failed_step"], "second")
+        self.assertTrue(any("not available in this run" in p
+                            for p in printed["problems"]))
+
+
 class ProcessBoundaryTests(unittest.TestCase):
     """Findings 9 and 10: what comes back from the process itself."""
 
@@ -1787,7 +2124,10 @@ class ProcessBoundaryTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["code"], "invocation-failed")
         self.assertIn("139", result["error"]["detail"])
-        self.assertEqual(result["raw"], good)        # kept as evidence
+        # Kept as evidence — in error.evidence, never in `raw`, which
+        # envelope v1 types as text (machinery 0.10.0).
+        self.assertEqual(result["error"]["evidence"]["envelope"], good)
+        self.assertIsNone(result["raw"])
         self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
 
     def test_a_launch_failure_becomes_a_failed_envelope_not_an_exception(self):
@@ -1812,7 +2152,9 @@ class ProcessBoundaryTests(unittest.TestCase):
         result = self.invoke()
         self.assertFalse(result["ok"])
         self.assertIn("problem objects", result["error"]["detail"])
-        self.assertEqual(result["raw"]["problems"], ["broken"])
+        self.assertEqual(result["error"]["evidence"]["envelope"]["problems"],
+                         ["broken"])
+        self.assertIsNone(result["raw"])
         self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
 
     def test_the_gate_never_crashes_on_a_malformed_envelope(self):
@@ -1820,6 +2162,130 @@ class ProcessBoundaryTests(unittest.TestCase):
                     {"envelope": 1, "ok": True, "problems": ["broken"]},
                     {"ok": True}, "not an envelope at all"):
             self.assertEqual(op_runner.gate_envelope(bad)["status"], "fail")
+
+    def test_ok_true_with_an_error_object_never_passes(self):
+        """Machinery 0.10.0 (Op Spec ENVELOPE.md): a consumer MUST treat any
+        `error` as a failed invocation. `ok: true` beside an error object is
+        malformed output — through the seam and at the Gate."""
+        claimed = {"envelope": 1, "ok": True, "payload": {"text": "x"},
+                   "error": {"code": "invalid-input", "detail": "x"},
+                   "problems": []}
+        self.assertTrue(op_runner.envelope_problems(claimed))
+        gate = op_runner.gate_envelope(claimed)
+        self.assertEqual(gate["status"], "fail")
+        self.assertTrue(any("never ok" in r for r in gate["reasons"]))
+        self.answer(self.Result(0, json.dumps(claimed)))
+        result = self.invoke()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "invocation-failed")
+        self.assertIn("never ok", result["error"]["detail"])
+        self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
+
+    def test_an_error_that_is_not_code_and_detail_is_malformed(self):
+        base = {"envelope": 1, "ok": False, "payload": None, "problems": []}
+        for error in ("model down", {"detail": "no code"},
+                      {"code": "", "detail": "empty code"},
+                      {"code": "model-call-failed"}, ["x"]):
+            with self.subTest(error=error):
+                self.assertTrue(op_runner.envelope_problems(
+                    dict(base, error=error)))
+                self.assertEqual(op_runner.gate_envelope(
+                    dict(base, error=error))["status"], "fail")
+        # A well-formed failure and a null error are both envelope v1.
+        self.assertEqual(op_runner.envelope_problems(dict(
+            base, error={"code": "model-call-failed", "detail": "502"})), [])
+        self.assertEqual(op_runner.envelope_problems(
+            dict(base, ok=True, error=None)), [])
+        self.assertEqual(op_runner.envelope_problems(
+            {"envelope": 1, "ok": True, "problems": []}), [])
+
+
+class SynthesizedEnvelopeTests(unittest.TestCase):
+    """Machinery 0.10.0: every envelope the runner synthesizes for a failed
+    invocation is itself envelope v1, checked against the structural rules
+    of the Op Spec's envelope-1 schema (`fx.envelope_1_violations`). The
+    nonzero-exit case used to put the Cog's envelope OBJECT in `raw`, which
+    envelope v1 types as text."""
+
+    class Result:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def setUp(self):
+        self.real_run = op_runner.subprocess.run
+
+    def tearDown(self):
+        op_runner.subprocess.run = self.real_run
+
+    def synthesize(self, answer):
+        def run(command, **kwargs):
+            result = answer(command)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        op_runner.subprocess.run = run
+        result = op_runner.invoke_cog(Path("/nowhere/cog"), "ask",
+                                      Path("/r.json"))
+        self.assertEqual(result["error"]["code"], "invocation-failed")
+        self.assertEqual(fx.envelope_1_violations(result), [])
+        self.assertEqual(op_runner.envelope_problems(result), [])
+        self.assertEqual(op_runner.gate_envelope(result)["status"], "fail")
+        return result
+
+    def test_every_synthesis_path_is_envelope_1(self):
+        good = fx.envelope(payload={"text": "fine"})
+        refused = "ask: error: unrecognized arguments: {flag} /r.json"
+        cases = {
+            "launch failure": lambda c: OSError("no pixi"),
+            "no envelope": lambda c: self.Result(1, "Traceback ...", "boom"),
+            "malformed envelope": lambda c: self.Result(0, json.dumps(
+                {"envelope": True, "ok": "yes", "problems": ["x"],
+                 "raw": {"not": "text"}})),
+            "ok with an error": lambda c: self.Result(0, json.dumps(dict(
+                good, error={"code": "invalid-input", "detail": "x"}))),
+            "nonzero exit after a good envelope": lambda c: self.Result(
+                139, json.dumps(good), "Segmentation fault"),
+            "both request flags refused": lambda c: self.Result(
+                2, "", refused.format(flag=c[-2])),
+            "long streams": lambda c: self.Result(1, "x" * 5000,
+                                                  "y" * 5000),
+        }
+        for name, answer in cases.items():
+            with self.subTest(name):
+                self.synthesize(answer)
+
+    def test_the_original_envelope_is_kept_as_evidence_not_raw(self):
+        failed = fx.envelope(ok=False)
+        failed["error"] = {"code": "contract-unsatisfiable",
+                           "detail": "cannot do that"}
+        result = self.synthesize(lambda c: self.Result(1, json.dumps(failed),
+                                                       "exit 1"))
+        self.assertIsNone(result["raw"])
+        self.assertEqual(result["error"]["evidence"]["envelope"], failed)
+        self.assertEqual(result["error"]["evidence"]["returncode"], 1)
+        self.assertEqual(result["cog"], failed["cog"])
+        self.assertEqual(result["binding"], failed["binding"])
+
+    def test_only_fields_envelope_1_can_type_are_carried(self):
+        """A Cog that exited nonzero after an envelope whose optional fields
+        are the wrong type: the synthesized envelope names the directory it
+        invoked and carries no binding, rather than becoming malformed."""
+        odd = dict(fx.envelope(payload={}), cog={"id": 7}, binding="b")
+        result = self.synthesize(lambda c: self.Result(3, json.dumps(odd)))
+        self.assertEqual(result["cog"], {"id": "unavailable:cog",
+                                         "version": None})
+        self.assertIsNone(result["binding"])
+        self.assertEqual(result["error"]["evidence"]["envelope"], odd)
+
+    def test_the_checker_itself_refuses_the_old_shape(self):
+        """The constraint the tests above rely on: an object in `raw`, or a
+        null `error.evidence`, is not envelope v1."""
+        old = dict(fx.envelope(ok=False), raw={"envelope": 1})
+        self.assertTrue(fx.envelope_1_violations(old))
+        nulled = fx.envelope(ok=False)
+        nulled["error"]["evidence"] = None
+        self.assertTrue(fx.envelope_1_violations(nulled))
+        self.assertEqual(fx.envelope_1_violations(fx.envelope(ok=False)), [])
 
 
 class ForeachBoundaryTests(RunnerCase):

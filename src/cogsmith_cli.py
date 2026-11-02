@@ -411,7 +411,8 @@ def cmd_migrate(args):
 
 def cmd_op_new(args):
     started = time.monotonic()
-    result = smith_op.create(args.from_spec, args.dir)
+    result = smith_op.create(args.from_spec, args.dir, license=args.license,
+                             publisher=args.publisher)
     findings = smith_op.check(result["dest"])
     errors = [f for f in findings if f["level"] == "error"]
     if args.envelope:
@@ -420,6 +421,7 @@ def cmd_op_new(args):
             "op_id": result["op_id"],
             "steps": result["steps"],
             "files": len(result["files"]),
+            "kept": result["kept"],
             "machinery": sorted(smith_op.MACHINERY),
             "machinery_version": smith_op.MACHINERY_VERSION,
             "check": {"errors": len(errors),
@@ -428,6 +430,8 @@ def cmd_op_new(args):
         return 1 if errors else 0
     print(f"created {result['op_id']} -> {result['dest']}")
     print(f"  {len(result['files'])} files; steps: {', '.join(result['steps'])}")
+    for rel in result["kept"]:
+        print(f"  kept the existing {rel}")
     print("  next: fill examples/request.json, then:")
     print("        pixi install && pixi run op -- --request examples/request.json --dry-run")
     return smith_check.report(findings)
@@ -612,7 +616,13 @@ def main():
                                         "written as the package's op.yaml")
     q.add_argument("--dir", required=True,
                    help="destination directory; it may already exist as long "
-                        "as none of the files being written are in it")
+                        "as none of the files being written are in it (an "
+                        "existing OP.md is kept)")
+    q.add_argument("--license",
+                   help=f"OP.md license (default: {smith_op.DEFAULT_LICENSE})")
+    q.add_argument("--publisher",
+                   help=f"OP.md publisher (default: "
+                        f"{smith_op.DEFAULT_PUBLISHER})")
     q.add_argument("--envelope", action="store_true",
                    help="emit an envelope-v1 result")
     q.set_defaults(fn=cmd_op_new, cmd="op new")

@@ -1,12 +1,14 @@
 # Building Ops
 
 **Audience:** Op builders, reviewers, and coding agents
-**Describes:** cog-smith Op machinery 0.9.3 (tested against the machinery constant)
-**Status:** The Op spec `openteams/op-manifest [0.1]` is the laptop side's
-proposal, implemented from an internal Op-runner contract (a design note,
-not distributed).
+**Describes:** cog-smith Op machinery 0.11.0 (tested against the machinery constant)
+**Status:** The Op spec is the execution profile
+`openteams/op-manifest [0.2]` of the public Op Spec (its
+`profiles/op-manifest/PROFILE.md`); `[0.1]`, the laptop side's proposal
+implemented from an internal Op-runner contract, still runs unchanged — see
+[Profiles](#profiles-02-and-01).
 It is a runner SUBSET on purpose: durable state is refused by name, with the
-phase that adds it. There is no `tool:` step kind and never will be:
+reason. There is no `tool:` step kind and never will be:
 deterministic work in an Op is a model-free Cog of `kind: code`, invoked as
 an ordinary `cog:` step (decided 2026-09-17). There is no `human:` step kind
 either: a human Gate is a POLICY on the step that produces what the human
@@ -35,6 +37,7 @@ If you remember only one thing, remember this:
 An Op package is:
 
     op-my-workflow/
+    ├── OP.md                 # the Op Spec entry file: names op.yaml, describes the Op
     ├── op.yaml               # the executable spec — the only thing you author
     ├── pixi.toml             # tasks: op, test
     ├── src/                  # op_runner.py, op_spec.py, op_track.py — SHARED
@@ -77,7 +80,29 @@ feature to build on.
    The spec is validated first, so a refused construct never reaches disk.
    `--dir` may point at a directory that already exists (the folder holding
    the proposal, say) as long as none of the files being written are already
-   there; a collision refuses by filename.
+   there; a collision refuses by filename. An `OP.md` already there — an Op
+   Spec draft — is kept, not replaced.
+
+   `op new` writes `OP.md`, the Op Spec v0.1 entry file: frontmatter with
+   `type: op [0.1]`, a `name` that is the last segment of the spec's `id`
+   (`openteams/op-learning-shortlist` -> `op-learning-shortlist`; an id whose
+   last segment is not 1-64 lowercase letters, digits and single hyphens is
+   refused), the spec's
+   `description`, the quoted `version`, `license` and `publisher` (the Cog
+   defaults, Apache-2.0 and OpenTeams, unless `--license` / `--publisher`
+   say otherwise), `manifest: op.yaml` and `manifest_schema` — the profile
+   op.yaml declares; then a short account of the
+   outcome, the steps, the human Gates, the authority and the deliverable,
+   generated from `op.yaml`. `op.yaml` is what runs, written exactly as the
+   spec declares it: `op new` never rewrites a `[0.1]` spec into `[0.2]`.
+   `op check` reports a
+   missing or invalid `OP.md` as a warning, so an Op created before `op new`
+   wrote one keeps passing, and warns when its `name` is not the id's last
+   segment or its `manifest_schema` is not op.yaml's `schema`; an OP.md
+   `version` that is not a string, or is a string other than op.yaml's
+   version, is an error (`version: null` never agrees with `"None"`). A
+   `[0.1]` op.yaml is a
+   warning (`opspec-profile`) naming what moving to `[0.2]` takes.
 4. **Run.**
 
    ```bash
@@ -110,10 +135,10 @@ it.
 A two-step linear Op: transcribe a recording, then attribute its speakers.
 
 ```yaml
-schema: openteams/op-manifest [0.1]
+schema: openteams/op-manifest [0.2]
 id: openteams/op-example-transcription
 version: "0.1.0"
-name: Video transcription with speaker attribution
+title: Video transcription with speaker attribution
 description: Produces a timestamped, speaker-labelled transcript from a recording.
 
 inputs:
@@ -132,7 +157,7 @@ inputs:
 
 steps:
   - id: transcribe
-    name: Transcribe the recording
+    title: Transcribe the recording
     cog:
       id: openteams/cog-media-transcriber
       version: "0.1.0"
@@ -149,7 +174,7 @@ steps:
     on_fail: stop
 
   - id: attribute-speakers
-    name: Attribute transcript segments to speakers
+    title: Attribute transcript segments to speakers
     depends_on: [transcribe]
     cog:
       id: openteams/cog-speaker-attribution
@@ -180,17 +205,20 @@ track:
 ### Mapping expressions
 
 The vocabulary is CLOSED. An object is an operator only when its key set is
-EXACTLY one of these; every other object is walked recursively, and scalars
-are literals. So `{$from: "x", label: "y"}` and `{$from: "x", $stem: "y"}` are
-both ordinary data — but a `$`-prefixed key that names no operator at all
-(`{$join: [...]}`, with or without siblings) is refused by name wherever it
-appears.
+EXACTLY one of these; an object with no `$`-prefixed key is walked
+recursively, and scalars are literals. A `$`-prefixed key that names no
+operator at all (`{$join: [...]}`, with or without siblings) is refused by
+name wherever it appears. In `[0.2]` any other object holding an operator key
+is refused too — `{$from: "x", label: "y"}`, a `$default` without `$from` —
+so a misspelled sibling (`default:` for `$default:`) is an error, not data;
+write data with `$`-prefixed keys as `{$literal: ...}`. A `[0.1]` document
+still reads those objects as ordinary data.
 
 | Operator | Meaning |
 |---|---|
 | `{$from: <path>}` | Read `inputs.<name>`, `steps.<id>.payload`, `steps.<id>.envelope`, `run.dir`, `run.id`, `request.dir`, or the `foreach` loop variable. Dotted keys index objects; integers index arrays. |
 | `{$from: ..., $default: <expr>}` | The value when present and not null, else the default (itself an expression). |
-| `{$path: <expr>}` | A filesystem path resolved against the request file's directory, absolute. |
+| `{$path: <expr>}` | A filesystem path resolved against the request file's directory, absolute. In `[0.2]` a value beginning with `~` is refused — a literal at load, a computed one when it is evaluated (a failed step); `[0.1]` expands it. |
 | `{$run_dir: <subpath>}` | A directory inside this run, absolute and created. The subpath is RELATIVE and never leaves the run: an absolute value, a `..` escape, or a symlink out of the run is refused before anything is created — including when the value arrived as mapped data. |
 | `{$stem: <expr>}` | `Path(value).stem`. |
 | `{$literal: <any>}` | The value verbatim — the escape hatch for data that looks like an operator. |
@@ -513,6 +541,51 @@ is OMITTED from the starter request. The
 generated test skips its dry-run assertions only while that starter request
 does not validate — a request that validates but maps badly FAILS the suite.
 
+## Profiles: [0.2] and [0.1]
+
+`schema:` picks the rules. `openteams/op-manifest [0.2]` is the published
+profile; `[0.1]` is every Op written before it, and runs exactly as it did
+under machinery 0.10.0. `op check` warns on a `[0.1]` spec; it is never an
+error. A `[0.2]` document is held to the profile's tightenings at LOAD:
+
+- `title` (top level and on every step, including cycle preparation steps)
+  where `[0.1]` says `name`; `name` is refused by name;
+- `id`, `version`, `title`, `description`, step `title` and
+  `expected_outcome` are strings, `inputs[].required` a boolean, and
+  `track.records` a list of strings;
+- every `cog` states its `version`; requirements say `targets`, never
+  `repositories`, and an `action` is `read` or `write`;
+- an object holding an operator key has exactly that operator's keys, and a
+  literal `$path` never begins with `~`;
+- a cycle Op declares no top-level `authority`, not even `{}`;
+- a key that is present has the type the profile's schema gives it, so
+  `inputs: {}`, `outputs: []`, `track: null`, `authority: null`,
+  `authority: {ttl_minutes: null}` (which `[0.1]` reads as the default 60),
+  a step's `depends_on`, `foreach`, `gate`, `authority` or `repeat` of
+  `null`, and `gate: {guards: false}` are refused, where `[0.1]` reads each
+  as the key's absence.
+
+And at RUN time: every named Cog must be present when the run starts, at the
+version the step states (a validator, `op check`, still warns on a Cog that is
+absent and errors on one at another version); an envelope whose `cog.id` is
+not the step's `cog.id` is a failed invocation (`cog-identity-mismatch`),
+with the envelope kept as evidence, and `retry-once` does not retry it —
+when that `cog.id` can be read, this holds even if the envelope is also
+malformed, whose shape problems are then named in the detail (a Cog that
+reports `cog-identity-mismatch` as its own `error.code` is retried like any
+other failure, under either profile); a
+computed `$path` beginning with `~` fails the step; and a proposed change
+names what it changes as `target` — the write target the admission must
+list, which an edit may not change and the grant carries. A change with no
+`target` (or one that is not a non-empty string) fails the changes Gate, so
+no one is asked to approve it. A dry run does not check the named Cogs.
+
+To move a `[0.1]` Op to `[0.2]`: rename `name` to `title`, state every
+`cog.version`, write `targets` for `repositories`, have every Cog that
+proposes changes name the admitted target as `target`, and set OP.md's
+`manifest_schema` to match. Refusal messages for the new rules name the
+profile's rule id (`rule step-title`, `rule operator-exact-keyset`, ...).
+
 ## 4. Gates, Guards, and the Track
 
 The only policy in this subset is `envelope-ok-no-error-problems`: a step
@@ -521,10 +594,20 @@ severity `error`; warnings produce `pass-with-problems` and the run
 continues. A Cog that could not be launched, exited nonzero, or printed
 something that is not a well-formed envelope v1 is an *invocation failure*:
 the Op layer synthesises an `ok: false` envelope, keeps what the Cog did emit
-as evidence in `raw`, and the Gate decides about that like any other result.
+as evidence, and the Gate decides about that like any other result. The
+synthesized envelope is itself envelope v1: output that held no envelope stays
+in `raw` as text, and a JSON object the Cog did print — a malformed envelope,
+or a well-formed one from a process that exited nonzero — is kept whole as
+`error.evidence.envelope`, never in `raw`.
 A well-formed envelope v1 is required to have `envelope: 1` (the integer, not
-`true`), a boolean `ok`, and `problems` as a list of objects; anything else is
-malformed output, not a result.
+`true`), a boolean `ok`, and `problems` as a list of `{check, detail,
+severity}` objects — `check` a non-empty string, `detail` a string, and
+`severity` one of `error`, `warning` or `warn` (the deprecated spelling of
+`warning`); anything else is malformed output, not a result. A problem with a
+missing or unrecognized severity is never read as a warning. An `error` is `null` or `{code, detail}`, and
+an envelope that carries one is never ok: `ok: true` beside an error object is
+malformed output too (since 0.10.0), so a Cog cannot pass the Gate
+while reporting that its invocation failed.
 
 Every synthetic failure carries its process evidence in ONE place —
 `error.evidence` — as `{command, returncode, stdout_tail, stderr_tail}` (each
@@ -560,7 +643,8 @@ A step declares what it requires; it never grants itself anything:
 
 ```yaml
 - id: read-github
-  cog: {id: openteams/cog-example-reader, source: ../cog-example-reader, task: run}
+  cog: {id: openteams/cog-example-reader, version: "0.1.0",
+        source: ../cog-example-reader, task: run}
   authority:
     requires:
       - {resource: github, action: read,
@@ -568,13 +652,14 @@ A step declares what it requires; it never grants itself anything:
 
 - id: compose-proposals
   depends_on: [read-github]
-  cog: {id: openteams/cog-example-composer,
+  cog: {id: openteams/cog-example-composer, version: "0.1.0",
         source: ../cog-example-composer, task: run}
   gate: {policy: human}
 
 - id: write-github
   depends_on: [compose-proposals]
-  cog: {id: openteams/cog-example-writer, source: ../cog-example-writer, task: run}
+  cog: {id: openteams/cog-example-writer, version: "0.1.0",
+        source: ../cog-example-writer, task: run}
   authority:
     requires:
       - {resource: github, action: write,
@@ -588,8 +673,11 @@ by a reissue after an interruption — then invokes the Cog with `--grant`,
 `--run-id` and `--journal` **beside** the request. A read is issued only if
 its targets are a subset of the admitted ones; a write only if every
 requested change was approved by the named human decision, whose record must
-still hash to what the Track recorded. The grant carries EXACTLY the approved
-list — asking for more than was approved is a **denial, not a trim**. A
+still hash to what the Track recorded, and every approved change names a
+write target the admission lists — as `target` in a `[0.2]` document, as
+`repository` in a `[0.1]` one. The grant carries EXACTLY the approved
+list, each change with that same field — asking for more than was approved
+is a **denial, not a trim**. A
 denied step is recorded `denied`, is never invoked, and its `on_fail` applies
 as for a failure.
 
@@ -614,7 +702,8 @@ and the admission say:
 
 ```yaml
 - id: read-handbook
-  cog: {id: openteams/cog-site-reader, source: cogs/site-reader, task: run}
+  cog: {id: openteams/cog-site-reader, version: "0.1.0",
+        source: cogs/site-reader, task: run}
   input: {pages: {$from: inputs.site_config.pages}}
   authority:
     requires:
@@ -629,9 +718,9 @@ and the admission say:
 ```
 
 A request for `docs.example.org/private` is denied at issuance, exactly as an
-unadmitted repository is. `repositories` is the earlier name for `targets`
-and is still read, in the admission and in `authority.requires`, so an
-existing document loads unchanged (Op machinery 0.9.3). One operation states
+unadmitted repository is. `repositories` is the earlier name for `targets`.
+A `[0.2]` requirement refuses it; a `[0.1]` requirement and the admission
+still read it, so an existing document loads unchanged. One operation states
 one of the two names; stating both is refused. A read grant names its
 targets under the key its requirement used, so an existing spec keeps
 issuing the grant an existing Cog reads.
@@ -684,8 +773,8 @@ Its `payload_sha256` must match the hash of the pending PAYLOAD, recomputed
 when the decision is applied, or the run refuses it: the human decided about
 something else. An edited change is re-hashed from its edited content, and
 THAT hash is what the write grant carries; an edit may change what is
-written, never which item it targets or the `target_sha256` it was approved
-against. A decision can only select among the proposed changes; it can never
+written, never which item it targets (`target` in `[0.2]`, `repository` in
+`[0.1]`) or the `target_sha256` it was approved against. A decision can only select among the proposed changes; it can never
 add one. The applied decision is exposed as
 `{approved, rejected, edited, history, decided_by, decided_at}` — `approved`
 carrying the EFFECTIVE change objects (an edited change appears as the
@@ -722,7 +811,8 @@ the step's Cog answered, so it may read the step's own payload:
 
 ```yaml
 - id: design
-  cog: {id: openteams/cog-author, source: ../cog-author, task: ask-composed}
+  cog: {id: openteams/cog-author, version: "0.1.0", source: ../cog-author,
+        task: ask-composed}
   gate:
     policy: human
     decides: artifact
@@ -735,7 +825,8 @@ the step's Cog answered, so it may read the step's own payload:
 
 - id: author
   depends_on: [design]
-  cog: {id: openteams/cog-author, source: ../cog-author, task: ask-composed}
+  cog: {id: openteams/cog-author, version: "0.1.0", source: ../cog-author,
+        task: ask-composed}
   input:
     contract: {$from: steps.design.payload.contract}
     contract_sha256: {$from: steps.design.decision.artifact.digests.contract}
@@ -828,25 +919,36 @@ a durable Track never sits in a directory whose own entry a power loss could
 lose.
 
 The run's own control entries — `grants/`, `pending/`, `decisions/`,
-`journal/`, `run.lock` and `track.json` — are RESERVED: `$run_dir` refuses
-them (and anything under them) at load, so no step can be handed the
-directory that holds its own authority as an output path. The subpath is
+`journal/`, `requests/`, `envelopes/`, `input-request.json`, `run.lock` and
+`track.json` (and the `<file>.<pid>.tmp` siblings their atomic rewrites use)
+— are RESERVED: `$run_dir` refuses them (and anything under them) at load
+when the operand is a literal and at evaluation otherwise, so no step can be
+handed the directory that holds its own authority, or the run's evidence, as
+an output path. So is the run directory ITSELF: an empty, `.` or null operand
+(or one that normalises to the run root) is refused, because the root holds
+every control entry. A literal operand that can never be a string — null, a
+number, a list, a plain object — is refused at load. The subpath is
 NORMALISED before that check, so `outputs/../grants` is refused however it
-is spelled, and no component of it may be a symlink: an alias inside the run
-is how a step would otherwise be handed the control entries under another
-name. The runner's own writes hold to the same rule — every control file
+is spelled, and its first component is compared CASELESSLY (0.11.0, both
+profiles): a filesystem that folds case opens `requests/` for `Requests`, so
+`Requests`, `GRANTS` and `Track.json.1.tmp` are refused on every machine,
+whether or not its filesystem folds. No component of it may be a symlink: an
+alias inside the run is how a step would otherwise be handed the control
+entries under another name. Nor may an existing component BE the run
+directory or a control entry by identity (device and inode), which catches
+an alias the name rule cannot list, such as a hard link to the Track. The runner's own writes hold to the same rule — every control file
 must resolve inside the run directory, reached through no link at all.
 
 ## 7. Refused by name
 
 These are refused when the spec LOADS, one sentence each, naming the
-construct and the phase that adds it — never discovered mid-run:
+construct and the reason — never discovered mid-run:
 
 | Construct | Message says |
 |---|---|
 | `tool:` step | never — deterministic work is a Cog of `kind: code`, invoked as a `cog:` step |
 | `human:` step | never — a human Gate is a policy on a step, `gate: {policy: human}` |
-| `state:` | phase 4 |
+| `state:` | durable state across runs is not part of this Op spec |
 | `authority` on a `foreach` step | the runner issues no per-element grants |
 | `on_fail: retry-once` on a step with `authority` or a reaching Cog | a reaching Cog recovers by resume and journal reconciliation |
 | `repeat` on a step with `authority`, a reaching Cog, or `gate.policy: human` | an effectful step is never repeated; a human decides about one set of proposals |
@@ -858,7 +960,10 @@ construct and the phase that adds it — never discovered mid-run:
 | `repeat.mode` that is not `all` or `until-required` | the two modes, by name |
 | a write requirement's `changes` that is not `{$from: steps.<id>.decision.approved}` | only the approved list can produce a grant |
 | two write requirements reading different human gates | one gate per writing step |
-| `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `run.lock` or `track.json` | the runner's control entries are reserved |
+| `$run_dir` naming `grants`, `pending`, `decisions`, `journal`, `requests`, `envelopes`, `input-request.json`, `run.lock` or `track.json`, in any case | the runner's control entries are reserved |
+| `$run_dir` naming the run directory itself (`""`, `.`, null) | `$run_dir` names a directory inside the run |
+| a `foreach` step with a human Gate over changes | the Gate reads one `changes` list; a foreach payload is a list of element payloads |
+| a `[0.2]` `foreach` step whose human artifact Gate reads the loop variable | each element has its own envelope Gate, but the artifact Gate is one decision over the whole step, after the loop (rule `artifact-not-per-element`) |
 | `authority` on a step whose Cog is not `kind: code` | the runner supports authority on code Cogs only |
 | a requirement outside the Cog's declared `reaches` | the Cog does not declare it |
 | a step that names a reaching Cog and requires nothing | a reaching Cog runs only under a grant |
@@ -868,7 +973,9 @@ construct and the phase that adds it — never discovered mid-run:
 | non-empty `gate.guards` | not in the runner subset |
 | any unknown top-level or step key | the vocabulary is closed |
 | any unknown `$`-operator | the mapping vocabulary is closed |
-| any `schema:` but `openteams/op-manifest [0.1]` | the schema it must be |
+| any `schema:` but `openteams/op-manifest [0.2]` or `[0.1]` | the schemas it may be |
+| in `[0.2]`: `name` on the Op or a step; a non-string `id`, `version`, `title`, `description`, step `title` or `expected_outcome`; a non-boolean `inputs[].required`; `track.records` that is not a list of strings | `title` is the human-readable name; the types, by name |
+| in `[0.2]`: a `cog` with no `version`; `repositories`; an `action` other than `read`/`write`; an operator key beside other keys; a literal `$path` beginning with `~`; `authority: {}` beside a `cycle` | the rule, by its profile rule id |
 | a `depends_on` cycle | acyclic |
 | reading a step you do not depend on | add it to depends_on |
 
@@ -878,6 +985,35 @@ and a resume of a run another process holds, or of a rejected run — `3`
 paused for a human. Stdout is one
 JSON object. Exit `1` is not the end of the run: the Track says which step
 stopped it, and `--resume` starts again there.
+
+A mapping that cannot be evaluated once the run has started — a `$from` path
+that is not available and declares no `$default`, a `foreach.items` that is
+not a list, a `$run_dir` operand refused at evaluation, a grant requirement
+whose targets cannot be read, or `outputs` — is a FAILED run, exit `1`, not an
+invalid request (since 0.10.0). The step is recorded `failed` with a Gate of
+`policy: evaluation` carrying the reasons (everything it finished first, such
+as a `foreach`'s earlier elements, stays on its record), the steps after it are
+`not-reached`, and the Track's `reason` says what could not be evaluated. For
+`outputs`, every step keeps its status, `outputs` is null, `failed_step` is
+null and `reason` names the outputs. Stdout carries `failed_step`, `reason` and
+`problems`. Exit `2` stays for a refusal before execution or resumption
+proceeds — which may concern a run directory that already exists, as an
+invalid decision or a run another process holds does on `--resume`.
+A `$path` or `$run_dir` value no filesystem can name — an embedded NUL from a
+request, a `~user` with no home under `[0.1]`, a name too long, a symlink
+loop an earlier step left — is an evaluation failure too, under either
+profile (0.11.0), and so is a `$run_dir` the run already holds as a file. A
+`cog.source` no filesystem can name is refused before the run starts (exit
+`2`) and fails its step if it appears once the run has started. An I/O error
+that is the machine's, such as a full disk, is an interruption and leaves the
+run `running` for `--resume`, as a crash does.
+Proposals a human Gate over changes cannot put to a person — no `changes` list,
+a duplicate id, a missing or misstated hash — are a failed Gate on that step,
+as an artifact the Gate cannot state is: no pending document is written, and
+`on_fail` applies. That includes an artifact expression that cannot be
+evaluated, such as a `$from` that is not available: it is the one mapping
+whose evaluation failure is a failed Gate rather than a failed run, so
+`on_fail: skip` skips the step and the run continues.
 
 ## 8. Changing an Op
 
@@ -923,7 +1059,10 @@ process before using deferred verdicts; older runtimes refuse them.
 
 A pure Op may declare `cycle` with `outcome_step`, `outcome_field`,
 `max_attempts`, `max_cost_units`, `costs` and `transitions`. Limits may be input
-mappings; they resolve once and remain fixed. Costs are nonnegative integer
+mappings; they resolve once and remain fixed. They read inputs only: under
+`[0.2]` a limit that reads `run.*` or `request.dir`, even inside a `$default`,
+or that uses `$run_dir` or `$path`, is refused at load (rule
+`cycle-limits-read-inputs`, 0.11.0). Costs are nonnegative integer
 reservation units for every initial/preparation step. Count model turns as one
 unit, for example, and deterministic work as zero. These units bound declared
 invocations; they do not measure invoices, prices or token usage. If a caller
@@ -954,6 +1093,16 @@ See the public builder's manifest for revise and missing-evidence transitions.
 The optional cycle `terminal_errors` mapping declares nonempty lists of envelope
 error codes per step. A matching failed step finishes the cycle as `refused`; its
 reason and failed Track remain visible, and resume does not invoke it again.
-Other failures remain recoverable. `completed-with-problems` is successful (exit
+Other failures remain recoverable. A transition whose next phase cannot be
+prepared (a prefix step that did not pass, an unaccepted artifact, a prefix
+Cog that changed), or any other refusal that would leave the cycle's state
+`running` though every resume would meet it again, ends the cycle
+`cycle-failed` (exit 1) with a `reason` and a
+`failure` record naming the phase and transition; resume reports it and runs
+nothing (since 0.10.0). An interruption (an I/O error, a crash) still leaves
+`running`, and resume carries on. A phase that had paused for a decision is
+recovered as `paused` first (0.11.0), so an invalid decision is refused (exit
+2) and the cycle takes a corrected one; it never makes the cycle
+`cycle-failed`. `completed-with-problems` is successful (exit
 zero) while retaining warnings. Attempt exhaustion preserves the last finished
 transition Track. The original input path is recorded before any invocation.

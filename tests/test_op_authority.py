@@ -121,6 +121,28 @@ class AuthorityCase(unittest.TestCase):
     def pending(self, output):
         return json.loads(Path(output["pending"]).read_text())
 
+    def refused_pause(self, answers):
+        """Proposals a human Gate cannot put to a person are a FAILED Gate
+        (machinery 0.10.0): the run fails at the gated step with the reasons
+        on its record, and no pending document is written. Before 0.10.0
+        this raised out of the run and left the Track `running`. Returns
+        the reasons, joined."""
+        code, output, track = self.start(answers=answers)
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["status"], "failed")
+        self.assertEqual(output["failed_step"], "compose")
+        self.assertEqual(track["status"], "failed")
+        record = self.step(track, "compose")
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["gate"]["policy"], "human")
+        self.assertEqual(record["gate"]["status"], "fail")
+        self.assertEqual(record["gate"]["envelope_status"], "pass")
+        self.assertTrue(record["envelope"])
+        self.assertEqual(self.step(track, "example-writer")["status"],
+                         "not-reached")
+        self.assertFalse(any(Path(output["run_dir"]).rglob("pending")))
+        return "\n".join(record["gate"]["reasons"])
+
     def decide(self, output, verdicts, **overrides):
         pending = self.pending(output)
         doc = fx.decision_doc(pending["run_id"], pending["step"],
@@ -376,13 +398,34 @@ class AuthorityTests(AuthorityCase):
 
     def test_a_run_dir_expression_cannot_reach_a_control_directory(self):
         for subpath in ("grants", "pending/compose.json", "decisions",
-                        "journal", "track.json", "run.lock"):
+                        "journal", "track.json", "run.lock", "requests",
+                        "envelopes/compose.json", "input-request.json"):
             doc = spec_doc()
             doc["steps"][1]["input"] = {"out": {"$run_dir": subpath}}
             with self.assertRaises(op_spec.OpSpecError) as caught:
                 op_spec.validate(doc)
             self.assertIn("control entries",
                           "\n".join(caught.exception.problems), subpath)
+
+    def test_a_requirement_that_cannot_be_evaluated_fails_the_step(self):
+        """Machinery 0.10.0: a grant requirement whose targets cannot be
+        evaluated fails the step BEFORE any grant is issued or Cog invoked,
+        and the Track says so, instead of raising out of the run."""
+        doc = spec_doc()
+        doc["inputs"] = [{"name": "repositories", "required": False}]
+        doc["steps"][0]["input"] = {}
+        code, output, track = self.start(doc=doc, request={})
+        self.assertEqual(code, 1, output)
+        self.assertEqual(output["failed_step"], "example-reader")
+        record = self.step(track, "example-reader")
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("not available in this run",
+                      " ".join(record["gate"]["reasons"]))
+        self.assertIsNone(record["grant"])
+        self.assertEqual(track["grants"], [])
+        self.assertEqual(self.fake.calls, [])
+        self.assertEqual([s["status"] for s in track["steps"]],
+                         ["failed", "not-reached", "not-reached"])
 
     def test_run_dir_refuses_a_control_directory_at_evaluation_too(self):
         with self.assertRaises(op_spec.OpSpecError) as caught:
@@ -453,6 +496,23 @@ class WriteGrantTests(AuthorityCase):
         self.assertEqual(grant["issued_by"]["decision_sha256"],
                          op_runner.sha256_file(grant["issued_by"]["decision"]))
 
+    def test_every_entry_a_run_writes_is_reserved(self):
+        """Machinery 0.10.0: the reserved set is the run directory's whole
+        layout. A run that reads under a grant, pauses at a human Gate,
+        resumes with a decision and writes under a second grant leaves only
+        entries no `$run_dir` may name."""
+        code, output, track = self.approve_and_continue(
+            {"c-a": "approve", "c-b": "reject"})
+        self.assertEqual(code, 0, output)
+        entries = {p.name for p in Path(output["run_dir"]).iterdir()}
+        self.assertTrue({"grants", "pending", "decisions", "journal",
+                         "requests", "envelopes", "track.json", "run.lock",
+                         "input-request.json"} <= entries, entries)
+        for name in entries:
+            self.assertEqual(op_spec.reserved_run_subpath(name), name, name)
+            with self.assertRaises(op_spec.OpSpecError):
+                op_spec.run_dir_path(name, output["run_dir"])
+
     def test_the_grant_lists_only_the_approved_changes(self):
         # "A step requiring B is denied" is two tests further down.
         # This is the runner's half: whatever the step's own input says, the
@@ -496,9 +556,8 @@ class WriteGrantTests(AuthorityCase):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [naked]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("never repaired", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("never repaired", reasons)
 
     def test_a_recorded_change_without_a_target_hash_is_denied(self):
         # The issuance check stands behind the pause check: a Track edited
@@ -585,9 +644,8 @@ class WriteGrantTests(AuthorityCase):
                            fx.envelope(payload={"changes": [
                                fx.change("c-a", target_sha256="yes")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("not a sha256", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("not a sha256", reasons)
 
     def test_a_target_hash_with_a_trailing_newline_refuses_the_pause(self):
         # An internal review, finding 1, reproduced: `re.match` with `$` accepted
@@ -596,9 +654,8 @@ class WriteGrantTests(AuthorityCase):
                            fx.envelope(payload={"changes": [fx.change(
                                "c-a", target_sha256="1" * 64 + "\n")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("not a sha256", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("not a sha256", reasons)
         self.assertIsNone(op_runner.hex64_problem("a" * 64, "content_sha256",
                                                   "change 'c'"))
         self.assertIn("not a sha256", op_runner.hex64_problem(
@@ -702,7 +759,7 @@ class HumanGateTests(AuthorityCase):
     def test_only_a_passing_envelope_reaches_the_human(self):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": []},
-                                       problems=[{"severity": "error",
+                                       problems=[{"check": "contract", "severity": "error",
                                                   "detail": "bad"}]),
                            fx.envelope(payload={})]}
         code, output, track = self.start(answers=answers)
@@ -714,10 +771,9 @@ class HumanGateTests(AuthorityCase):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"nothing": True}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
+        reasons = self.refused_pause(answers)
         self.assertIn("must carry a `changes` list",
-                      "\n".join(caught.exception.problems))
+                      reasons)
 
     def test_resume_with_a_mismatched_payload_sha256_is_refused(self):
         code, output, _ = self.start()
@@ -1153,10 +1209,9 @@ class PendingAndDecisionTests(AuthorityCase):
         answers = {"ask": [fx.envelope(payload={"items": []}),
                            fx.envelope(payload={"changes": [naked]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
+        reasons = self.refused_pause(answers)
         self.assertIn("no content_sha256",
-                      "\n".join(caught.exception.problems))
+                      reasons)
 
     def test_a_placeholder_content_hash_refuses_the_pause(self):
         # An internal review, finding 1, reproduced: a proposal carrying
@@ -1167,9 +1222,7 @@ class PendingAndDecisionTests(AuthorityCase):
                            fx.envelope(payload={"changes": [fx.change(
                                "c-a", content_sha256="placeholder")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        problems = "\n".join(caught.exception.problems)
+        problems = self.refused_pause(answers)
         self.assertIn("never repaired", problems)
         self.assertIn("not a sha256", problems)
         self.assertFalse((self.package / "runs").exists()
@@ -1182,10 +1235,9 @@ class PendingAndDecisionTests(AuthorityCase):
                            fx.envelope(payload={"changes": [fx.change(
                                "c-a", content_sha256="b" * 64)]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
+        reasons = self.refused_pause(answers)
         self.assertIn("its content hashes to",
-                      "\n".join(caught.exception.problems))
+                      reasons)
 
     def test_approval_preserves_the_supplied_digest_and_only_edits_rehash(self):
         # An internal review, finding 1: an approval or a rejection carries the digest
@@ -1257,9 +1309,8 @@ class PendingAndDecisionTests(AuthorityCase):
                                fx.change("c-a"),
                                fx.change("c-a", summary="something else")]}),
                            fx.envelope(payload={})]}
-        with self.assertRaises(op_spec.OpSpecError) as caught:
-            self.start(answers=answers)
-        self.assertIn("more than once", "\n".join(caught.exception.problems))
+        reasons = self.refused_pause(answers)
+        self.assertIn("more than once", reasons)
 
     def test_a_decision_without_who_and_when_is_refused(self):
         for field in ("decided_by", "decided_at"):
@@ -1618,6 +1669,20 @@ class ControlFileTests(unittest.TestCase):
         self.assertIn("reserved", "\n".join(caught.exception.problems))
         self.assertFalse((self.run_dir / "grants").exists())
         self.assertFalse((self.run_dir / "outputs").exists())
+
+    def test_a_control_file_is_never_written_through_a_symlink_loop(self):
+        # Review round 2, finding 2: resolving a loop raised RuntimeError,
+        # which no caller of `write_json` handles; it is refused as a link.
+        (self.run_dir / "envelopes").symlink_to("envelopes")
+        with fx.resolve_like_python_3_12("envelopes"), \
+                self.assertRaises(ValueError) as caught:
+            op_track.write_json(self.run_dir / "envelopes" / "first.json",
+                                {"smuggled": True}, base=self.run_dir)
+        self.assertIn("symlink loop", str(caught.exception))
+        with self.assertRaises(ValueError) as caught:  # 3.13+: a link
+            op_track.write_json(self.run_dir / "envelopes" / "first.json",
+                                {"smuggled": True}, base=self.run_dir)
+        self.assertIn("symlink", str(caught.exception))
 
     def test_run_dir_refuses_a_symlinked_component_inside_the_run(self):
         (self.run_dir / "grants").mkdir()

@@ -2,11 +2,12 @@
 
 Every
 construct outside the runner subset must be refused AT LOAD, named, with the
-phase that adds it — never discovered mid-run.
+reason — never discovered mid-run.
 """
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import op_fixtures as fx
 from op_fixtures import op_spec
@@ -51,10 +52,37 @@ class RefusalTests(unittest.TestCase):
         step["gate"] = {"policy": "human", "guards": []}
         op_spec.validate(fx.spec_doc([step]))
 
-    def test_state_is_refused_with_its_phase(self):
+    def foreach_step(self, gate):
+        step = fx.cog_step("propose")
+        step["foreach"] = {"items": {"$from": "inputs.note"}, "as": "item"}
+        step["input"] = {"item": {"$from": "item"}}
+        step["gate"] = gate
+        return fx.spec_doc([step])
+
+    def test_a_foreach_step_with_a_human_gate_over_changes_is_refused(self):
+        """Machinery 0.10.0: the Gate reads one `changes` list from the
+        payload, and a foreach payload is the list of element payloads, so
+        the pause could never be asked. It used to load and fail there."""
+        for gate in ({"policy": "human"},
+                     {"policy": "human", "decides": "changes"}):
+            with self.subTest(gate=gate):
+                text = one(self.foreach_step(gate))
+                self.assertIn("declares foreach and a human Gate over "
+                              "changes", text)
+
+    def test_a_foreach_step_with_another_gate_still_loads(self):
+        artifact = {"policy": "human", "decides": "artifact",
+                    "artifact": {"kind": "batch", "digests": {
+                        "all": {"$sha256": {"$from": "steps.propose.payload"}}}}}
+        for gate in ({"policy": op_spec.GATE_POLICY}, artifact):
+            with self.subTest(gate=gate):
+                self.assertEqual(problems(self.foreach_step(gate)), [])
+
+    def test_state_is_refused_with_its_reason(self):
         text = one(fx.spec_doc(state={"store": "sqlite"}))
         self.assertIn("state:", text)
-        self.assertIn("phase 4", text)
+        self.assertIn("durable state across runs", text)
+        self.assertNotIn("phase", text)
 
     def test_non_empty_guards_are_refused(self):
         step = fx.cog_step("first")
@@ -79,9 +107,11 @@ class RefusalTests(unittest.TestCase):
         self.assertIn("closed", text)
 
     def test_other_schema_values_are_refused(self):
-        doc = fx.spec_doc()
-        doc["schema"] = "openteams/op-manifest [0.2]"
-        self.assertIn("schema must be", one(doc))
+        for schema in ("openteams/op-manifest [0.3]", "op-manifest", None):
+            with self.subTest(schema=schema):
+                doc = fx.spec_doc()
+                doc["schema"] = schema
+                self.assertIn("schema must be one of", one(doc))
 
     def test_unknown_gate_policy_is_refused(self):
         step = fx.cog_step("first")
@@ -364,6 +394,139 @@ class ReviewRegressionTests(unittest.TestCase):
         step = fx.cog_step("first")
         step["input"] = {"out": {"$run_dir": "../escaped"}}
         self.assertIn("inside this run", one(fx.spec_doc([step])))
+
+    # ------------------------------------------- machinery 0.10.0, $run_dir --
+
+    def run_dir_problems(self, operand):
+        step = fx.cog_step("first")
+        step["input"] = {"out": {"$run_dir": operand}}
+        return one(fx.spec_doc([step]))
+
+    def test_a_literal_run_root_is_refused_at_load(self):
+        """`{$run_dir: ""}` and `"."` used to hand the Cog the run root —
+        and every control entry in it."""
+        # (A literal `out/..` is refused at load as well, by the `..` rule.)
+        for operand in ("", ".", "./", {"$literal": "."}):
+            with self.subTest(operand=operand):
+                self.assertIn("the run directory itself",
+                              self.run_dir_problems(operand))
+
+    def test_a_literal_operand_that_is_not_a_string_is_refused_at_load(self):
+        for operand in (None, 3, True, ["out"], {"dir": "out"},
+                        {"$literal": None}):
+            with self.subTest(operand=operand):
+                self.assertIn("relative subpath string",
+                              self.run_dir_problems(operand))
+
+    def test_every_run_directory_entry_is_reserved_at_load(self):
+        for operand in ("requests", "requests/first", "envelopes",
+                        "./envelopes/first", "input-request.json",
+                        "track.json.123.tmp"):
+            with self.subTest(operand=operand):
+                problems_text = self.run_dir_problems(operand)
+                self.assertIn("control entries", problems_text)
+
+    def test_ordinary_output_directories_still_load(self):
+        for operand in ("out", "requests-copy", "envelope", "track.jsonl",
+                        "out/requests", {"$from": "inputs.note"}):
+            with self.subTest(operand=operand):
+                self.assertEqual(self.run_dir_problems(operand), "")
+
+    def test_the_run_root_is_refused_at_evaluation_and_nothing_is_created(self):
+        """An expression operand is checked when it is evaluated."""
+        before = sorted(self.run_dir.iterdir())
+        for value in ("", ".", "out/..", None):
+            with self.subTest(value=value):
+                ctx = dict(self.ctx, inputs={"dest": value})
+                with self.assertRaises(op_spec.OpSpecError) as caught:
+                    op_spec.evaluate({"$run_dir": {"$from": "inputs.dest",
+                                                   "$default": None}}, ctx)
+                self.assertTrue(any(
+                    "run directory itself" in p or "subpath string" in p
+                    for p in caught.exception.problems))
+        self.assertEqual(sorted(self.run_dir.iterdir()), before)
+
+    def test_every_run_directory_entry_is_reserved_at_evaluation(self):
+        for value in ("requests", "envelopes/first", "input-request.json",
+                      "track.json.99.tmp"):
+            with self.subTest(value=value):
+                ctx = dict(self.ctx, inputs={"dest": value})
+                with self.assertRaises(op_spec.OpSpecError) as caught:
+                    op_spec.evaluate({"$run_dir": {"$from": "inputs.dest"}},
+                                     ctx)
+                self.assertIn("reserved", str(caught.exception))
+        self.assertEqual(list(self.run_dir.iterdir()), [])
+
+    # ------------------------------------- machinery 0.11.0, any spelling --
+
+    #: Spellings of reserved entries a case-folding filesystem (APFS, NTFS)
+    #: opens as the entry itself, and a canonical equivalent (a Kelvin sign).
+    CASE_ALIASES = ("Requests", "GRANTS", "Envelopes/first", "Pending/x",
+                    "Track.json", "TRACK.JSON.99.tmp", "Input-Request.json",
+                    "Run.Lock", "trac\u212a.json")
+
+    def test_a_reserved_entry_in_another_case_is_refused_at_load(self):
+        """Review round 2, finding 1: names compared case-sensitively let
+        `$run_dir: Requests` hand a Cog the runner's `requests` on this
+        Mac. They compare caselessly, so the verdict is the same on every
+        filesystem."""
+        for operand in self.CASE_ALIASES:
+            with self.subTest(operand=operand):
+                self.assertIn("control entries",
+                              self.run_dir_problems(operand))
+
+    def test_a_reserved_entry_in_another_case_is_refused_at_evaluation(self):
+        (self.run_dir / "requests").mkdir()
+        (self.run_dir / "requests" / "first.json").write_text("{}")
+        for value in self.CASE_ALIASES:
+            with self.subTest(value=value):
+                ctx = dict(self.ctx, inputs={"dest": value})
+                with self.assertRaises(op_spec.OpSpecError) as caught:
+                    op_spec.evaluate({"$run_dir": {"$from": "inputs.dest"}},
+                                     ctx)
+                self.assertIn("reserved", str(caught.exception))
+        self.assertEqual([p.name for p in self.run_dir.iterdir()],
+                         ["requests"])
+        self.assertEqual([p.name for p in
+                          (self.run_dir / "requests").iterdir()],
+                         ["first.json"])
+
+    def test_names_that_only_resemble_a_reserved_entry_still_load(self):
+        for operand in ("Requests-copy", "out/Requests", "Track.jsonl",
+                        "GRANTS_archive"):
+            with self.subTest(operand=operand):
+                self.assertEqual(self.run_dir_problems(operand), "")
+
+    def test_an_existing_alias_of_a_control_entry_is_refused(self):
+        """What the name rule cannot list — here a hard link to the Track —
+        is refused by what it IS, before anything is created."""
+        (self.run_dir / "track.json").write_text("{}")
+        (self.run_dir / "evidence").hardlink_to(self.run_dir / "track.json")
+        with self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.evaluate({"$run_dir": "evidence/out"}, self.ctx)
+        self.assertIn("reaches the run's 'track.json' under another name",
+                      str(caught.exception))
+        self.assertEqual(sorted(p.name for p in self.run_dir.iterdir()),
+                         ["evidence", "track.json"])
+
+    def test_an_existing_alias_of_the_run_root_is_refused(self):
+        """A directory that IS the run root holds every control entry. No
+        portable call makes one without a link, so the identity is faked."""
+        (self.run_dir / "mirror").mkdir()
+        root = self.run_dir.resolve()
+        real = op_spec.reserved_identities
+
+        def identities(run_dir):
+            found = real(run_dir)
+            info = (root / "mirror").stat()
+            found[(info.st_dev, info.st_ino)] = "."
+            return found
+        with mock.patch.object(op_spec, "reserved_identities", identities), \
+                self.assertRaises(op_spec.OpSpecError) as caught:
+            op_spec.evaluate({"$run_dir": "mirror/out"}, self.ctx)
+        self.assertIn("run directory itself under another name",
+                      str(caught.exception))
+        self.assertFalse((self.run_dir / "mirror" / "out").exists())
 
     # ---------------------------------------------------------- finding 7 --
 

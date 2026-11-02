@@ -639,5 +639,60 @@ class ProductionSeamTests(unittest.TestCase):
         self.assertNotIn("grant", json.loads(Path(request_path).read_text()))
 
 
+
+class ProductionSeamProfile02Tests(unittest.TestCase):
+    """The production seam for an `openteams/op-manifest [0.2]` Op (machinery
+    0.11.0): every envelope must name the step's Cog, and the proposing Cog's
+    changes name the admitted write target as `target`."""
+
+    drive = ProductionSeamTests.drive
+    commands = ProductionSeamTests.commands
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.package = self.root / "op-test"
+        cc.propose_cog(self.root, cc.PROPOSE_TASK_LOGIC_0_2)
+        cc.write_back_cog(self.root)
+        fx.write_package(self.package, fx.as_0_2(production_spec_doc()))
+        self.request = fx.write_request(self.root / "request.json",
+                                        {"note": "add a label"})
+        self.authority = self.root / "authority.json"
+        self.authority.write_text(json.dumps(fx.authority_doc()))
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        pixi = self.bin / "pixi"
+        pixi.write_text(FAKE_PIXI.format(python=sys.executable))
+        pixi.chmod(0o755)
+        self.log = self.root / "pixi-log.jsonl"
+
+    def test_a_0_2_run_writes_the_admitted_target_through_created_cogs(self):
+        code, paused = self.drive("--request", str(self.request),
+                                  "--authority", str(self.authority))
+        self.assertEqual(code, op_runner.PAUSED_EXIT, paused)
+        pending = json.loads(Path(paused["pending"]).read_text())
+        self.assertEqual(pending["payload"]["changes"][0]["target"], REPO)
+        decision = self.root / "decision.json"
+        decision.write_text(json.dumps(fx.decision_doc(
+            pending["run_id"], pending["step"], pending["payload_sha256"],
+            {"c-1": "approve"})))
+        code, output = self.drive("--resume", paused["run_dir"],
+                                  "--decision", str(decision))
+        self.assertEqual(code, 0, output)
+        self.assertEqual(output["status"], "completed")
+        self.assertEqual(
+            json.loads((self.root / "calls.json").read_text()), ["c-1"])
+        track = json.loads(Path(output["track"]).read_text())
+        record = next(s for s in track["steps"] if s["id"] == "example-writer")
+        granted = json.loads(Path(record["grant"]).read_text())[
+            "operations"][0]["changes"]
+        self.assertEqual([(c["change_id"], c["target"]) for c in granted],
+                         [("c-1", REPO)])
+        for step in track["steps"]:
+            envelope = json.loads(Path(step["envelope"]).read_text())
+            self.assertEqual(envelope["cog"]["id"], step["cog"]["id"])
+
+
 if __name__ == "__main__":
     unittest.main()

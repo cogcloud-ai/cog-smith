@@ -741,6 +741,24 @@ def run(bundle, grant, journal):
     return {"changes": [change]}, []
 '''
 
+# The same proposal as an `openteams/op-manifest [0.2]` Op reads it (Op
+# machinery 0.11.0): `target` names what the change changes — the write
+# target the admission lists — and there is no `repository`.
+PROPOSE_TASK_LOGIC_0_2 = '''
+"""Proposes one change for a human to decide about ([0.2] change shape)."""
+
+REPOSITORY = "example-org/example-repo"
+
+
+def run(bundle, grant, journal):
+    change = {"change_id": "c-1", "kind": "label", "target": REPOSITORY,
+              "summary": str(bundle.get("note") or "add a label"),
+              "target_sha256": "1" * 64}
+    import cog_core
+    change["content_sha256"] = cog_core.change_content_sha256(change)
+    return {"changes": [change]}, []
+'''
+
 PROPOSE_OUTPUT_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -754,9 +772,9 @@ PROPOSE_INPUT_SCHEMA = {
 }
 
 
-def propose_cog(tmp):
+def propose_cog(tmp, task_logic=PROPOSE_TASK_LOGIC):
     dest = create_code_cog(tmp, name="cog-propose")
-    (dest / "src" / "task_logic.py").write_text(PROPOSE_TASK_LOGIC)
+    (dest / "src" / "task_logic.py").write_text(task_logic)
     (dest / "context" / "input-schema.json").write_text(
         json.dumps(PROPOSE_INPUT_SCHEMA))
     (dest / "context" / "output-schema.json").write_text(

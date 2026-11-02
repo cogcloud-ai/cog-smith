@@ -26,11 +26,18 @@ the single source of the machinery every created Cog carries.
   under `pixi run new`: the pixi task shell re-parses the arguments. Use
   `python src/cogsmith_cli.py new …` inside `pixi shell`, or a request file.
 - Validate: `pixi run check -- <path> [--tests] [--envelope]`
-- Ops: `python src/cogsmith_cli.py op new --from-spec <spec> --dir <dir>` and
+- Ops: `python src/cogsmith_cli.py op new --from-spec <spec> --dir <dir>
+  [--license L] [--publisher P]` and
   `op check <dir> [--tests] [--envelope]` — the Op half of the builder
   (BUILDING_OPS.md). Op machinery lives in `templates/op/src/` and is
   enforced by hash the same way Cog machinery is; an Op package carries no
-  per-Op Python at all.
+  per-Op Python at all. `op new` also writes `OP.md`, the Op Spec entry
+  file, named after the last segment of op.yaml's `id`; `op check` warns
+  when it is missing, invalid or differently named, and errors only when its
+  `version` differs from op.yaml's. op.yaml declares the published profile
+  `openteams/op-manifest [0.2]` (`title`, stricter load and run rules) or
+  `[0.1]` (runs unchanged; `op check` warns). `op_spec.SCHEMA_STRING` stays
+  `[0.1]` for existing callers; new documents use `SCHEMA_STRING_0_2`.
 - Card: `pixi run card -- <path> [--json | --envelope]`
 - `--envelope` emits envelope v1 for Op consumption:
   binding null (deterministic tooling cog), findings in `problems`,
@@ -49,7 +56,7 @@ the single source of the machinery every created Cog carries.
 1. **Machinery is sacred:** template `src/` masters change only here, with
    MACHINERY.md updated; created Cogs never edit them (task_logic.py is the
    sole author-owned src module). `smith check` enforces by hash. The same
-   rule covers `templates/op/src/` (Op machinery 0.9.3), where the
+   rule covers `templates/op/src/` (Op machinery 0.11.0), where the
    author-owned part is op.yaml and nothing else, and
    `templates/code-cog/src/` (code-cog machinery 0.2.0) and
    `templates/decision-cog/src/` (decision-cog machinery 0.1.4). These

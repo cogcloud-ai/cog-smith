@@ -1570,3 +1570,268 @@ process evidence remain unchanged.
 Clear a recoverable failure reason before driving its retry, so paused or
 completed builds display their current state. Terminal refusal and exhaustion
 reasons remain retained; malformed decisions still preserve a paused state.
+
+## Op machinery 0.10.0 — alignment with the published Op Spec
+
+A MINOR bump: the runner and the spec loader now refuse inputs the Op Spec
+(`ENVELOPE.md`, `schemas/envelope-1.schema.json`, the `op-manifest` profile and
+core principle 7) says are not results or not runnable, and some of those
+inputs used to pass. Every master's hash changes; Op packages pick the change
+up by re-copying. A run started under 0.9.x is resumed by its own runtime.
+
+- **An envelope that carries an error is not ok.** `envelope_problems` checks
+  `error`: it is `null` or `{code, detail}` with a non-empty string `code` and
+  a string `detail`, and `ok: true` beside an error object is malformed output.
+  Such an envelope used to pass the Gate; it is now an invocation failure with
+  the Cog's output kept as evidence, and the Gate fails it.
+- **A problem is `{check, detail, severity}`.** Every entry of `problems` must
+  have a non-empty string `check`, a string `detail` and a `severity` of
+  `error`, `warning` or `warn` (`warn` is deprecated and still accepted in
+  envelope 1). A missing or unrecognized severity used to read as a warning,
+  so the step passed with problems; it is malformed output now.
+- **A synthesized envelope is envelope v1.** On a nonzero exit after a
+  well-formed envelope, and on a malformed envelope, the runner put the Cog's
+  envelope OBJECT in `raw`, which envelope v1 types as text or null. That
+  object is now `error.evidence.envelope` (the evidence object admits further
+  keys), `raw` stays text or null, `error.evidence` is omitted rather than
+  null when there is none, and only a carried identity, binding and problems
+  envelope v1 can type are carried. `op_cycle` reads a Cog's own error code
+  for `terminal_errors` from `error.evidence.envelope`. A cycle started under
+  0.9.x is refused on resume by its machinery digest, so no Track mixes the two
+  locations.
+- **`$run_dir` never hands a Cog the run root or the run's evidence.** An
+  empty, `.` or null operand — or one that normalises to the run root — named
+  the run directory itself, and with it every control entry; it is refused.
+  `requests`, `envelopes` and `input-request.json` join the reserved set
+  (the run directory's whole layout), and `<file>.` names a reserved file too,
+  because its atomic rewrite goes through `<file>.<pid>.tmp`. A literal
+  operand is checked at load — including `{$literal: ...}` and operands that
+  can never be strings (null, numbers, lists, plain objects) — and an
+  expression operand at evaluation. A spec that wrote into one of these names
+  used to load and now does not.
+- **A run that cannot evaluate a mapping leaves a true Track.** A `$from` path
+  missing at evaluation, a `foreach.items` that is not a list, a `$run_dir`
+  operand refused at evaluation, a grant requirement or `outputs` that cannot
+  be evaluated used to raise out of `_execute`: `main` exited 2
+  `invalid-input`, and the Track stayed `running` with the step `running` and
+  no reason (or `completed-with-problems` with `outputs: null`). The step is
+  now recorded `failed` with `gate: {policy: evaluation, status: fail,
+  reasons}`, keeping what it had finished; the later steps `not-reached`; and
+  the run `failed` with a new top-level Track field `reason` (null otherwise).
+  Outputs are evaluated before the run is called complete; a failure there is
+  a failed run with `failed_step: null`. Exit 1, the documented code of a
+  failed run; a resume re-runs the failed step only. Proposals a changes Gate
+  cannot put to a person (no `changes`, duplicate ids, missing or misstated
+  hashes) are a failed human Gate with the reasons, as an unstateable
+  artifact already was — `on_fail` applies and no pending document is
+  written. `op_cycle` reports the Track's `reason` for a failed child.
+- **A `foreach` step with a human Gate over changes is refused at load.** The
+  Gate reads one `changes` list from the step's payload, and a foreach
+  payload is the list of element payloads, so the pause could never be asked;
+  the spec used to load and fail when the run reached it. A `foreach` with
+  the envelope Gate or an artifact Gate still loads.
+- **A refusal says what and why, never when.** `state:` was refused with
+  "phase 4 adds it", naming an internal plan; it is now refused because
+  durable state across runs is not part of this Op spec. Message-only.
+- **`op new` writes `OP.md`.** Not machinery (it is not hashed): Smith's Op
+  template now renders `templates/op/OP.md.tmpl`, the Op Spec v0.1 entry file
+  (`type: op [0.1]`, `name`, `description`, quoted `version`, `license`,
+  `publisher`, `manifest: op.yaml`,
+  `manifest_schema: openteams/op-manifest [0.1]`, and a body generated from
+  the spec). `name` is the last segment of op.yaml's `id`
+  (`openteams/op-learning-shortlist` -> `op-learning-shortlist`), whatever
+  the package directory is called; a segment that is not a valid core name
+  refuses `op new` by name rather than being rewritten. An existing `OP.md`
+  (a draft) is kept. `op check` reports a missing or invalid `OP.md`, and an
+  OP.md `name` other than the id's last segment, as core-layer WARNINGS; an
+  OP.md `version` that differs from op.yaml's is an ERROR.
+- **A cycle that cannot go on says so.** When a transition's next phase could
+  not be prepared — `new_phase` refusing to carry a prefix step that did not
+  pass, an unaccepted artifact, or a prefix Cog that changed — the cycle
+  exited 2 `invalid-input` and its saved state stayed `running`. `drive` now
+  records any refusal that would leave the state `running` though it would
+  stop every resume (a refused transition, a first phase that cannot be
+  prepared, a refusal while a phase runs) as the new terminal status
+  `cycle-failed`, with a `reason`
+  and a `failure` record naming the phase, its outcome, the restart step
+  when it was a transition, and the problems; it exits 1, and `resume`
+  reports it without driving anything. `cycle-failed` is distinct from
+  `failed`, which remains a failed child run the cycle can resume. A refusal
+  that leaves a true state is still raised (exit 2): a bad decision keeps the
+  cycle `paused`. An `OSError` is an interruption, like a crash: it is
+  still raised and leaves the true, resumable `running` state, from which
+  `resume` recovers durable work. `resume`'s own up-front refusals (a changed package,
+  machinery, request, limits or ledger) leave the state as it was, so
+  restoring what changed lets the cycle continue.
+
+## Op machinery 0.11.0 — `openteams/op-manifest [0.2]`
+
+A MINOR bump: the machinery runs the published execution profile
+`openteams/op-manifest [0.2]` beside `[0.1]`. A document's `schema` picks the
+rules, and a `[0.1]` document loads and runs exactly as under 0.10.0,
+except where a fix below closes a safety hole both profiles share. Every
+master's hash changes (`op_spec.py`, `op_runner.py`); Op packages pick the
+change up by re-copying. `op_spec.SCHEMA_STRING` keeps meaning `[0.1]` for
+callers that build `[0.1]` documents; `SCHEMA_STRING_0_2` and
+`SCHEMA_STRINGS` are new, and `OpSpec` gains `schema`, `profile`, `title`
+(`name` stays, as the same value) and `change_target_key`.
+
+- **Load-time tightenings, `[0.2]` only** (profile "Tightenings"): `title`
+  on the Op and every step, cycle preparation steps included, and `name`
+  refused by name; string `id`, `version`, `title`, `description`, step
+  `title` and `expected_outcome`; boolean `inputs[].required`; `track.records`
+  a list of strings; a `cog` with no `version` refused; `repositories`
+  refused (`targets` only); an `action` other than `read`/`write` refused; an
+  object holding an operator key beside any other key refused (exact key
+  sets: a `$default` needs its `$from`); a literal `$path` (or
+  `{$literal: ...}`) beginning with `~` refused; and `authority: {}` beside
+  a `cycle` refused. The new refusals name the profile's rule id. The
+  `$run_dir` and foreach-changes-Gate rules of 0.10.0 apply to both.
+- **Run-time rules, `[0.2]` only.** `declaration_problems` refuses a run
+  whose named Cog is not present, or is at another version than the step
+  states (`cog_step_findings` takes the profile: an error for `[0.2]`, a
+  warning for `[0.1]`; an absent Cog stays a warning for `op check`). The
+  run context carries the profile, and a `$path` that evaluates to a value
+  beginning with `~` fails the step as an evaluation failure. `invoke_cog`
+  takes `expected_cog_id`: a well-formed envelope whose `cog.id` is not the
+  step's is a failed invocation (`cog-identity-mismatch`, naming the step's
+  Cog, the other envelope kept as `error.evidence.envelope`), which
+  `retry-once` does not retry: the same invocation would name the same Cog
+  again. The seam is passed it only for a `[0.2]`
+  step, so a `[0.1]` Cog is invoked exactly as before.
+- **A change names its `target`.** Under `[0.2]` the field of a proposed
+  change that names what it changes is `target`: write admission requires
+  every approved change's `target` to be a write target the admission lists,
+  `granted_change` carries `target`, and an edit may not change it
+  (`apply_decision(..., change_target_key=)`, `edited_change_problems(...,
+  target_key=)`). A `[0.2]` change whose `target` is missing or not a
+  non-empty string fails the changes Gate (`pending_changes(...,
+  require_target=)`). Under `[0.1]` it stays `repository`, the default, so
+  `smith op decide` and existing callers are unchanged.
+- **Smith.** `op new` writes the spec as declared — it never rewrites a
+  `[0.1]` spec, whose Cogs' changes name `repository` — and OP.md's
+  `manifest_schema` is op.yaml's `schema`. `op check` accepts either profile
+  in OP.md, warns when it differs from op.yaml's, and warns
+  (`opspec-profile`, profile layer) on a `[0.1]` spec with what moving to
+  `[0.2]` takes. The code-cog machinery is unchanged: it never reads a
+  granted change's target field.
+- **A refused decision never ends a resumable cycle.** A process stopped
+  after a phase's run paused durably but before the cycle recorded it left
+  the saved cycle `running`; resuming it with an invalid decision was then
+  classified as a refusal that would leave the state `running`, and made the
+  cycle a final `cycle-failed`, so a corrected decision could not continue
+  it. `drive` now recovers `paused` from the paused child before invoking
+  anything, so the refusal leaves a true state: it is raised (exit 2, as for
+  a single run), and the cycle stays `paused` for a corrected decision.
+- **A path no filesystem can name is an evaluation failure.** The
+  evaluation-failure handler of 0.10.0 catches `OpSpecError`, and resolving
+  a `$path` that held an embedded NUL (valid JSON, `"\u0000"`) raised
+  `ValueError`: the CLI exited 2 with the run and the step left `running`.
+  `evaluate` now turns the `ValueError`, `OSError` and `RuntimeError` (a
+  `~user` with no home) of building and resolving a `$path`, and those of
+  resolving a `$run_dir` operand, into an `OpSpecError`, so the step fails
+  with the reason, later steps are `not-reached` and the run is `failed`,
+  exit 1, for step inputs and `outputs` alike. Creating a `$run_dir`
+  directory converts only the errors that say the NAME is impossible
+  (`ENAMETOOLONG`, `EINVAL`, `EILSEQ`): a full disk or a lost permission is
+  the machine's, an interruption that is raised and leaves the resumable
+  `running` Track. This is the 0.10.0 rule kept, so it applies to both
+  profiles.
+- **The identity mismatch wins, and only the runner's own is final.** A
+  malformed envelope naming another Cog became an ordinary
+  `invocation-failed` before its identity was checked, so `retry-once`
+  invoked the step twice. On a `[0.2]` step, `invoke_cog` now checks
+  identity first whenever the result's `cog.id` can be read (a string): a
+  differing one is `cog-identity-mismatch`, with the malformed envelope kept
+  as `error.evidence.envelope` and its shape problems named in the detail.
+  The no-retry rule compared the error code under every profile, so a
+  `[0.1]` Cog reporting `cog-identity-mismatch` as its own `error.code`
+  lost the retry 0.10.0 gave it. `invoke_cog` now returns the mismatch it
+  detected as an `IdentityMismatch` (a `dict`, written and read like any
+  envelope), and `_attempt` skips the retry only for that type on a step
+  that was given `expected_cog_id`; a Cog's own error, whatever its code, is
+  retried as before.
+- **A present key is typed (`[0.2]`).** `validate` read several optional
+  keys with `doc.get(key) or default` or an `is None` test, so a `[0.2]`
+  document the schema refuses still loaded: `inputs: {}` or `null` as no
+  inputs, `outputs: []` as none, `track: null`, `authority: null`,
+  `authority: {ttl_minutes: null}` as the default 60, and a step's
+  `depends_on`, `foreach`, `gate`, `authority` or `repeat` of `null` as
+  absent, and `gate.guards` of `false`, `null`, `0`, `""` or `{}` as none.
+  For `[0.2]` each check now notices whether the key is present, and a
+  present key of the wrong type is refused with the finding a wrongly
+  typed truthy value always got, naming the profile's rule under `[0.2]`
+  (`present-key-typed`; `ttl-positive` and `no-guards` for those keys). These
+  are every gap a sweep of `op-manifest-0.2.schema.json` found: each key it
+  types, given each JSON type it refuses, over the corpus's conforming
+  cases. `[0.1]` is unchanged. Under both profiles a list or object among a
+  step's `depends_on` beside `authority` is refused by name rather than
+  raising `TypeError` from validation.
+- **An artifact Gate on a `foreach` step is one decision (`[0.2]`).** Each
+  element is gated by its own envelope Gate, and a human artifact Gate on
+  the step is evaluated once, after the loop, over the whole step — when no
+  element is current. `validate` let the artifact read the loop variable, so
+  such a Gate could only fail at run time. A `[0.2]` artifact that reads it,
+  anywhere in the expression (a `$default` included), is refused at load
+  (rule `artifact-not-per-element`); it reads `steps.<id>.payload`, the list
+  of element payloads, instead. `[0.1]` keeps loading it: there the read
+  fails the Gate with its reasons, or takes a `$default`, as under 0.10.0.
+  `expression_reads` lists an expression's reads for this check.
+- **A cycle's limits read inputs only (`[0.2]`).** `max_attempts` and
+  `max_cost_units` are evaluated once, when the cycle starts and before any
+  run exists, from the request's inputs. `cycle_phases` refused a step or an
+  undeclared root there but accepted `{$from: run.dir}` and
+  `{$from: request.dir}`. Under `[0.2]` every `run.*` or `request.dir` read
+  in a limit, nested in a `$default` or another operator's operand
+  included, and any `$run_dir` or `$path` (which read a run or request
+  directory), is refused (rule `cycle-limits-read-inputs`). `[0.1]` keeps
+  loading them: there `{$from: run.dir, $default: 2}` takes its default.
+- **Reserved entries compare caselessly, and by identity.**
+  `reserved_run_subpath` compared a `$run_dir` subpath's first component
+  with the control entries case-sensitively, so on a filesystem that folds
+  case (APFS, NTFS) a step handed `Requests` got the runner's real
+  `requests/`, its request files included, and `GRANTS` or `ENVELOPES`
+  could overwrite control documents. The component is now compared under
+  Unicode canonical caseless matching (`caseless`: NFD, case folding, NFD),
+  at load and at evaluation, `<file>.<pid>.tmp` included, so the verdict
+  does not depend on the filesystem. `run_dir_path` also refuses an
+  existing component that is the run directory or a control entry by
+  device and inode (`reserved_identities`), before anything is created:
+  that catches an alias no name rule lists, such as a hard link to the
+  Track or a filesystem's compatibility folding. Links were already
+  refused. This closes a safety hole that applies equally to both
+  profiles, and no published Op names a directory these rules newly
+  refuse, so it applies to `[0.1]` too.
+- **Every path a run resolves fails with a reason.** The conversion above
+  of `$run_dir` resolution caught `ValueError` and `OSError`, but Python
+  3.12's `Path.resolve()` raises `RuntimeError` on a symlink loop: a first
+  step that left `work/loop -> loop` made `$run_dir: work/loop/sub` raise out
+  of the run, leaving the run and the second step `running`, and every
+  resume repeated it. `run_dir_path` now converts it as `$path` does. An
+  audit of every path the runner resolves during evaluation or a run-time
+  check found three more: the component walk's `lstat` raised a name too
+  long before `mkdir` could classify it (now the same `INVALID_NAME_ERRNOS`
+  rule); `mkdir` over a path the run holds as a file raised
+  `FileExistsError` or `NotADirectoryError` (now an evaluation failure, as
+  it recurs on every resume); and a `cog.source` was resolved bare at the
+  run start's and a resume's declaration check, in the step loop, in a
+  resume's changed-Cog record, and in a cycle's preflight and phases (now
+  `cog_source_dir`, an `OpSpecError` naming the step: a refusal before the
+  run, a failed step during it). `op_track.checked_path` turns a loop in the
+  runner's own record paths into the `ValueError` it gives for any link.
+  Both profiles, as for the conversion above.
+- **Smith: an OP.md pointer no filesystem can name is a warning.** `op
+  check` resolved OP.md's `manifest` bare, so `manifest: "bad\0path"`
+  raised `ValueError`, and a link loop `RuntimeError`, out of the check
+  instead of the warning an invalid OP.md gets. Both are now that warning.
+- **Smith: OP.md's version agrees only as a string.** `op check` compared
+  `str()` of OP.md's `version` with op.yaml's, so an unquoted `version:
+  null` agreed with an op.yaml version `"None"`, and `false` with
+  `"False"`. A stated OP.md version that is not a string is now an error,
+  and a string must equal op.yaml's version exactly.
+- **A `[0.2]` step's `input` is read as written.** The runner evaluated
+  `step.get("input") or {}`, so `input: false`, `0`, `""`, `null` or `[]`
+  sent the Cog `{}` while the same value under `$literal` was sent as
+  written. `op_spec.step_input` now defaults only an omitted `input` for a
+  `[0.2]` document, in a run, a `foreach`, and a dry run's plan; `[0.1]`
+  keeps the 0.10.0 reading.
