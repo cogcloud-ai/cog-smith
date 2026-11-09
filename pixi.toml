@@ -12,6 +12,8 @@ platforms = ["osx-arm64", "linux-64"]
 python = ">=3.11"
 pyyaml = "*"
 jsonschema = "*"
+# trust-store floor: 2026.10.23 drops the compromised eMudhra emSign roots
+ca-certificates = ">=2026.10.23"
 
 [tasks]
 new = "python src/cogsmith_cli.py new"
