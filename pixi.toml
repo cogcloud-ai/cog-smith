@@ -5,6 +5,7 @@ version = "0.2.0"
 description = "Creates, validates, and describes Cogs: `new` scaffolds a complete runnable package from review-hardened machinery, `check` enforces manifest and copy-sync discipline, `card` renders the catalog card consumers see."
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
+requires-pixi = ">=0.82.1"
 
 [dependencies]
 # 3.11+: [tool.cog] manifests are read with tomllib (toml_compat degrades
