@@ -4,6 +4,7 @@ version = "{{OP_VERSION}}"
 description = {{OP_SUMMARY_TOML}}
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
+requires-pixi = ">=0.82.1"
 
 [dependencies]
 # 3.11+: the Op machinery matches the created-Cog floor
@@ -11,6 +12,8 @@ python = ">=3.11"
 # op.yaml is YAML; declared input schemas are JSON Schema
 pyyaml = "*"
 jsonschema = "*"
+# trust-store floor: 2026.10.23 drops the compromised eMudhra emSign roots
+ca-certificates = ">=2026.10.23"
 
 [tasks]
 op = "python src/op_runner.py"

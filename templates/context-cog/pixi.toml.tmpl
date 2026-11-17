@@ -4,6 +4,7 @@ version = "0.1.0"
 description = {{SUMMARY_TOML}}
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "linux-64"]
+requires-pixi = ">=0.82.1"
 
 [dependencies]
 # 3.11+: the machinery reads this file's [tool.cog] manifest with tomllib
@@ -12,6 +13,8 @@ python = ">=3.11"
 pyyaml = "*"
 # normative input/output schema validation
 jsonschema = "*"
+# trust-store floor: 2026.10.23 drops the compromised eMudhra emSign roots
+ca-certificates = ">=2026.10.23"
 
 [tasks]
 # --- usage ops (face users and the Op layer) ---
